@@ -4,9 +4,9 @@ import { useForm, useWatch } from 'react-hook-form';
 
 import { useListAccountsQuery } from '../../../features/accounts/accountsApi';
 import {
+  type CategoryType,
   useCreateCategoryMutation,
   useListCategoriesQuery,
-  type CategoryType,
 } from '../../../features/categories/categoriesApi';
 import { useCreateTransactionMutation } from '../../../features/transactions/transactionsApi';
 import type { TransactionType } from '../../../features/transactions/transactionsApi';
@@ -15,6 +15,12 @@ import { Input } from '../../atoms/Input';
 import { FormField } from '../../molecules/FormField';
 import { createTransactionSchema } from './CreateTransactionForm.schema';
 import type { CreateTransactionFormValues } from './CreateTransactionForm.schema';
+
+export interface CreateTransactionFormProps {
+  onSuccess?: () => void;
+  showHeading?: boolean;
+  mode?: 'page' | 'sheet';
+}
 
 function getDefaultOccurredAt(): string {
   const now = new Date();
@@ -28,6 +34,13 @@ function getCategoryTypeForTransactionType(transactionType: TransactionType): Ca
   }
   return 'expense';
 }
+
+const TYPE_OPTIONS: Array<{ label: string; value: TransactionType }> = [
+  { label: 'Expense', value: 'expense' },
+  { label: 'Income', value: 'income' },
+  { label: 'Transfer', value: 'transfer' },
+  { label: 'Refund', value: 'refund' },
+];
 
 const ADD_CATEGORY_OPTION = '__add_category__';
 
@@ -43,9 +56,10 @@ const DEFAULT_VALUES: CreateTransactionFormValues = {
 };
 
 const SELECT_CLASS =
-  'w-full rounded-[var(--input-radius)] border border-[var(--bg-border)] bg-[var(--bg-app)] px-3 py-2 text-[var(--text-primary)] outline-none focus:outline-2 focus:outline-[var(--brand-primary)] focus:outline-offset-1';
+  'w-full min-h-12 rounded-xl border border-[var(--bg-border)] bg-[var(--bg-elevated)] px-3 py-3 text-base text-[var(--text-primary)] outline-none transition-colors focus:border-[var(--brand-primary)] focus:ring-1 focus:ring-[var(--brand-primary)]';
 
-export function CreateTransactionForm() {
+export function CreateTransactionForm({ onSuccess, showHeading = true, mode = 'page' }: CreateTransactionFormProps) {
+  const isSheetMode = mode === 'sheet';
   const [createTransaction] = useCreateTransactionMutation();
   const [createCategory, { isLoading: isCreatingCategory }] = useCreateCategoryMutation();
   const { data: accounts } = useListAccountsQuery();
@@ -99,6 +113,16 @@ export function CreateTransactionForm() {
     [transactionType],
   );
 
+  const handleTypeChange = (nextType: TransactionType) => {
+    setValue('type', nextType, { shouldDirty: true, shouldValidate: true });
+    if (nextType === 'transfer') {
+      setShowQuickCategory(false);
+      setQuickCategoryError(null);
+      setQuickCategoryName('');
+      setValue('categoryId', '', { shouldValidate: true });
+    }
+  };
+
   const onSubmit = handleSubmit(async (values) => {
     setFormError(null);
 
@@ -118,12 +142,13 @@ export function CreateTransactionForm() {
       setQuickCategoryName('');
       setQuickCategoryError(null);
       reset({ ...DEFAULT_VALUES, occurredAt: getDefaultOccurredAt() });
+      onSuccess?.();
     } catch {
       setFormError('Could not create the transaction.');
     }
   });
 
-  const { onChange: onTypeChange, ...typeField } = register('type');
+  const { onChange: onTypeFieldChange, ...typeField } = register('type');
   const { onChange: onCategoryChange, ...categoryField } = register('categoryId');
 
   const handleCreateCategory = async () => {
@@ -152,36 +177,40 @@ export function CreateTransactionForm() {
 
   return (
     <form className='w-full' onSubmit={onSubmit} noValidate>
-      <h2 className='text-lg font-semibold text-[var(--text-primary)]'>Add a transaction</h2>
-      <p className='mb-4 text-sm text-[var(--text-secondary)]'>
-        Use this form for new and backdated entries.
-      </p>
+      {showHeading ? (
+        <>
+          <h2 className='text-base font-semibold text-[var(--text-primary)]'>Add a transaction</h2>
+          <p className='mb-4 text-sm text-[var(--text-secondary)]'>Use this form for new and backdated entries.</p>
+        </>
+      ) : null}
 
-      <div className='grid grid-cols-1 gap-x-3 md:grid-cols-2'>
-        <FormField label='Source account' htmlFor='transaction-account' error={errors.accountId?.message}>
-          <select id='transaction-account' className={SELECT_CLASS} {...register('accountId')}>
-            <option value=''>Select account</option>
-            {accounts?.map((account) => (
-              <option key={account.id} value={account.id}>
-                {account.name}
-              </option>
-            ))}
-          </select>
-        </FormField>
-
+      {isSheetMode ? (
+        <div className='mb-4 flex gap-2 overflow-x-auto scrollbar-none'>
+          {TYPE_OPTIONS.map((typeOption) => (
+            <button
+              key={typeOption.value}
+              type='button'
+              onClick={() => handleTypeChange(typeOption.value)}
+              className={[
+                'min-h-11 flex-1 rounded-xl px-3 py-2 text-xs font-semibold transition-all',
+                transactionType === typeOption.value
+                  ? 'bg-[var(--brand-primary)] text-white'
+                  : 'border border-[var(--bg-border)] bg-[var(--bg-elevated)] text-[var(--text-secondary)]',
+              ].join(' ')}
+            >
+              {typeOption.label}
+            </button>
+          ))}
+        </div>
+      ) : (
         <FormField label='Type' htmlFor='transaction-type' error={errors.type?.message}>
           <select
             id='transaction-type'
             className={SELECT_CLASS}
             {...typeField}
             onChange={(event) => {
-              onTypeChange(event);
-              const selectedType = event.target.value;
-              if (selectedType === 'transfer') {
-                setShowQuickCategory(false);
-                setQuickCategoryError(null);
-                setQuickCategoryName('');
-              }
+              onTypeFieldChange(event);
+              handleTypeChange(event.target.value as TransactionType);
             }}
           >
             <option value='expense'>Expense</option>
@@ -190,15 +219,30 @@ export function CreateTransactionForm() {
             <option value='refund'>Refund</option>
           </select>
         </FormField>
-      </div>
+      )}
 
       <div className='grid grid-cols-1 gap-x-3 md:grid-cols-2'>
         <FormField label='Amount (INR)' htmlFor='transaction-amount' error={errors.amountRupees?.message}>
-          <Input id='transaction-amount' inputMode='decimal' placeholder='0.00' {...register('amountRupees')} />
+          <Input
+            id='transaction-amount'
+            inputMode='decimal'
+            placeholder='0.00'
+            className={isSheetMode ? 'text-2xl font-bold placeholder:text-[var(--bg-border)]' : ''}
+            {...register('amountRupees')}
+          />
         </FormField>
 
-        <FormField label='Date and time' htmlFor='transaction-occurred-at' error={errors.occurredAt?.message}>
-          <Input id='transaction-occurred-at' type='datetime-local' {...register('occurredAt')} />
+        <FormField label='Source account' htmlFor='transaction-account' error={errors.accountId?.message}>
+          <select id='transaction-account' className={SELECT_CLASS} {...register('accountId')}>
+            <option value='' disabled hidden>
+              Select account
+            </option>
+            {accounts?.map((account) => (
+              <option key={account.id} value={account.id}>
+                {account.name}
+              </option>
+            ))}
+          </select>
         </FormField>
       </div>
 
@@ -206,7 +250,9 @@ export function CreateTransactionForm() {
         <>
           <FormField label='Destination account' htmlFor='transaction-to-account' error={errors.toAccountId?.message}>
             <select id='transaction-to-account' className={SELECT_CLASS} {...register('toAccountId')}>
-              <option value=''>Select destination account</option>
+              <option value='' disabled hidden>
+                Select destination account
+              </option>
               {destinationAccountOptions.map((account) => (
                 <option key={account.id} value={account.id}>
                   {account.name}
@@ -215,9 +261,7 @@ export function CreateTransactionForm() {
             </select>
           </FormField>
 
-          <p className='mb-4 text-xs text-[var(--text-muted)]'>
-            Transfer entries move balance between two of your accounts.
-          </p>
+          <p className='mb-4 text-xs text-[var(--text-muted)]'>Transfer entries move balance between two of your accounts.</p>
         </>
       ) : (
         <>
@@ -252,7 +296,7 @@ export function CreateTransactionForm() {
           </FormField>
 
           {showQuickCategory ? (
-            <div className='mb-4 rounded-[var(--input-radius)] border border-[var(--bg-border)] bg-[var(--bg-app)] p-3'>
+            <div className='mb-4 rounded-xl border border-[var(--bg-border)] bg-[var(--bg-elevated)] p-3'>
               <p className='m-0 text-xs text-[var(--text-secondary)]'>
                 New category type: <span className='font-semibold capitalize text-[var(--text-primary)]'>{categoryTypeForNewCategory}</span>
               </p>
@@ -267,7 +311,7 @@ export function CreateTransactionForm() {
                   type='button'
                   onClick={handleCreateCategory}
                   isLoading={isCreatingCategory}
-                  className='sm:w-auto'
+                  className='w-full sm:w-auto'
                 >
                   Save category
                 </Button>
@@ -279,7 +323,7 @@ export function CreateTransactionForm() {
                     setQuickCategoryError(null);
                     setQuickCategoryName('');
                   }}
-                  className='sm:w-auto'
+                  className='w-full sm:w-auto'
                 >
                   Cancel
                 </Button>
@@ -296,20 +340,18 @@ export function CreateTransactionForm() {
       )}
 
       <div className='grid grid-cols-1 gap-x-3 md:grid-cols-2'>
+        <FormField label='Date and time' htmlFor='transaction-occurred-at' error={errors.occurredAt?.message}>
+          <Input id='transaction-occurred-at' type='datetime-local' {...register('occurredAt')} />
+        </FormField>
+
         <FormField label='Merchant (optional)' htmlFor='transaction-merchant' error={errors.merchant?.message}>
           <Input id='transaction-merchant' placeholder='Store or source' {...register('merchant')} />
         </FormField>
-
-        <FormField label='Note (optional)' htmlFor='transaction-note' error={errors.note?.message}>
-          <textarea
-            id='transaction-note'
-            rows={1}
-            className='w-full resize-y rounded-[var(--input-radius)] border border-[var(--bg-border)] bg-[var(--bg-app)] px-3 py-2 text-[var(--text-primary)] outline-none focus:outline-2 focus:outline-[var(--brand-primary)] focus:outline-offset-1'
-            placeholder='Add context'
-            {...register('note')}
-          />
-        </FormField>
       </div>
+
+      <FormField label='Note (optional)' htmlFor='transaction-note' error={errors.note?.message}>
+        <Input id='transaction-note' placeholder='Add context' {...register('note')} />
+      </FormField>
 
       {formError ? (
         <p className='mb-4 text-sm text-[var(--negative)]' role='alert'>
@@ -317,7 +359,7 @@ export function CreateTransactionForm() {
         </p>
       ) : null}
 
-      <Button type='submit' isLoading={isSubmitting} className='w-full'>
+      <Button type='submit' isLoading={isSubmitting}>
         Add transaction
       </Button>
     </form>

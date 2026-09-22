@@ -3,8 +3,17 @@ import { useMemo } from 'react';
 import { useListAccountsQuery } from '../../../features/accounts/accountsApi';
 import { useListCategoriesQuery } from '../../../features/categories/categoriesApi';
 import { useListTransactionsQuery } from '../../../features/transactions/transactionsApi';
-import type { TransactionType } from '../../../features/transactions/transactionsApi';
+import type { Transaction, TransactionType } from '../../../features/transactions/transactionsApi';
 import { formatPaiseAsInr } from '../../../lib/money';
+import { Badge } from '../../atoms/Badge';
+import { Card } from '../../atoms/Card';
+
+const TYPE_ICON: Record<TransactionType, string> = {
+  expense: '🧾',
+  income: '💰',
+  transfer: '🔁',
+  refund: '↩️',
+};
 
 const TYPE_LABEL: Record<TransactionType, string> = {
   expense: 'Expense',
@@ -13,44 +22,79 @@ const TYPE_LABEL: Record<TransactionType, string> = {
   refund: 'Refund',
 };
 
-const TYPE_BADGE_CLASS: Record<TransactionType, string> = {
-  expense: 'border border-[color:rgba(248,113,113,0.35)] bg-[color:rgba(248,113,113,0.14)] text-[var(--negative)]',
-  income: 'border border-[color:rgba(74,222,128,0.35)] bg-[color:rgba(74,222,128,0.14)] text-[var(--positive)]',
-  transfer: 'border border-[color:rgba(96,165,250,0.35)] bg-[color:rgba(96,165,250,0.14)] text-[var(--info)]',
-  refund: 'border border-[color:rgba(74,222,128,0.35)] bg-[color:rgba(74,222,128,0.14)] text-[var(--positive)]',
-};
-
-function formatTimestamp(value: string): string {
-  return new Date(value).toLocaleString('en-IN', {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  });
-}
-
-function formatAmount(type: TransactionType, amountPaise: number): string {
-  const amount = formatPaiseAsInr(amountPaise);
-
-  if (type === 'income' || type === 'refund') {
-    return `+${amount}`;
-  }
-
+function getBadgeTone(type: TransactionType): 'negative' | 'positive' | 'info' {
   if (type === 'expense') {
-    return `-${amount}`;
+    return 'negative';
   }
 
-  return amount;
+  if (type === 'transfer') {
+    return 'info';
+  }
+
+  return 'positive';
 }
 
 function getAmountToneClass(type: TransactionType): string {
-  if (type === 'income' || type === 'refund') {
-    return 'text-[var(--positive)]';
-  }
-
   if (type === 'expense') {
     return 'text-[var(--negative)]';
   }
 
-  return 'text-[var(--text-primary)]';
+  if (type === 'transfer') {
+    return 'text-[var(--text-primary)]';
+  }
+
+  return 'text-[var(--positive)]';
+}
+
+function formatAmount(type: TransactionType, amountPaise: number): string {
+  const amount = formatPaiseAsInr(amountPaise);
+  if (type === 'expense') {
+    return `-${amount}`;
+  }
+  if (type === 'income' || type === 'refund') {
+    return `+${amount}`;
+  }
+  return amount;
+}
+
+function getDateGroupLabel(occurredAt: string): string {
+  const date = new Date(occurredAt);
+  const now = new Date();
+
+  const dateOnly = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const todayOnly = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const yesterdayOnly = new Date(todayOnly);
+  yesterdayOnly.setDate(todayOnly.getDate() - 1);
+
+  if (dateOnly.getTime() === todayOnly.getTime()) {
+    return 'Today';
+  }
+
+  if (dateOnly.getTime() === yesterdayOnly.getTime()) {
+    return 'Yesterday';
+  }
+
+  return date.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+function formatTime(value: string): string {
+  return new Date(value).toLocaleTimeString('en-IN', {
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function groupTransactionsByDate(transactions: Transaction[]): Array<{ label: string; items: Transaction[] }> {
+  const groups = new Map<string, Transaction[]>();
+
+  for (const transaction of transactions) {
+    const label = getDateGroupLabel(transaction.occurred_at);
+    const existingItems = groups.get(label) ?? [];
+    existingItems.push(transaction);
+    groups.set(label, existingItems);
+  }
+
+  return Array.from(groups.entries()).map(([label, items]) => ({ label, items }));
 }
 
 export function TransactionList() {
@@ -67,80 +111,79 @@ export function TransactionList() {
   }, [categories]);
 
   const visibleTransactions = useMemo(() => {
-    return (transactions ?? []).filter((transaction) => transaction.deleted_at === null);
+    return (transactions ?? [])
+      .filter((transaction) => transaction.deleted_at === null)
+      .sort((a, b) => new Date(b.occurred_at).getTime() - new Date(a.occurred_at).getTime());
   }, [transactions]);
 
+  const groupedTransactions = useMemo(() => {
+    return groupTransactionsByDate(visibleTransactions);
+  }, [visibleTransactions]);
+
+  if (isLoading) {
+    return <p className='text-sm text-[var(--text-secondary)]'>Loading transactions...</p>;
+  }
+
+  if (isError) {
+    return (
+      <p className='text-sm text-[var(--negative)]' role='alert'>
+        Could not load transactions.
+      </p>
+    );
+  }
+
+  if (visibleTransactions.length === 0) {
+    return (
+      <Card variant='elevated' className='border-dashed p-5'>
+        <p className='m-0 text-sm text-[var(--text-secondary)]'>No transactions yet. Add your first one from the Add button.</p>
+      </Card>
+    );
+  }
+
   return (
-    <div>
-      <header className='mb-4 flex items-center justify-between gap-3'>
-        <h2 className='text-lg font-semibold text-[var(--text-primary)]'>Recent transactions</h2>
-        <span className='rounded-full bg-[var(--bg-elevated)] px-2.5 py-1 text-xs font-semibold text-[var(--text-secondary)]'>
-          {visibleTransactions.length} total
-        </span>
-      </header>
+    <div className='space-y-5'>
+      {groupedTransactions.map((group) => (
+        <section key={group.label}>
+          <h3 className='mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-[var(--text-muted)]'>{group.label}</h3>
+          <ul className='m-0 flex list-none flex-col gap-3 p-0'>
+            {group.items.map((transaction) => {
+              const accountName = accountNameById.get(transaction.account_id) ?? 'Unknown account';
+              const categoryName = transaction.category_id ? categoryNameById.get(transaction.category_id) : null;
 
-      {isLoading ? <p className='text-[var(--text-secondary)]'>Loading transactions...</p> : null}
+              return (
+                <li key={transaction.id}>
+                  <Card className='p-4 active:scale-[0.98]'>
+                    <div className='flex items-center gap-3'>
+                      <div className='flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-full bg-[var(--bg-elevated)] text-xl'>
+                        {TYPE_ICON[transaction.type]}
+                      </div>
 
-      {!isLoading && isError ? (
-        <p className='text-[var(--negative)]' role='alert'>
-          Could not load transactions.
-        </p>
-      ) : null}
+                      <div className='min-w-0 flex-1'>
+                        <p className='truncate text-sm font-semibold text-[var(--text-primary)]'>
+                          {transaction.merchant || categoryName || TYPE_LABEL[transaction.type]}
+                        </p>
+                        <p className='mt-1 truncate text-xs text-[var(--text-muted)]'>
+                          {(categoryName ?? TYPE_LABEL[transaction.type]) + ' · ' + accountName}
+                        </p>
+                      </div>
 
-      {!isLoading && !isError && visibleTransactions.length === 0 ? (
-        <div className='rounded-[var(--card-radius)] border border-dashed border-[var(--bg-border)] bg-[var(--bg-elevated)] p-5'>
-          <p className='m-0 text-sm text-[var(--text-secondary)]'>No transactions yet. Add your first one from the form.</p>
-        </div>
-      ) : null}
-
-      {!isLoading && !isError && visibleTransactions.length > 0 ? (
-        <ul className='m-0 flex list-none flex-col gap-3 p-0'>
-          {visibleTransactions.map((transaction) => {
-            const accountName = accountNameById.get(transaction.account_id) ?? 'Unknown account';
-            const categoryName = transaction.category_id ? categoryNameById.get(transaction.category_id) : null;
-            const destinationAccountName = transaction.to_account_id
-              ? accountNameById.get(transaction.to_account_id)
-              : null;
-
-            return (
-              <li
-                key={transaction.id}
-                className='rounded-[var(--card-radius)] border border-[var(--bg-border)] bg-[var(--bg-app)] p-4 transition-colors hover:bg-[var(--bg-elevated)]'
-              >
-                <div className='flex flex-wrap items-center justify-between gap-3'>
-                  <div className='flex items-center gap-2'>
-                    <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${TYPE_BADGE_CLASS[transaction.type]}`}>
-                      {TYPE_LABEL[transaction.type]}
-                    </span>
-                    <span className='text-sm text-[var(--text-secondary)]'>{accountName}</span>
-                  </div>
-
-                  <span className={`tabular-nums text-base font-semibold ${getAmountToneClass(transaction.type)}`}>
-                    {formatAmount(transaction.type, transaction.amount_paise)}
-                  </span>
-                </div>
-
-                <div className='mt-2 flex flex-wrap items-center gap-2 text-xs text-[var(--text-secondary)]'>
-                  {categoryName ? (
-                    <span className='rounded-full bg-[var(--bg-elevated)] px-2 py-1'>{categoryName}</span>
-                  ) : null}
-                  {destinationAccountName ? (
-                    <span className='rounded-full bg-[var(--bg-elevated)] px-2 py-1'>To: {destinationAccountName}</span>
-                  ) : null}
-                  {transaction.merchant ? (
-                    <span className='rounded-full bg-[var(--bg-elevated)] px-2 py-1'>{transaction.merchant}</span>
-                  ) : null}
-                  <span className='rounded-full bg-[var(--bg-elevated)] px-2 py-1'>
-                    {formatTimestamp(transaction.occurred_at)}
-                  </span>
-                </div>
-
-                {transaction.note ? <p className='mt-2 text-sm text-[var(--text-secondary)]'>{transaction.note}</p> : null}
-              </li>
-            );
-          })}
-        </ul>
-      ) : null}
+                      <div className='text-right'>
+                        <p className={`text-sm font-bold ${getAmountToneClass(transaction.type)}`}>
+                          {formatAmount(transaction.type, transaction.amount_paise)}
+                        </p>
+                        <div className='mt-1 flex items-center justify-end gap-2'>
+                          <span className='text-xs text-[var(--text-muted)]'>{formatTime(transaction.occurred_at)}</span>
+                          <Badge tone={getBadgeTone(transaction.type)}>{TYPE_LABEL[transaction.type]}</Badge>
+                        </div>
+                      </div>
+                    </div>
+                  </Card>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      ))}
     </div>
   );
 }

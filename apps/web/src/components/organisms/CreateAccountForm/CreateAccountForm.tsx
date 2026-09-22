@@ -2,14 +2,22 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 
+import { useCreateAccountMutation } from '../../../features/accounts/accountsApi';
 import { Button } from '../../atoms/Button';
 import { Input } from '../../atoms/Input';
 import { FormField } from '../../molecules/FormField';
-import { useCreateAccountMutation } from '../../../features/accounts/accountsApi';
 import { createAccountSchema } from './CreateAccountForm.schema';
 import type { CreateAccountFormValues } from './CreateAccountForm.schema';
 
-export function CreateAccountForm() {
+export interface CreateAccountFormProps {
+  onSuccess?: () => void;
+  showHeading?: boolean;
+}
+
+const SELECT_CLASS =
+  'w-full min-h-12 rounded-xl border border-[var(--bg-border)] bg-[var(--bg-elevated)] px-3 py-3 text-base text-[var(--text-primary)] outline-none transition-colors focus:border-[var(--brand-primary)] focus:ring-1 focus:ring-[var(--brand-primary)]';
+
+export function CreateAccountForm({ onSuccess, showHeading = true }: CreateAccountFormProps) {
   const [createAccount] = useCreateAccountMutation();
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -33,43 +41,40 @@ export function CreateAccountForm() {
         currency: 'INR',
       }).unwrap();
       reset();
+      onSuccess?.();
     } catch {
       setFormError('Could not create the account.');
     }
   });
 
   return (
-    <form className="max-w-[360px]" onSubmit={onSubmit} noValidate>
-      <h2 className="mb-4 text-lg font-semibold text-[var(--text-primary)]">Add an account</h2>
+    <form className='w-full' onSubmit={onSubmit} noValidate>
+      {showHeading ? <h2 className='mb-4 text-base font-semibold text-[var(--text-primary)]'>Add an account</h2> : null}
 
-      <FormField label="Name" htmlFor="account-name" error={errors.name?.message}>
-        <Input id="account-name" {...register('name')} />
+      <FormField label='Name' htmlFor='account-name' error={errors.name?.message}>
+        <Input id='account-name' placeholder='Account name' {...register('name')} />
       </FormField>
 
-      <FormField label="Type" htmlFor="account-type" error={errors.type?.message}>
-        <select
-          id="account-type"
-          className="w-full rounded-[var(--input-radius)] border border-[var(--bg-border)] bg-[var(--bg-card)] px-3 py-2 text-[var(--text-primary)]"
-          {...register('type')}
-        >
-          <option value="wallet">Wallet</option>
-          <option value="cash">Cash</option>
-          <option value="bank">Bank</option>
-          <option value="card">Card</option>
+      <FormField label='Type' htmlFor='account-type' error={errors.type?.message}>
+        <select id='account-type' className={SELECT_CLASS} {...register('type')}>
+          <option value='wallet'>Wallet</option>
+          <option value='cash'>Cash</option>
+          <option value='bank'>Bank</option>
+          <option value='card'>Card</option>
         </select>
       </FormField>
 
-      <FormField label="Starting balance (INR)" htmlFor="account-balance" error={errors.balanceRupees?.message}>
-        <Input id="account-balance" inputMode="decimal" {...register('balanceRupees')} />
+      <FormField label='Starting balance (INR)' htmlFor='account-balance' error={errors.balanceRupees?.message}>
+        <Input id='account-balance' inputMode='decimal' placeholder='0.00' {...register('balanceRupees')} />
       </FormField>
 
       {formError ? (
-        <p className="mb-4 text-sm text-[var(--negative)]" role="alert">
+        <p className='mb-4 text-sm text-[var(--negative)]' role='alert'>
           {formError}
         </p>
       ) : null}
 
-      <Button type="submit" isLoading={isSubmitting}>
+      <Button type='submit' isLoading={isSubmitting}>
         Add account
       </Button>
     </form>

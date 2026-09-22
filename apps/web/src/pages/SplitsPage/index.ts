@@ -1,0 +1,1 @@
+export { SplitsPage } from './SplitsPage';
