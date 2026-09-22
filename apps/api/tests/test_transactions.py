@@ -3,6 +3,12 @@ from httpx import AsyncClient
 from tests.helpers import auth_headers, register_and_get_token
 
 
+async def _get_account_balance(client: AsyncClient, token: str, account_id: str) -> int:
+    response = await client.get(f'/api/v1/accounts/{account_id}', headers=auth_headers(token))
+    assert response.status_code == 200
+    return response.json()['balance_paise']
+
+
 async def test_transactions_router_smoke(client: AsyncClient) -> None:
     token = await register_and_get_token(client, 'transactions-smoke@example.com')
 
@@ -38,6 +44,8 @@ async def test_transactions_router_smoke(client: AsyncClient) -> None:
     assert create_response.status_code == 201
     transaction_id = create_response.json()['id']
 
+    assert await _get_account_balance(client, token, account_id) == 230100
+
     list_response = await client.get('/api/v1/transactions', headers=auth_headers(token))
     assert list_response.status_code == 200
     assert len(list_response.json()) == 1
@@ -53,9 +61,11 @@ async def test_transactions_router_smoke(client: AsyncClient) -> None:
     )
     assert patch_response.status_code == 200
     assert patch_response.json()['merchant'] == 'Cafe Updated'
+    assert await _get_account_balance(client, token, account_id) == 230100
 
     delete_response = await client.delete(f'/api/v1/transactions/{transaction_id}', headers=auth_headers(token))
     assert delete_response.status_code == 204
+    assert await _get_account_balance(client, token, account_id) == 250000
 
     get_after_delete_response = await client.get(f'/api/v1/transactions/{transaction_id}', headers=auth_headers(token))
     assert get_after_delete_response.status_code == 404
@@ -65,6 +75,7 @@ async def test_transactions_router_smoke(client: AsyncClient) -> None:
         headers=auth_headers(token),
     )
     assert restore_response.status_code == 204
+    assert await _get_account_balance(client, token, account_id) == 230100
 
     get_after_restore_response = await client.get(
         f'/api/v1/transactions/{transaction_id}',
@@ -105,3 +116,51 @@ async def test_transfer_requires_sufficient_source_balance(client: AsyncClient) 
         headers=auth_headers(token),
     )
     assert transfer_response.status_code == 400
+
+
+async def test_transfer_updates_balances_and_reapplies_on_update(client: AsyncClient) -> None:
+    token = await register_and_get_token(client, 'transfer-balance-flow@example.com')
+
+    source_response = await client.post(
+        '/api/v1/accounts',
+        json={'name': 'Source', 'type': 'bank', 'balance_paise': 10000, 'currency': 'INR'},
+        headers=auth_headers(token),
+    )
+    assert source_response.status_code == 201
+
+    destination_response = await client.post(
+        '/api/v1/accounts',
+        json={'name': 'Destination', 'type': 'bank', 'balance_paise': 3000, 'currency': 'INR'},
+        headers=auth_headers(token),
+    )
+    assert destination_response.status_code == 201
+
+    source_id = source_response.json()['id']
+    destination_id = destination_response.json()['id']
+
+    create_transfer_response = await client.post(
+        '/api/v1/transactions',
+        json={
+            'account_id': source_id,
+            'to_account_id': destination_id,
+            'type': 'transfer',
+            'amount_paise': 4000,
+            'occurred_at': '2026-09-22T12:30:00+05:30',
+        },
+        headers=auth_headers(token),
+    )
+    assert create_transfer_response.status_code == 201
+    transfer_id = create_transfer_response.json()['id']
+
+    assert await _get_account_balance(client, token, source_id) == 6000
+    assert await _get_account_balance(client, token, destination_id) == 7000
+
+    update_transfer_response = await client.patch(
+        f'/api/v1/transactions/{transfer_id}',
+        json={'amount_paise': 2500},
+        headers=auth_headers(token),
+    )
+    assert update_transfer_response.status_code == 200
+
+    assert await _get_account_balance(client, token, source_id) == 7500
+    assert await _get_account_balance(client, token, destination_id) == 5500

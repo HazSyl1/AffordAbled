@@ -49,6 +49,9 @@ class SqlAlchemyAccountRepository:
         if model is None or model.user_id != account.user_id:
             raise LookupError(str(account.id))
         model.name = account.name
+        model.type = account.type.value
+        model.balance_paise = account.balance_paise
+        model.currency = account.currency
         model.is_active = account.is_active
         model.updated_at = account.updated_at
         await self._session.commit()
