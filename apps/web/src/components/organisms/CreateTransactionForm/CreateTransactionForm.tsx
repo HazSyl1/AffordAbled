@@ -3,8 +3,13 @@ import { useMemo, useState } from 'react';
 import { useForm, useWatch } from 'react-hook-form';
 
 import { useListAccountsQuery } from '../../../features/accounts/accountsApi';
-import { useListCategoriesQuery } from '../../../features/categories/categoriesApi';
+import {
+  useCreateCategoryMutation,
+  useListCategoriesQuery,
+  type CategoryType,
+} from '../../../features/categories/categoriesApi';
 import { useCreateTransactionMutation } from '../../../features/transactions/transactionsApi';
+import type { TransactionType } from '../../../features/transactions/transactionsApi';
 import { Button } from '../../atoms/Button';
 import { Input } from '../../atoms/Input';
 import { FormField } from '../../molecules/FormField';
@@ -17,6 +22,15 @@ function getDefaultOccurredAt(): string {
   return localTimestamp.toISOString().slice(0, 16);
 }
 
+function getCategoryTypeForTransactionType(transactionType: TransactionType): CategoryType {
+  if (transactionType === 'income' || transactionType === 'refund') {
+    return 'income';
+  }
+  return 'expense';
+}
+
+const ADD_CATEGORY_OPTION = '__add_category__';
+
 const DEFAULT_VALUES: CreateTransactionFormValues = {
   accountId: '',
   type: 'expense',
@@ -28,17 +42,26 @@ const DEFAULT_VALUES: CreateTransactionFormValues = {
   note: '',
 };
 
+const SELECT_CLASS =
+  'w-full rounded-[var(--input-radius)] border border-[var(--bg-border)] bg-[var(--bg-app)] px-3 py-2 text-[var(--text-primary)] outline-none focus:outline-2 focus:outline-[var(--brand-primary)] focus:outline-offset-1';
+
 export function CreateTransactionForm() {
   const [createTransaction] = useCreateTransactionMutation();
+  const [createCategory, { isLoading: isCreatingCategory }] = useCreateCategoryMutation();
   const { data: accounts } = useListAccountsQuery();
   const { data: categories } = useListCategoriesQuery();
+
   const [formError, setFormError] = useState<string | null>(null);
+  const [quickCategoryName, setQuickCategoryName] = useState('');
+  const [quickCategoryError, setQuickCategoryError] = useState<string | null>(null);
+  const [showQuickCategory, setShowQuickCategory] = useState(false);
 
   const {
     control,
     register,
     handleSubmit,
     reset,
+    setValue,
     formState: { errors, isSubmitting },
   } = useForm<CreateTransactionFormValues>({
     resolver: zodResolver(createTransactionSchema),
@@ -71,6 +94,11 @@ export function CreateTransactionForm() {
     return accounts.filter((account) => account.id !== sourceAccountId);
   }, [accounts, sourceAccountId]);
 
+  const categoryTypeForNewCategory = useMemo(
+    () => getCategoryTypeForTransactionType(transactionType),
+    [transactionType],
+  );
+
   const onSubmit = handleSubmit(async (values) => {
     setFormError(null);
 
@@ -86,91 +114,202 @@ export function CreateTransactionForm() {
         note: values.note?.trim() || undefined,
       }).unwrap();
 
+      setShowQuickCategory(false);
+      setQuickCategoryName('');
+      setQuickCategoryError(null);
       reset({ ...DEFAULT_VALUES, occurredAt: getDefaultOccurredAt() });
     } catch {
       setFormError('Could not create the transaction.');
     }
   });
 
+  const { onChange: onTypeChange, ...typeField } = register('type');
+  const { onChange: onCategoryChange, ...categoryField } = register('categoryId');
+
+  const handleCreateCategory = async () => {
+    const name = quickCategoryName.trim();
+
+    if (!name) {
+      setQuickCategoryError('Category name is required.');
+      return;
+    }
+
+    setQuickCategoryError(null);
+
+    try {
+      const category = await createCategory({
+        name,
+        type: categoryTypeForNewCategory,
+      }).unwrap();
+
+      setShowQuickCategory(false);
+      setQuickCategoryName('');
+      setValue('categoryId', category.id, { shouldValidate: true });
+    } catch {
+      setQuickCategoryError('Could not add category. Try a different name.');
+    }
+  };
+
   return (
-    <form className='max-w-[420px]' onSubmit={onSubmit} noValidate>
-      <h2 className='mb-4 text-lg font-semibold text-[var(--text-primary)]'>Add a transaction</h2>
+    <form className='w-full' onSubmit={onSubmit} noValidate>
+      <h2 className='text-lg font-semibold text-[var(--text-primary)]'>Add a transaction</h2>
+      <p className='mb-4 text-sm text-[var(--text-secondary)]'>
+        Use this form for new and backdated entries.
+      </p>
 
-      <FormField label='Source account' htmlFor='transaction-account' error={errors.accountId?.message}>
-        <select
-          id='transaction-account'
-          className='w-full rounded-[var(--input-radius)] border border-[var(--bg-border)] bg-[var(--bg-card)] px-3 py-2 text-[var(--text-primary)]'
-          {...register('accountId')}
-        >
-          <option value=''>Select account</option>
-          {accounts?.map((account) => (
-            <option key={account.id} value={account.id}>
-              {account.name}
-            </option>
-          ))}
-        </select>
-      </FormField>
-
-      <FormField label='Type' htmlFor='transaction-type' error={errors.type?.message}>
-        <select
-          id='transaction-type'
-          className='w-full rounded-[var(--input-radius)] border border-[var(--bg-border)] bg-[var(--bg-card)] px-3 py-2 text-[var(--text-primary)]'
-          {...register('type')}
-        >
-          <option value='expense'>Expense</option>
-          <option value='income'>Income</option>
-          <option value='transfer'>Transfer</option>
-          <option value='refund'>Refund</option>
-        </select>
-      </FormField>
-
-      <FormField label='Amount (INR)' htmlFor='transaction-amount' error={errors.amountRupees?.message}>
-        <Input id='transaction-amount' inputMode='decimal' {...register('amountRupees')} />
-      </FormField>
-
-      <FormField label='Date and time' htmlFor='transaction-occurred-at' error={errors.occurredAt?.message}>
-        <Input id='transaction-occurred-at' type='datetime-local' {...register('occurredAt')} />
-      </FormField>
-
-      {transactionType === 'transfer' ? (
-        <FormField label='Destination account' htmlFor='transaction-to-account' error={errors.toAccountId?.message}>
-          <select
-            id='transaction-to-account'
-            className='w-full rounded-[var(--input-radius)] border border-[var(--bg-border)] bg-[var(--bg-card)] px-3 py-2 text-[var(--text-primary)]'
-            {...register('toAccountId')}
-          >
-            <option value=''>Select destination account</option>
-            {destinationAccountOptions.map((account) => (
+      <div className='grid grid-cols-1 gap-x-3 md:grid-cols-2'>
+        <FormField label='Source account' htmlFor='transaction-account' error={errors.accountId?.message}>
+          <select id='transaction-account' className={SELECT_CLASS} {...register('accountId')}>
+            <option value=''>Select account</option>
+            {accounts?.map((account) => (
               <option key={account.id} value={account.id}>
                 {account.name}
               </option>
             ))}
           </select>
         </FormField>
-      ) : (
-        <FormField label='Category' htmlFor='transaction-category' error={errors.categoryId?.message}>
+
+        <FormField label='Type' htmlFor='transaction-type' error={errors.type?.message}>
           <select
-            id='transaction-category'
-            className='w-full rounded-[var(--input-radius)] border border-[var(--bg-border)] bg-[var(--bg-card)] px-3 py-2 text-[var(--text-primary)]'
-            {...register('categoryId')}
+            id='transaction-type'
+            className={SELECT_CLASS}
+            {...typeField}
+            onChange={(event) => {
+              onTypeChange(event);
+              const selectedType = event.target.value;
+              if (selectedType === 'transfer') {
+                setShowQuickCategory(false);
+                setQuickCategoryError(null);
+                setQuickCategoryName('');
+              }
+            }}
           >
-            <option value=''>Select category</option>
-            {filteredCategories.map((category) => (
-              <option key={category.id} value={category.id}>
-                {category.name}
-              </option>
-            ))}
+            <option value='expense'>Expense</option>
+            <option value='income'>Income</option>
+            <option value='transfer'>Transfer</option>
+            <option value='refund'>Refund</option>
           </select>
         </FormField>
+      </div>
+
+      <div className='grid grid-cols-1 gap-x-3 md:grid-cols-2'>
+        <FormField label='Amount (INR)' htmlFor='transaction-amount' error={errors.amountRupees?.message}>
+          <Input id='transaction-amount' inputMode='decimal' placeholder='0.00' {...register('amountRupees')} />
+        </FormField>
+
+        <FormField label='Date and time' htmlFor='transaction-occurred-at' error={errors.occurredAt?.message}>
+          <Input id='transaction-occurred-at' type='datetime-local' {...register('occurredAt')} />
+        </FormField>
+      </div>
+
+      {transactionType === 'transfer' ? (
+        <>
+          <FormField label='Destination account' htmlFor='transaction-to-account' error={errors.toAccountId?.message}>
+            <select id='transaction-to-account' className={SELECT_CLASS} {...register('toAccountId')}>
+              <option value=''>Select destination account</option>
+              {destinationAccountOptions.map((account) => (
+                <option key={account.id} value={account.id}>
+                  {account.name}
+                </option>
+              ))}
+            </select>
+          </FormField>
+
+          <p className='mb-4 text-xs text-[var(--text-muted)]'>
+            Transfer entries move balance between two of your accounts.
+          </p>
+        </>
+      ) : (
+        <>
+          <FormField label='Category' htmlFor='transaction-category' error={errors.categoryId?.message}>
+            <select
+              id='transaction-category'
+              className={SELECT_CLASS}
+              {...categoryField}
+              onChange={(event) => {
+                if (event.target.value === ADD_CATEGORY_OPTION) {
+                  setShowQuickCategory(true);
+                  setQuickCategoryError(null);
+                  setValue('categoryId', '', { shouldValidate: true });
+                  return;
+                }
+
+                setShowQuickCategory(false);
+                setQuickCategoryError(null);
+                onCategoryChange(event);
+              }}
+            >
+              <option value={ADD_CATEGORY_OPTION}>+ Add category</option>
+              <option value='' disabled hidden>
+                Select category
+              </option>
+              {filteredCategories.map((category) => (
+                <option key={category.id} value={category.id}>
+                  {category.name}
+                </option>
+              ))}
+            </select>
+          </FormField>
+
+          {showQuickCategory ? (
+            <div className='mb-4 rounded-[var(--input-radius)] border border-[var(--bg-border)] bg-[var(--bg-app)] p-3'>
+              <p className='m-0 text-xs text-[var(--text-secondary)]'>
+                New category type: <span className='font-semibold capitalize text-[var(--text-primary)]'>{categoryTypeForNewCategory}</span>
+              </p>
+              <div className='mt-2 flex flex-col gap-2 sm:flex-row'>
+                <Input
+                  id='quick-category-name'
+                  value={quickCategoryName}
+                  onChange={(event) => setQuickCategoryName(event.target.value)}
+                  placeholder='Category name'
+                />
+                <Button
+                  type='button'
+                  onClick={handleCreateCategory}
+                  isLoading={isCreatingCategory}
+                  className='sm:w-auto'
+                >
+                  Save category
+                </Button>
+                <Button
+                  type='button'
+                  variant='secondary'
+                  onClick={() => {
+                    setShowQuickCategory(false);
+                    setQuickCategoryError(null);
+                    setQuickCategoryName('');
+                  }}
+                  className='sm:w-auto'
+                >
+                  Cancel
+                </Button>
+              </div>
+
+              {quickCategoryError ? (
+                <p className='mt-2 text-sm text-[var(--negative)]' role='alert'>
+                  {quickCategoryError}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+        </>
       )}
 
-      <FormField label='Merchant (optional)' htmlFor='transaction-merchant' error={errors.merchant?.message}>
-        <Input id='transaction-merchant' {...register('merchant')} />
-      </FormField>
+      <div className='grid grid-cols-1 gap-x-3 md:grid-cols-2'>
+        <FormField label='Merchant (optional)' htmlFor='transaction-merchant' error={errors.merchant?.message}>
+          <Input id='transaction-merchant' placeholder='Store or source' {...register('merchant')} />
+        </FormField>
 
-      <FormField label='Note (optional)' htmlFor='transaction-note' error={errors.note?.message}>
-        <Input id='transaction-note' {...register('note')} />
-      </FormField>
+        <FormField label='Note (optional)' htmlFor='transaction-note' error={errors.note?.message}>
+          <textarea
+            id='transaction-note'
+            rows={1}
+            className='w-full resize-y rounded-[var(--input-radius)] border border-[var(--bg-border)] bg-[var(--bg-app)] px-3 py-2 text-[var(--text-primary)] outline-none focus:outline-2 focus:outline-[var(--brand-primary)] focus:outline-offset-1'
+            placeholder='Add context'
+            {...register('note')}
+          />
+        </FormField>
+      </div>
 
       {formError ? (
         <p className='mb-4 text-sm text-[var(--negative)]' role='alert'>
@@ -178,7 +317,7 @@ export function CreateTransactionForm() {
         </p>
       ) : null}
 
-      <Button type='submit' isLoading={isSubmitting}>
+      <Button type='submit' isLoading={isSubmitting} className='w-full'>
         Add transaction
       </Button>
     </form>
