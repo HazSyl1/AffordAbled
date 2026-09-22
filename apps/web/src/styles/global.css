@@ -30,12 +30,34 @@
 
 * {
   box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
 }
 
 body {
   margin: 0;
-  background: var(--bg-app);
+  min-height: 100vh;
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+  background:
+    radial-gradient(1200px circle at 15% -20%, rgba(168, 85, 247, 0.14), transparent 55%),
+    radial-gradient(900px circle at 100% 0%, rgba(96, 165, 250, 0.08), transparent 50%),
+    var(--bg-app);
   color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+.scrollbar-none {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
+.touch-scroll {
+  -webkit-overflow-scrolling: touch;
 }
 
 #root {

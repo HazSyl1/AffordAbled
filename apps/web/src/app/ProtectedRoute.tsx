@@ -1,5 +1,6 @@
 import { Navigate, Outlet } from 'react-router-dom';
 
+import { Layout } from '../components/templates/Layout';
 import { useAppSelector } from './hooks';
 
 export function ProtectedRoute() {
@@ -9,5 +10,9 @@ export function ProtectedRoute() {
     return <Navigate to="/login" replace />;
   }
 
-  return <Outlet />;
+  return (
+    <Layout>
+      <Outlet />
+    </Layout>
+  );
 }

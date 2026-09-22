@@ -43,6 +43,7 @@ async def test_transactions_router_smoke(client: AsyncClient) -> None:
     )
     assert create_response.status_code == 201
     transaction_id = create_response.json()['id']
+    assert create_response.json()['occurred_at'].startswith('2026-09-22')
 
     assert await _get_account_balance(client, token, account_id) == 230100
 
