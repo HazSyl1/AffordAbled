@@ -1,0 +1,46 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.suo
+*.swp
+*.swo
+
+# Environment / secrets
+**/.env
+**/.env.*
+!**/.env.example
+!**/.env.sample
+
+# Python
+**/.venv/
+**/venv/
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+**/.ruff_cache/
+**/.mypy_cache/
+**/*.egg-info/
+.coverage
+coverage.xml
+htmlcov/
+
+# Node / frontend
+**/node_modules/
+**/dist/
+**/dist-ssr/
+**/.npm/
+**/.pnpm-store/
+**/.yarn/
+
+# Logs / runtime files
+**/logs/
+**/*.log
+apps/web/dev_out.log
+apps/web/dev_err.log
+
+# Temporary files
+*.tmp
+*.bak
