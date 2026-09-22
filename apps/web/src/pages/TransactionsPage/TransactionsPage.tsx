@@ -2,12 +2,12 @@ import { Link } from 'react-router-dom';
 
 import { useAppDispatch } from '../../app/hooks';
 import { Button } from '../../components/atoms/Button';
-import { AccountList } from '../../components/organisms/AccountList';
-import { CreateAccountForm } from '../../components/organisms/CreateAccountForm';
+import { CreateTransactionForm } from '../../components/organisms/CreateTransactionForm';
+import { TransactionList } from '../../components/organisms/TransactionList';
 import { useLogoutMutation } from '../../features/auth/authApi';
 import { clearCredentials } from '../../features/auth/authSlice';
 
-export function DashboardPage() {
+export function TransactionsPage() {
   const dispatch = useAppDispatch();
   const [logout] = useLogoutMutation();
 
@@ -20,18 +20,17 @@ export function DashboardPage() {
   };
 
   return (
-    <div className='mx-auto max-w-[640px] px-4 py-6'>
-      <header className='mb-6 flex items-center justify-between'>
-        <h1 className='text-[var(--text-primary)]'>Accounts</h1>
+    <div className='mx-auto max-w-[860px] px-4 py-6'>
+      <header className='mb-6 flex flex-wrap items-center justify-between gap-3'>
+        <h1 className='text-[var(--text-primary)]'>Transactions</h1>
 
         <div className='flex items-center gap-2'>
           <Link
-            to='/transactions'
+            to='/'
             className='inline-flex items-center justify-center rounded-[var(--btn-radius)] border border-[var(--bg-border)] px-4 py-2 font-semibold text-[var(--text-primary)] hover:bg-[var(--bg-elevated)]'
           >
-            Transactions
+            Accounts
           </Link>
-
           <Button variant='secondary' onClick={handleLogout}>
             Log out
           </Button>
@@ -39,11 +38,11 @@ export function DashboardPage() {
       </header>
 
       <section className='mb-6'>
-        <AccountList />
+        <TransactionList />
       </section>
 
       <section className='mb-6'>
-        <CreateAccountForm />
+        <CreateTransactionForm />
       </section>
     </div>
   );
