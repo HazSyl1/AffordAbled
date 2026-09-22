@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from app.application.dto import CreateTransactionInput, UpdateTransactionInput
-from app.domain.entities import CategoryType, Transaction, TransactionType
+from app.domain.entities import Account, CategoryType, Transaction, TransactionType
 from app.domain.exceptions import (
     AccountNotFoundError,
     CategoryNotFoundError,
@@ -47,6 +47,8 @@ class TransactionService:
             created_at=now,
             updated_at=now,
         )
+
+        await self._apply_balance_effect(transaction)
         return await self.transaction_repository.create(transaction)
 
     async def list_transactions(self, user_id: uuid.UUID) -> list[Transaction]:
@@ -69,6 +71,7 @@ class TransactionService:
         data: UpdateTransactionInput,
     ) -> Transaction:
         transaction = await self.get_transaction(user_id, transaction_id)
+        await self._revert_balance_effect(transaction)
 
         account_id = data.account_id if data.account_id is not None else transaction.account_id
         transaction_type = data.type if data.type is not None else transaction.type
@@ -99,14 +102,36 @@ class TransactionService:
             transaction.note = data.note
 
         transaction.updated_at = datetime.now(UTC)
+        await self._apply_balance_effect(transaction)
         return await self.transaction_repository.update(transaction)
 
     async def soft_delete_transaction(self, user_id: uuid.UUID, transaction_id: uuid.UUID) -> None:
+        transaction = await self.get_transaction(user_id, transaction_id)
+        await self._revert_balance_effect(transaction)
+
         deleted = await self.transaction_repository.soft_delete_for_user(transaction_id, user_id)
         if not deleted:
             raise TransactionNotFoundError(str(transaction_id))
 
     async def restore_transaction(self, user_id: uuid.UUID, transaction_id: uuid.UUID) -> None:
+        transaction = await self.transaction_repository.get_for_user(
+            transaction_id,
+            user_id,
+            include_deleted=True,
+        )
+        if transaction is None or transaction.deleted_at is None:
+            raise TransactionNotFoundError(str(transaction_id))
+
+        await self._validate_transaction(
+            user_id=user_id,
+            account_id=transaction.account_id,
+            transaction_type=transaction.type,
+            amount_paise=transaction.amount_paise,
+            category_id=transaction.category_id,
+            to_account_id=transaction.to_account_id,
+        )
+        await self._apply_balance_effect(transaction)
+
         restored = await self.transaction_repository.restore_for_user(transaction_id, user_id)
         if not restored:
             raise TransactionNotFoundError(str(transaction_id))
@@ -161,3 +186,58 @@ class TransactionService:
             and category.type != CategoryType.INCOME
         ):
             raise InvalidTransactionError('income and refund transactions require an income category')
+
+    async def _apply_balance_effect(self, transaction: Transaction) -> None:
+        if transaction.type == TransactionType.TRANSFER:
+            source_account = await self._get_account_for_user(transaction.user_id, transaction.account_id)
+            destination_account_id = transaction.to_account_id
+            if destination_account_id is None:
+                raise InvalidTransactionError('transfer transactions require to_account_id')
+            destination_account = await self._get_account_for_user(transaction.user_id, destination_account_id)
+
+            if source_account.balance_paise < transaction.amount_paise:
+                raise InvalidTransactionError('insufficient source account balance for transfer')
+
+            source_account.balance_paise -= transaction.amount_paise
+            destination_account.balance_paise += transaction.amount_paise
+            await self._save_account(source_account)
+            await self._save_account(destination_account)
+            return
+
+        source_account = await self._get_account_for_user(transaction.user_id, transaction.account_id)
+        if transaction.type == TransactionType.EXPENSE:
+            source_account.balance_paise -= transaction.amount_paise
+        else:
+            source_account.balance_paise += transaction.amount_paise
+        await self._save_account(source_account)
+
+    async def _revert_balance_effect(self, transaction: Transaction) -> None:
+        if transaction.type == TransactionType.TRANSFER:
+            source_account = await self._get_account_for_user(transaction.user_id, transaction.account_id)
+            destination_account_id = transaction.to_account_id
+            if destination_account_id is None:
+                raise InvalidTransactionError('transfer transactions require to_account_id')
+            destination_account = await self._get_account_for_user(transaction.user_id, destination_account_id)
+
+            source_account.balance_paise += transaction.amount_paise
+            destination_account.balance_paise -= transaction.amount_paise
+            await self._save_account(source_account)
+            await self._save_account(destination_account)
+            return
+
+        source_account = await self._get_account_for_user(transaction.user_id, transaction.account_id)
+        if transaction.type == TransactionType.EXPENSE:
+            source_account.balance_paise += transaction.amount_paise
+        else:
+            source_account.balance_paise -= transaction.amount_paise
+        await self._save_account(source_account)
+
+    async def _get_account_for_user(self, user_id: uuid.UUID, account_id: uuid.UUID) -> Account:
+        account = await self.account_repository.get_for_user(account_id, user_id)
+        if account is None:
+            raise AccountNotFoundError(str(account_id))
+        return account
+
+    async def _save_account(self, account: Account) -> None:
+        account.updated_at = datetime.now(UTC)
+        await self.account_repository.update(account)
