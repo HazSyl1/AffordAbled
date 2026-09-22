@@ -1,0 +1,10 @@
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = [
+    "B008", # FastAPI's Depends()/Query() in argument defaults is the documented, idiomatic DI pattern.
+    "UP042", # `class X(str, Enum)` (not StrEnum) keeps Pydantic v2 JSON schema/enum-value behavior unchanged.
+]
