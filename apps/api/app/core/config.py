@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     app_env: str = "development"
 
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/affordable"
+    redis_url: str = "redis://localhost:6379/0"
+    celery_broker_url: str = "redis://localhost:6379/0"
 
     jwt_secret_key: str = "dev-only-change-me"
     access_token_expire_minutes: int = 15
