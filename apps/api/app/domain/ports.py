@@ -30,3 +30,7 @@ class GoogleProfile:
 
 class GoogleOAuthClient(Protocol):
     async def exchange_code(self, code: str, redirect_uri: str) -> GoogleProfile: ...
+
+
+class SpeechToTextClient(Protocol):
+    async def transcribe(self, audio_bytes: bytes, *, content_type: str, locale: str) -> str: ...

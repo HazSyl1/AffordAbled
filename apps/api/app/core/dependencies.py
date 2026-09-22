@@ -3,20 +3,22 @@ from __future__ import annotations
 import uuid
 from collections.abc import AsyncGenerator
 
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.services.account_service import AccountService
 from app.application.services.auth_service import AuthService
 from app.application.services.category_service import CategoryService
+from app.application.services.speech_service import SpeechService
 from app.application.services.transaction_service import TransactionService
 from app.core.config import Settings, get_settings
-from app.core.security import BEARER_PREFIX
 from app.domain.entities import User
 from app.domain.exceptions import InvalidTokenError
 from app.infrastructure.auth.google_oauth import GoogleAuthClient
 from app.infrastructure.auth.jwt_service import JwtTokenService
 from app.infrastructure.auth.password_hasher import Argon2PasswordHasher
+from app.infrastructure.azure.azure_speech_to_text import AzureSpeechToTextClient
 from app.infrastructure.database.repositories.sqlalchemy_account_repository import SqlAlchemyAccountRepository
 from app.infrastructure.database.repositories.sqlalchemy_category_repository import SqlAlchemyCategoryRepository
 from app.infrastructure.database.repositories.sqlalchemy_refresh_session_repository import (
@@ -29,6 +31,9 @@ from app.infrastructure.database.session import get_session
 
 async def get_db(session: AsyncSession = Depends(get_session)) -> AsyncGenerator[AsyncSession]:
     yield session
+
+
+access_token_scheme = HTTPBearer(auto_error=False)
 
 
 def get_settings_dependency() -> Settings:
@@ -65,6 +70,10 @@ def get_token_service(settings: Settings = Depends(get_settings_dependency)) -> 
 
 def get_google_oauth_client(settings: Settings = Depends(get_settings_dependency)) -> GoogleAuthClient:
     return GoogleAuthClient(settings)
+
+
+def get_speech_to_text_client(settings: Settings = Depends(get_settings_dependency)) -> AzureSpeechToTextClient:
+    return AzureSpeechToTextClient(settings)
 
 
 def get_auth_service(
@@ -107,15 +116,24 @@ def get_transaction_service(
     )
 
 
+def get_speech_service(
+    speech_to_text_client: AzureSpeechToTextClient = Depends(get_speech_to_text_client),
+) -> SpeechService:
+    return SpeechService(speech_to_text_client=speech_to_text_client)
+
+
 async def get_current_user(
-    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(access_token_scheme),
     token_service: JwtTokenService = Depends(get_token_service),
     user_repository: SqlAlchemyUserRepository = Depends(get_user_repository),
 ) -> User:
-    auth_header = request.headers.get('Authorization')
-    if not auth_header or not auth_header.startswith(BEARER_PREFIX):
+    if credentials is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Not authenticated')
-    token = auth_header[len(BEARER_PREFIX) :]
+
+    token = credentials.credentials
+    if not token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Not authenticated')
+
     try:
         user_id: uuid.UUID = token_service.decode_access_token(token)
     except InvalidTokenError as exc:

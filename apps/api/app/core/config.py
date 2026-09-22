@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     azure_storage_container_name: str = ""
     azure_document_intelligence_endpoint: str = ""
     azure_document_intelligence_key: str = ""
+    azure_speech_key: str = ""
+    azure_speech_region: str = "centralindia"
     azure_openai_endpoint: str = ""
     azure_openai_api_key: str = ""
     azure_openai_deployment: str = ""

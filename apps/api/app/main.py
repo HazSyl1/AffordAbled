@@ -9,7 +9,10 @@ from app.presentation.router import api_router
 
 def create_app() -> FastAPI:
     settings = get_settings()
-    app = FastAPI(title="AffordAbled API")
+    app = FastAPI(
+        title="AffordAbled API",
+        swagger_ui_parameters={"persistAuthorization": True},
+    )
 
     register_middleware(app, settings)
     register_exception_handlers(app)

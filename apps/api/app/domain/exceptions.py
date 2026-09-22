@@ -28,3 +28,15 @@ class TransactionNotFoundError(DomainError):
 
 class InvalidTransactionError(DomainError):
     'Raised when transaction fields violate deterministic business rules.'
+
+
+class InvalidSpeechInputError(DomainError):
+    'Raised when uploaded voice input is missing or unsupported.'
+
+
+class SpeechServiceNotConfiguredError(DomainError):
+    'Raised when speech service credentials/region are missing.'
+
+
+class SpeechTranscriptionError(DomainError):
+    'Raised when speech-to-text provider fails to produce a transcript.'

@@ -13,8 +13,11 @@ from app.domain.exceptions import (
     CategoryNotFoundError,
     DomainError,
     InvalidCredentialsError,
+    InvalidSpeechInputError,
     InvalidTokenError,
     InvalidTransactionError,
+    SpeechServiceNotConfiguredError,
+    SpeechTranscriptionError,
     TransactionNotFoundError,
     UserAlreadyExistsError,
 )
@@ -23,8 +26,11 @@ _EXCEPTION_STATUS_MAP: dict[type[DomainError], int] = {
     AccountNotFoundError: 404,
     CategoryNotFoundError: 404,
     InvalidCredentialsError: 401,
+    InvalidSpeechInputError: 400,
     InvalidTokenError: 401,
     InvalidTransactionError: 400,
+    SpeechServiceNotConfiguredError: 503,
+    SpeechTranscriptionError: 502,
     TransactionNotFoundError: 404,
     UserAlreadyExistsError: 409,
 }
