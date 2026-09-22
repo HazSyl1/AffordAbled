@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import uuid
 
@@ -12,6 +12,7 @@ from app.domain.exceptions import (
     AccountNotFoundError,
     CategoryNotFoundError,
     DomainError,
+    InvalidChatInputError,
     InvalidCredentialsError,
     InvalidSpeechInputError,
     InvalidTokenError,
@@ -26,6 +27,7 @@ _EXCEPTION_STATUS_MAP: dict[type[DomainError], int] = {
     AccountNotFoundError: 404,
     CategoryNotFoundError: 404,
     InvalidCredentialsError: 401,
+    InvalidChatInputError: 400,
     InvalidSpeechInputError: 400,
     InvalidTokenError: 401,
     InvalidTransactionError: 400,
@@ -61,3 +63,4 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def handle_domain_error(request: Request, exc: DomainError) -> JSONResponse:
         status_code = _EXCEPTION_STATUS_MAP.get(type(exc), 400)
         return JSONResponse(status_code=status_code, content={'detail': str(exc) or exc.__class__.__name__})
+

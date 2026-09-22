@@ -34,6 +34,10 @@ class InvalidSpeechInputError(DomainError):
     'Raised when uploaded voice input is missing or unsupported.'
 
 
+class InvalidChatInputError(DomainError):
+    'Raised when chat input is missing or invalid.'
+
+
 class SpeechServiceNotConfiguredError(DomainError):
     'Raised when speech service credentials/region are missing.'
 

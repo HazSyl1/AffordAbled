@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncGenerator
@@ -10,11 +10,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.application.services.account_service import AccountService
 from app.application.services.auth_service import AuthService
 from app.application.services.category_service import CategoryService
+from app.application.services.chat_service import ChatService
 from app.application.services.speech_service import SpeechService
 from app.application.services.transaction_service import TransactionService
 from app.core.config import Settings, get_settings
 from app.domain.entities import User
 from app.domain.exceptions import InvalidTokenError
+from app.infrastructure.ai.postgres_checkpointer import LangGraphPostgresCheckpointer
 from app.infrastructure.auth.google_oauth import GoogleAuthClient
 from app.infrastructure.auth.jwt_service import JwtTokenService
 from app.infrastructure.auth.password_hasher import Argon2PasswordHasher
@@ -74,6 +76,16 @@ def get_google_oauth_client(settings: Settings = Depends(get_settings_dependency
 
 def get_speech_to_text_client(settings: Settings = Depends(get_settings_dependency)) -> AzureSpeechToTextClient:
     return AzureSpeechToTextClient(settings)
+
+
+def get_chat_checkpointer(db: AsyncSession = Depends(get_db)) -> LangGraphPostgresCheckpointer:
+    return LangGraphPostgresCheckpointer(db)
+
+
+def get_chat_service(
+    checkpointer: LangGraphPostgresCheckpointer = Depends(get_chat_checkpointer),
+) -> ChatService:
+    return ChatService(checkpointer=checkpointer)
 
 
 def get_auth_service(
@@ -142,3 +154,6 @@ async def get_current_user(
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid or expired token')
     return user
+
+
+

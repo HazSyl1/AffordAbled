@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+﻿from fastapi import FastAPI
 from httpx import AsyncClient
 
 from app.core.dependencies import get_speech_service
@@ -57,3 +57,52 @@ async def test_chat_voice_rejects_unsupported_audio_format(client: AsyncClient) 
 
     assert response.status_code == 400
     assert response.json()['detail'] == 'Unsupported audio format. Use WAV (audio/wav) or OGG/Opus (audio/ogg).'
+
+
+async def test_chat_router_round_trip_persists_thread_state(client: AsyncClient) -> None:
+    token = await register_and_get_token(client, 'chat-thread-persistence@example.com')
+
+    first_response = await client.post(
+        '/api/v1/chat',
+        json={'message': 'I paid rent today'},
+        headers=auth_headers(token),
+    )
+
+    assert first_response.status_code == 200
+    first_payload = first_response.json()
+    thread_id = first_payload['thread_id']
+    assert thread_id
+
+    second_response = await client.post(
+        '/api/v1/chat',
+        json={'message': 'What did I just tell you?', 'thread_id': thread_id},
+        headers=auth_headers(token),
+    )
+
+    assert second_response.status_code == 200
+    second_payload = second_response.json()
+    assert second_payload['thread_id'] == thread_id
+    assert 'I paid rent today' in second_payload['message']
+
+
+async def test_chat_router_isolates_thread_state_per_user(client: AsyncClient) -> None:
+    first_user_token = await register_and_get_token(client, 'chat-isolation-a@example.com')
+    second_user_token = await register_and_get_token(client, 'chat-isolation-b@example.com')
+
+    first_user_response = await client.post(
+        '/api/v1/chat',
+        json={'message': 'Remember this secret phrase'},
+        headers=auth_headers(first_user_token),
+    )
+
+    assert first_user_response.status_code == 200
+    shared_thread_id = first_user_response.json()['thread_id']
+
+    second_user_response = await client.post(
+        '/api/v1/chat',
+        json={'message': 'Do you remember anything?', 'thread_id': shared_thread_id},
+        headers=auth_headers(second_user_token),
+    )
+
+    assert second_user_response.status_code == 200
+    assert 'Earlier you mentioned' not in second_user_response.json()['message']

@@ -34,3 +34,21 @@ class GoogleOAuthClient(Protocol):
 
 class SpeechToTextClient(Protocol):
     async def transcribe(self, audio_bytes: bytes, *, content_type: str, locale: str) -> str: ...
+
+
+@dataclass
+class ChatCheckpointMessage:
+    role: str
+    content: str
+
+
+class ConversationCheckpointer(Protocol):
+    async def load_messages(self, *, user_id: uuid.UUID, thread_id: str) -> list[ChatCheckpointMessage]: ...
+
+    async def save_messages(
+        self,
+        *,
+        user_id: uuid.UUID,
+        thread_id: str,
+        messages: list[ChatCheckpointMessage],
+    ) -> None: ...
