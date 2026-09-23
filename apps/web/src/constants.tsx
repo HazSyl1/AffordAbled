@@ -36,6 +36,7 @@ export type DashboardQuickActionKey = (typeof DASHBOARD_QUICK_ACTIONS)[number]['
 
 export const DASHBOARD_CHAT_UI_TEXT = {
   assistantTitle: 'AI Assistant',
+  closeButton: 'Close',
   inputPlaceholder: 'Type your finance question...',
   sendButton: 'Send',
   imageComingSoon: 'Soon',

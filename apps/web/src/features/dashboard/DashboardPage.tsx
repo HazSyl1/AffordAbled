@@ -208,6 +208,56 @@ export function DashboardPage() {
     }
   };
 
+  const renderChatAssistantContent = () => (
+    <div className='space-y-3'>
+      <div className='max-h-[42vh] space-y-2 overflow-y-auto rounded-2xl border border-[var(--bg-border)] bg-[var(--bg-elevated)] p-3'>
+        {chatMessages.length === 0 ? (
+          <p className='text-sm text-[var(--text-muted)]'>{DASHBOARD_CHAT_UI_TEXT.emptyState}</p>
+        ) : (
+          chatMessages.map((message) => (
+            <div
+              key={message.id}
+              className={`max-w-[92%] rounded-xl px-3 py-2 text-sm ${
+                message.role === 'user'
+                  ? 'ml-auto bg-[var(--brand-primary)] text-white'
+                  : 'bg-[var(--bg-card)] text-[var(--text-primary)]'
+              }`}
+            >
+              {message.content}
+            </div>
+          ))
+        )}
+      </div>
+
+      <div className='flex items-center gap-2'>
+        <Input
+          value={chatInput}
+          placeholder={DASHBOARD_CHAT_UI_TEXT.inputPlaceholder}
+          onChange={(event) => setChatInput(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault();
+              void handleChatSubmit();
+            }
+          }}
+        />
+        <Button
+          type='button'
+          variant='primary'
+          className='min-h-12 w-auto px-4'
+          disabled={chatInput.trim().length === 0 || isSendingChatMessage}
+          onClick={() => {
+            void handleChatSubmit();
+          }}
+        >
+          {DASHBOARD_CHAT_UI_TEXT.sendButton}
+        </Button>
+      </div>
+
+      <p className='text-xs text-[var(--text-muted)]'>{DASHBOARD_CHAT_UI_TEXT.voiceHint}</p>
+    </div>
+  );
+
   return (
     <div className='mx-auto w-full max-w-[1200px] px-4 py-4 md:px-6 md:py-6'>
       <header className='sticky top-[env(safe-area-inset-top)] z-20 -mx-4 mb-4 border-b border-[var(--bg-border)] bg-[color:rgba(9,9,11,0.8)] px-4 py-4 pt-[calc(1rem+env(safe-area-inset-top))] backdrop-blur-xl md:static md:mx-0 md:mb-5 md:border-none md:bg-transparent md:px-0 md:pt-0'>
@@ -436,58 +486,37 @@ export function DashboardPage() {
         }}
       />
 
+      {showChatSheet ? (
+        <div
+          className='fixed inset-0 z-50 hidden items-center justify-center bg-black/60 px-4 py-6 lg:flex'
+          role='dialog'
+          aria-modal='true'
+          aria-label={DASHBOARD_CHAT_UI_TEXT.assistantTitle}
+        >
+          <button type='button' aria-label={DASHBOARD_CHAT_UI_TEXT.closeButton} className='absolute inset-0' onClick={() => setShowChatSheet(false)} />
+
+          <div
+            className='relative w-full max-w-2xl rounded-3xl border border-[var(--bg-border)] bg-[var(--bg-card)] p-5 shadow-[0_24px_60px_rgba(0,0,0,0.55)]'
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className='mb-3 flex items-center justify-between'>
+              <h2 className='text-lg font-semibold text-[var(--text-primary)]'>{DASHBOARD_CHAT_UI_TEXT.assistantTitle}</h2>
+              <Button type='button' variant='secondary' className='min-h-9 w-auto px-3 py-1.5 text-sm' onClick={() => setShowChatSheet(false)}>
+                {DASHBOARD_CHAT_UI_TEXT.closeButton}
+              </Button>
+            </div>
+
+            {renderChatAssistantContent()}
+          </div>
+        </div>
+      ) : null}
+
       <BottomSheet
         isOpen={showChatSheet}
         onClose={() => setShowChatSheet(false)}
         title={DASHBOARD_CHAT_UI_TEXT.assistantTitle}
       >
-        <div className='space-y-3'>
-          <div className='max-h-[42vh] space-y-2 overflow-y-auto rounded-2xl border border-[var(--bg-border)] bg-[var(--bg-elevated)] p-3'>
-            {chatMessages.length === 0 ? (
-              <p className='text-sm text-[var(--text-muted)]'>{DASHBOARD_CHAT_UI_TEXT.emptyState}</p>
-            ) : (
-              chatMessages.map((message) => (
-                <div
-                  key={message.id}
-                  className={`max-w-[92%] rounded-xl px-3 py-2 text-sm ${
-                    message.role === 'user'
-                      ? 'ml-auto bg-[var(--brand-primary)] text-white'
-                      : 'bg-[var(--bg-card)] text-[var(--text-primary)]'
-                  }`}
-                >
-                  {message.content}
-                </div>
-              ))
-            )}
-          </div>
-
-          <div className='flex items-center gap-2'>
-            <Input
-              value={chatInput}
-              placeholder={DASHBOARD_CHAT_UI_TEXT.inputPlaceholder}
-              onChange={(event) => setChatInput(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') {
-                  event.preventDefault();
-                  void handleChatSubmit();
-                }
-              }}
-            />
-            <Button
-              type='button'
-              variant='primary'
-              className='min-h-12 w-auto px-4'
-              disabled={chatInput.trim().length === 0 || isSendingChatMessage}
-              onClick={() => {
-                void handleChatSubmit();
-              }}
-            >
-              {DASHBOARD_CHAT_UI_TEXT.sendButton}
-            </Button>
-          </div>
-
-          <p className='text-xs text-[var(--text-muted)]'>{DASHBOARD_CHAT_UI_TEXT.voiceHint}</p>
-        </div>
+        {renderChatAssistantContent()}
       </BottomSheet>
 
       <BottomSheet isOpen={showAddSheet} onClose={() => setShowAddSheet(false)} title={SHEET_TITLES.addTransaction}>
