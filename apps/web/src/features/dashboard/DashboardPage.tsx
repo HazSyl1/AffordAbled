@@ -1,15 +1,23 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { Badge } from '../../components/atoms/Badge';
 import { Button } from '../../components/atoms/Button';
 import { Card } from '../../components/atoms/Card';
+import { Input } from '../../components/atoms/Input';
 import { BottomSheet } from '../../components/molecules/BottomSheet';
 import { CreateTransactionForm } from '../../components/organisms/CreateTransactionForm';
 import { useListAccountsQuery } from '../accounts/accountsApi';
 import { useListCategoriesQuery } from '../categories/categoriesApi';
+import { useSendChatMessageMutation, useTranscribeVoiceMutation } from '../chat/chatApi';
 import { useListTransactionsQuery } from '../transactions/transactionsApi';
 import type { TransactionType } from '../transactions/transactionsApi';
+import {
+  DASHBOARD_CHAT_UI_TEXT,
+  DASHBOARD_QUICK_ACTIONS,
+  type DashboardQuickActionKey,
+  SHEET_TITLES,
+} from '../../constants';
 import { formatPaiseAsInr } from '../../lib/money';
 
 interface PendingSplit {
@@ -20,6 +28,12 @@ interface PendingSplit {
   avatar_color: string;
 }
 
+interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+}
+
 const TYPE_BADGE_TONE: Record<TransactionType, 'negative' | 'positive' | 'info'> = {
   expense: 'negative',
   income: 'positive',
@@ -27,12 +41,9 @@ const TYPE_BADGE_TONE: Record<TransactionType, 'negative' | 'positive' | 'info'>
   refund: 'positive',
 };
 
-const QUICK_ACTIONS: Array<{ icon: string; label: string; key: 'add' | 'chat' | 'voice' | 'image' }> = [
-  { icon: '➕', label: 'Add', key: 'add' },
-  { icon: '💬', label: 'Chat', key: 'chat' },
-  { icon: '🎤', label: 'Voice', key: 'voice' },
-  { icon: '🖼️', label: 'Image', key: 'image' },
-];
+function createLocalId(): string {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
 
 function formatTransactionTime(value: string): string {
   return new Date(value).toLocaleTimeString('en-IN', {
@@ -46,7 +57,15 @@ export function DashboardPage() {
   const { data: accounts, isLoading: isLoadingAccounts } = useListAccountsQuery();
   const { data: transactions, isLoading: isLoadingTransactions } = useListTransactionsQuery();
   const { data: categories } = useListCategoriesQuery();
+  const [sendChatMessage, { isLoading: isSendingChatMessage }] = useSendChatMessageMutation();
+  const [transcribeVoice, { isLoading: isTranscribingVoice }] = useTranscribeVoiceMutation();
   const [showAddSheet, setShowAddSheet] = useState(false);
+  const [showChatSheet, setShowChatSheet] = useState(false);
+  const [chatInput, setChatInput] = useState('');
+  const [chatThreadId, setChatThreadId] = useState<string | null>(null);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatError, setChatError] = useState<string | null>(null);
+  const voiceFileInputRef = useRef<HTMLInputElement | null>(null);
 
   const pendingSplits: PendingSplit[] = [];
 
@@ -115,6 +134,80 @@ export function DashboardPage() {
 
   const isLoading = isLoadingAccounts || isLoadingTransactions;
 
+  const sendMessageToAssistant = async (messageText: string) => {
+    const normalizedMessage = messageText.trim();
+    if (!normalizedMessage) {
+      return;
+    }
+
+    setChatError(null);
+    setChatMessages((previousMessages) => [
+      ...previousMessages,
+      { id: createLocalId(), role: 'user', content: normalizedMessage },
+    ]);
+
+    try {
+      const response = await sendChatMessage({
+        message: normalizedMessage,
+        thread_id: chatThreadId ?? undefined,
+      }).unwrap();
+
+      setChatThreadId(response.thread_id);
+      setChatMessages((previousMessages) => [
+        ...previousMessages,
+        { id: createLocalId(), role: 'assistant', content: response.message },
+      ]);
+    } catch {
+      setChatError(DASHBOARD_CHAT_UI_TEXT.assistantError);
+    }
+  };
+
+  const handleChatSubmit = async () => {
+    const normalizedMessage = chatInput.trim();
+    if (!normalizedMessage || isSendingChatMessage) {
+      return;
+    }
+
+    setChatInput('');
+    await sendMessageToAssistant(normalizedMessage);
+  };
+
+  const handleVoiceFileSelected = async (audioFile: File | null) => {
+    if (!audioFile) {
+      return;
+    }
+
+    setChatError(null);
+
+    try {
+      const transcription = await transcribeVoice({
+        audio: audioFile,
+        locale: 'en-IN',
+      }).unwrap();
+
+      setShowChatSheet(true);
+      await sendMessageToAssistant(transcription.transcript);
+    } catch {
+      setChatError(DASHBOARD_CHAT_UI_TEXT.voiceError);
+    }
+  };
+
+  const handleQuickActionClick = (actionKey: DashboardQuickActionKey) => {
+    if (actionKey === 'add') {
+      setShowAddSheet(true);
+      return;
+    }
+
+    if (actionKey === 'chat') {
+      setShowChatSheet(true);
+      return;
+    }
+
+    if (actionKey === 'voice') {
+      voiceFileInputRef.current?.click();
+    }
+  };
+
   return (
     <div className='mx-auto w-full max-w-[1200px] px-4 py-4 md:px-6 md:py-6'>
       <header className='sticky top-[env(safe-area-inset-top)] z-20 -mx-4 mb-4 border-b border-[var(--bg-border)] bg-[color:rgba(9,9,11,0.8)] px-4 py-4 pt-[calc(1rem+env(safe-area-inset-top))] backdrop-blur-xl md:static md:mx-0 md:mb-5 md:border-none md:bg-transparent md:px-0 md:pt-0'>
@@ -173,27 +266,31 @@ export function DashboardPage() {
             </Card>
           </section>
 
-          <section className='mb-4 grid grid-cols-4 gap-2'>
-            {QUICK_ACTIONS.map((action) => (
-              <Button
-                key={action.key}
-                type='button'
-                variant='ghost'
-                className='min-h-12 flex-col gap-1 rounded-2xl px-2 py-2 text-sm'
-                disabled={action.key !== 'add'}
-                onClick={() => {
-                  if (action.key === 'add') {
-                    setShowAddSheet(true);
-                  }
-                }}
-              >
-                <span className='text-base' aria-hidden='true'>
-                  {action.icon}
-                </span>
-                {action.label}
-                {action.key !== 'add' ? <span className='text-[10px] text-[var(--text-muted)]'>Soon</span> : null}
-              </Button>
-            ))}
+          <section className='mb-4 space-y-2'>
+            <div className='grid grid-cols-4 gap-2'>
+              {DASHBOARD_QUICK_ACTIONS.map((action) => {
+                const isDisabled = action.key === 'image' || (action.key === 'voice' && isTranscribingVoice);
+
+                return (
+                  <Button
+                    key={action.key}
+                    type='button'
+                    variant='ghost'
+                    className='min-h-12 flex-col gap-1 rounded-2xl px-2 py-2 text-sm'
+                    disabled={isDisabled}
+                    onClick={() => handleQuickActionClick(action.key)}
+                  >
+                    <span className='text-base' aria-hidden='true'>
+                      {action.icon}
+                    </span>
+                    {action.label}
+                    {action.key === 'image' ? <span className='text-[10px] text-[var(--text-muted)]'>{DASHBOARD_CHAT_UI_TEXT.imageComingSoon}</span> : null}
+                  </Button>
+                );
+              })}
+            </div>
+
+            {chatError ? <p className='text-xs text-[var(--negative)]'>{chatError}</p> : null}
           </section>
 
           <div className='space-y-4 lg:grid lg:grid-cols-2 lg:gap-4 lg:space-y-0'>
@@ -327,7 +424,73 @@ export function DashboardPage() {
         </>
       )}
 
-      <BottomSheet isOpen={showAddSheet} onClose={() => setShowAddSheet(false)} title='Add Transaction'>
+      <input
+        ref={voiceFileInputRef}
+        type='file'
+        accept='audio/*,.wav,.ogg'
+        className='hidden'
+        onChange={(event) => {
+          const audioFile = event.target.files?.[0] ?? null;
+          event.currentTarget.value = '';
+          void handleVoiceFileSelected(audioFile);
+        }}
+      />
+
+      <BottomSheet
+        isOpen={showChatSheet}
+        onClose={() => setShowChatSheet(false)}
+        title={DASHBOARD_CHAT_UI_TEXT.assistantTitle}
+      >
+        <div className='space-y-3'>
+          <div className='max-h-[42vh] space-y-2 overflow-y-auto rounded-2xl border border-[var(--bg-border)] bg-[var(--bg-elevated)] p-3'>
+            {chatMessages.length === 0 ? (
+              <p className='text-sm text-[var(--text-muted)]'>{DASHBOARD_CHAT_UI_TEXT.emptyState}</p>
+            ) : (
+              chatMessages.map((message) => (
+                <div
+                  key={message.id}
+                  className={`max-w-[92%] rounded-xl px-3 py-2 text-sm ${
+                    message.role === 'user'
+                      ? 'ml-auto bg-[var(--brand-primary)] text-white'
+                      : 'bg-[var(--bg-card)] text-[var(--text-primary)]'
+                  }`}
+                >
+                  {message.content}
+                </div>
+              ))
+            )}
+          </div>
+
+          <div className='flex items-center gap-2'>
+            <Input
+              value={chatInput}
+              placeholder={DASHBOARD_CHAT_UI_TEXT.inputPlaceholder}
+              onChange={(event) => setChatInput(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault();
+                  void handleChatSubmit();
+                }
+              }}
+            />
+            <Button
+              type='button'
+              variant='primary'
+              className='min-h-12 w-auto px-4'
+              disabled={chatInput.trim().length === 0 || isSendingChatMessage}
+              onClick={() => {
+                void handleChatSubmit();
+              }}
+            >
+              {DASHBOARD_CHAT_UI_TEXT.sendButton}
+            </Button>
+          </div>
+
+          <p className='text-xs text-[var(--text-muted)]'>{DASHBOARD_CHAT_UI_TEXT.voiceHint}</p>
+        </div>
+      </BottomSheet>
+
+      <BottomSheet isOpen={showAddSheet} onClose={() => setShowAddSheet(false)} title={SHEET_TITLES.addTransaction}>
         <CreateTransactionForm mode='sheet' showHeading={false} onSuccess={() => setShowAddSheet(false)} />
       </BottomSheet>
     </div>

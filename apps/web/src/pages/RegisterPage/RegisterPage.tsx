@@ -11,6 +11,7 @@ import { setCredentials } from '../../features/auth/authSlice';
 import { useAppDispatch } from '../../app/hooks';
 import { registerSchema } from './RegisterPage.schema';
 import type { RegisterFormValues } from './RegisterPage.schema';
+import { AUTH_UI_TEXT } from '../../constants';
 
 export function RegisterPage() {
   const dispatch = useAppDispatch();
@@ -31,20 +32,20 @@ export function RegisterPage() {
       dispatch(setCredentials({ accessToken: result.access_token }));
       navigate('/', { replace: true });
     } catch {
-      setFormError('Could not create an account with those details.');
+      setFormError(AUTH_UI_TEXT.registrationError);
     }
   });
 
   return (
     <div className="flex min-h-screen items-center justify-center p-4">
       <form className="w-full max-w-[360px]" onSubmit={onSubmit} noValidate>
-        <h1 className="mb-6 text-2xl font-semibold text-[var(--text-primary)]">Create your account</h1>
+        <h1 className="mb-6 text-2xl font-semibold text-[var(--text-primary)]">{AUTH_UI_TEXT.registerTitle}</h1>
 
-        <FormField label="Email" htmlFor="email" error={errors.email?.message}>
+        <FormField label={AUTH_UI_TEXT.emailLabel} htmlFor="email" error={errors.email?.message}>
           <Input id="email" type="email" autoComplete="email" {...register('email')} />
         </FormField>
 
-        <FormField label="Password" htmlFor="password" error={errors.password?.message}>
+        <FormField label={AUTH_UI_TEXT.passwordLabel} htmlFor="password" error={errors.password?.message}>
           <Input id="password" type="password" autoComplete="new-password" {...register('password')} />
         </FormField>
 
@@ -55,13 +56,13 @@ export function RegisterPage() {
         ) : null}
 
         <Button type="submit" isLoading={isSubmitting}>
-          Create account
+          {AUTH_UI_TEXT.registerAction}
         </Button>
 
         <p className="mt-4 text-sm text-[var(--text-secondary)]">
-          Already have an account?{' '}
+          {AUTH_UI_TEXT.alreadyHaveAccountPrompt}{' '}
           <Link className="text-[var(--brand-primary)]" to="/login">
-            Log in
+            {AUTH_UI_TEXT.loginLinkLabel}
           </Link>
         </p>
       </form>

@@ -45,6 +45,7 @@
 - Always offer a manual alternative when AI is unavailable.
 - Conversational recovery over hard errors.
 - External-integration execution rule: whenever a phase item depends on Azure or any external service, implementation handoff must include (1) resource provisioning steps, (2) required env vars/secrets, and (3) a concrete verification call/checklist.
+- Queue reliability rule (Celery/Redis): treat background jobs as at-least-once delivery, never exactly-once. Every side-effecting task must be idempotent (idempotency key + dedupe/unique constraint) so duplicate deliveries are safe.
 
 ---
 
@@ -1881,11 +1882,11 @@ POST   /api/v1/notifications/subscribe
 ### Phase 2 — AI Foundation
 - [x] Redis setup
 - [x] Azure Speech adapter + STT endpoint
-- [ ] LangGraph Postgres checkpointer
-- [ ] Basic orchestrator → single node → `/api/v1/chat` (prove round trip)
-- [ ] Semantic guardrail + intent classifier
-- [ ] Prove two-turn conversation persists across HTTP requests
-- [ ] Enable dashboard quick actions: `Chat` and `Voice` (wire to `/api/v1/chat` and `/api/v1/chat/voice` after round-trip is stable)
+- [x] LangGraph Postgres checkpointer
+- [x] Basic orchestrator → single node → `/api/v1/chat` (prove round trip)
+- [x] Semantic guardrail + intent classifier
+- [x] Prove two-turn conversation persists across HTTP requests
+- [x] Enable dashboard quick actions: `Chat` and `Voice` (wire to `/api/v1/chat` and `/api/v1/chat/voice` after round-trip is stable)
 
 ### Phase 3 — AI Features
 - [ ] Memory system (all three types + cleanup jobs)
@@ -1899,6 +1900,7 @@ POST   /api/v1/notifications/subscribe
 ### Phase 4 — Intelligence Layer
 - [ ] Proactive insights (anomaly, recurring, budget threshold)
 - [ ] Notification system (Celery + Resend + pywebpush)
+- [ ] Notification idempotency gate: enforce idempotency key + dedupe/unique constraint for Celery side-effect tasks (prove duplicate-safe delivery).
 - [ ] Evaluation pipeline (LangSmith + weekly loop)
 - [ ] "What Claude knows about me" page
 - [ ] Self-learning improvement loop

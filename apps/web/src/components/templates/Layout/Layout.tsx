@@ -1,30 +1,24 @@
 import type { ReactNode } from 'react';
 import { NavLink } from 'react-router-dom';
 
+import {
+  ACCOUNTS_NAV_ITEM,
+  APP_NAME,
+  APP_TAGLINE,
+  NAV_ITEMS,
+} from '../../../constants';
+
 interface LayoutProps {
   children: ReactNode;
 }
-
-interface NavigationItem {
-  path: string;
-  label: string;
-  icon: string;
-}
-
-const NAV_ITEMS: NavigationItem[] = [
-  { path: '/', label: 'Home', icon: '🏠' },
-  { path: '/transactions', label: 'Trans', icon: '💳' },
-  { path: '/splits', label: 'Splits', icon: '🔀' },
-  { path: '/profile', label: 'Profile', icon: '👤' },
-];
 
 export function Layout({ children }: LayoutProps) {
   return (
     <div className='min-h-screen bg-[var(--bg-app)]'>
       <aside className='fixed left-0 top-0 hidden h-full w-60 border-r border-[var(--bg-border)] bg-[var(--bg-card)] lg:flex lg:flex-col'>
         <div className='px-5 pb-5 pt-7'>
-          <p className='text-xs font-semibold uppercase tracking-[0.14em] text-[var(--text-muted)]'>AffordAbled</p>
-          <p className='mt-2 text-xl font-bold text-[var(--text-primary)]'>Wallet</p>
+          <p className='text-2xl font-extrabold uppercase tracking-[0.12em] text-[var(--text-primary)]'>{APP_NAME}</p>
+          <p className='mt-1 text-sm font-medium text-[var(--text-muted)]'>{APP_TAGLINE}</p>
         </div>
 
         <nav className='flex-1 space-y-2 px-3'>
@@ -47,7 +41,7 @@ export function Layout({ children }: LayoutProps) {
           ))}
 
           <NavLink
-            to='/accounts'
+            to={ACCOUNTS_NAV_ITEM.path}
             className={({ isActive }) =>
               [
                 'flex min-h-11 items-center gap-2 rounded-xl px-3 text-sm font-semibold transition-colors',
@@ -57,8 +51,8 @@ export function Layout({ children }: LayoutProps) {
               ].join(' ')
             }
           >
-            <span aria-hidden='true'>🏦</span>
-            Accounts
+            <span aria-hidden='true'>{ACCOUNTS_NAV_ITEM.icon}</span>
+            {ACCOUNTS_NAV_ITEM.label}
           </NavLink>
         </nav>
 
