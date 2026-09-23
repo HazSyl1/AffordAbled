@@ -3,8 +3,10 @@
 import uuid
 from dataclasses import dataclass
 
+from langsmith import traceable
+
 from app.domain.exceptions import InvalidChatInputError
-from app.domain.ports import ChatCheckpointMessage, ConversationCheckpointer
+from app.domain.ports import ChatOrchestrator
 
 
 @dataclass
@@ -15,8 +17,9 @@ class ChatResponseOutput:
 
 @dataclass
 class ChatService:
-    checkpointer: ConversationCheckpointer
+    orchestrator: ChatOrchestrator
 
+    @traceable(name='chat_service.send_message', run_type='chain')
     async def send_message(
         self,
         *,
@@ -29,28 +32,10 @@ class ChatService:
             raise InvalidChatInputError('Message cannot be empty')
 
         resolved_thread_id = (thread_id or '').strip() or str(uuid.uuid4())
-
-        messages = await self.checkpointer.load_messages(user_id=user_id, thread_id=resolved_thread_id)
-        previous_user_messages = [item.content for item in messages if item.role == 'user']
-
-        if previous_user_messages:
-            assistant_message = (
-                f'Got it. You said: "{normalized_message}". '
-                f'Earlier you mentioned: "{previous_user_messages[-1]}".'
-            )
-        else:
-            assistant_message = f'Got it. You said: "{normalized_message}".'
-
-        updated_messages = [
-            *messages,
-            ChatCheckpointMessage(role='user', content=normalized_message),
-            ChatCheckpointMessage(role='assistant', content=assistant_message),
-        ]
-        await self.checkpointer.save_messages(
+        assistant_message = await self.orchestrator.run_turn(
             user_id=user_id,
             thread_id=resolved_thread_id,
-            messages=updated_messages,
+            message=normalized_message,
         )
 
         return ChatResponseOutput(thread_id=resolved_thread_id, message=assistant_message)
-

@@ -2,8 +2,9 @@
 
 import uuid
 from collections.abc import AsyncGenerator
+from typing import Any
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,7 +17,10 @@ from app.application.services.transaction_service import TransactionService
 from app.core.config import Settings, get_settings
 from app.domain.entities import User
 from app.domain.exceptions import InvalidTokenError
-from app.infrastructure.ai.postgres_checkpointer import LangGraphPostgresCheckpointer
+from app.domain.ports import ChatOrchestrator
+from app.infrastructure.ai.intent_classifier import KeywordIntentClassifier
+from app.infrastructure.ai.langgraph_chat_orchestrator import LangGraphChatOrchestrator
+from app.infrastructure.ai.semantic_guardrail import KeywordSemanticGuardrail
 from app.infrastructure.auth.google_oauth import GoogleAuthClient
 from app.infrastructure.auth.jwt_service import JwtTokenService
 from app.infrastructure.auth.password_hasher import Argon2PasswordHasher
@@ -78,14 +82,42 @@ def get_speech_to_text_client(settings: Settings = Depends(get_settings_dependen
     return AzureSpeechToTextClient(settings)
 
 
-def get_chat_checkpointer(db: AsyncSession = Depends(get_db)) -> LangGraphPostgresCheckpointer:
-    return LangGraphPostgresCheckpointer(db)
+def get_semantic_guardrail() -> KeywordSemanticGuardrail:
+    return KeywordSemanticGuardrail()
+
+
+def get_intent_classifier() -> KeywordIntentClassifier:
+    return KeywordIntentClassifier()
+
+
+def get_langgraph_checkpointer(request: Request) -> Any:
+    checkpointer = getattr(request.app.state, 'langgraph_checkpointer', None)
+    if checkpointer is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail='Chat runtime is not initialized')
+    return checkpointer
+
+
+def get_chat_orchestrator(
+    request: Request,
+    checkpointer: Any = Depends(get_langgraph_checkpointer),
+    semantic_guardrail: KeywordSemanticGuardrail = Depends(get_semantic_guardrail),
+    intent_classifier: KeywordIntentClassifier = Depends(get_intent_classifier),
+) -> ChatOrchestrator:
+    orchestrator = getattr(request.app.state, 'chat_orchestrator', None)
+    if orchestrator is None:
+        orchestrator = LangGraphChatOrchestrator(
+            checkpointer=checkpointer,
+            semantic_guardrail=semantic_guardrail,
+            intent_classifier=intent_classifier,
+        )
+        request.app.state.chat_orchestrator = orchestrator
+    return orchestrator
 
 
 def get_chat_service(
-    checkpointer: LangGraphPostgresCheckpointer = Depends(get_chat_checkpointer),
+    orchestrator: ChatOrchestrator = Depends(get_chat_orchestrator),
 ) -> ChatService:
-    return ChatService(checkpointer=checkpointer)
+    return ChatService(orchestrator=orchestrator)
 
 
 def get_auth_service(
@@ -154,6 +186,3 @@ async def get_current_user(
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid or expired token')
     return user
-
-
-
