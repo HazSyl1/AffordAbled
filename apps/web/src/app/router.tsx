@@ -1,6 +1,7 @@
 import { createBrowserRouter } from 'react-router-dom';
 
 import { AccountsPage } from '../pages/AccountsPage';
+import { ChatPage } from '../pages/ChatPage';
 import { DashboardPage } from '../pages/DashboardPage';
 import { LoginPage } from '../pages/LoginPage';
 import { ProfilePage } from '../pages/ProfilePage';
@@ -16,6 +17,7 @@ export const router = createBrowserRouter([
     element: <ProtectedRoute />,
     children: [
       { path: '/', element: <DashboardPage /> },
+      { path: '/chat', element: <ChatPage /> },
       { path: '/accounts', element: <AccountsPage /> },
       { path: '/transactions', element: <TransactionsPage /> },
       { path: '/splits', element: <SplitsPage /> },
