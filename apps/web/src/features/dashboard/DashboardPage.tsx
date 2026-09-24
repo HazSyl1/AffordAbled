@@ -1,3 +1,4 @@
+import { ImagePlus, Mic } from 'lucide-react';
 import { useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
@@ -10,6 +11,8 @@ import { CreateTransactionForm } from '../../components/organisms/CreateTransact
 import { useListAccountsQuery } from '../accounts/accountsApi';
 import { useListCategoriesQuery } from '../categories/categoriesApi';
 import { useSendChatMessageMutation, useTranscribeVoiceMutation } from '../chat/chatApi';
+import { didAssistantLikelyAddTransaction } from '../chat/chatHeuristics';
+import { deleteChatDraft, deleteChatDraftByThreadId, saveChatDraft } from '../chat/chatDrafts';
 import { useListTransactionsQuery } from '../transactions/transactionsApi';
 import type { TransactionType } from '../transactions/transactionsApi';
 import {
@@ -61,11 +64,18 @@ export function DashboardPage() {
   const [transcribeVoice, { isLoading: isTranscribingVoice }] = useTranscribeVoiceMutation();
   const [showAddSheet, setShowAddSheet] = useState(false);
   const [showChatSheet, setShowChatSheet] = useState(false);
+  const [showSaveDraftPrompt, setShowSaveDraftPrompt] = useState(false);
   const [chatInput, setChatInput] = useState('');
   const [chatThreadId, setChatThreadId] = useState<string | null>(null);
+  const [chatDraftId, setChatDraftId] = useState<string | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatError, setChatError] = useState<string | null>(null);
   const voiceFileInputRef = useRef<HTMLInputElement | null>(null);
+  const imageFileInputRef = useRef<HTMLInputElement | null>(null);
+  const [openingGreeting] = useState(() => {
+    const options = DASHBOARD_CHAT_UI_TEXT.rotatingGreetings;
+    return options[Math.floor(Math.random() * options.length)] ?? DASHBOARD_CHAT_UI_TEXT.emptyState;
+  });
 
   const pendingSplits: PendingSplit[] = [];
 
@@ -134,6 +144,36 @@ export function DashboardPage() {
 
   const isLoading = isLoadingAccounts || isLoadingTransactions;
 
+  const persistGeneralDraft = (
+    messages: ChatMessage[],
+    threadId: string | null,
+    draftIdOverride: string | null = chatDraftId,
+  ): string | null => {
+    if (messages.length === 0) {
+      return draftIdOverride;
+    }
+
+    const savedDraft = saveChatDraft({
+      draftId: draftIdOverride,
+      kind: 'general',
+      lifecycle: 'draft',
+      threadId,
+      messages,
+    });
+
+    setChatDraftId(savedDraft.id);
+    return savedDraft.id;
+  };
+
+  const resetChatSession = () => {
+    setShowChatSheet(false);
+    setChatInput('');
+    setChatDraftId(null);
+    setChatThreadId(null);
+    setChatMessages([]);
+    setChatError(null);
+  };
+
   const sendMessageToAssistant = async (messageText: string) => {
     const normalizedMessage = messageText.trim();
     if (!normalizedMessage) {
@@ -141,10 +181,10 @@ export function DashboardPage() {
     }
 
     setChatError(null);
-    setChatMessages((previousMessages) => [
-      ...previousMessages,
-      { id: createLocalId(), role: 'user', content: normalizedMessage },
-    ]);
+    const userMessage: ChatMessage = { id: createLocalId(), role: 'user', content: normalizedMessage };
+    const userMessageList = [...chatMessages, userMessage];
+    setChatMessages(userMessageList);
+    const currentDraftId = persistGeneralDraft(userMessageList, chatThreadId, chatDraftId);
 
     try {
       const response = await sendChatMessage({
@@ -153,10 +193,19 @@ export function DashboardPage() {
       }).unwrap();
 
       setChatThreadId(response.thread_id);
-      setChatMessages((previousMessages) => [
-        ...previousMessages,
-        { id: createLocalId(), role: 'assistant', content: response.message },
-      ]);
+      const assistantMessage: ChatMessage = { id: createLocalId(), role: 'assistant', content: response.message };
+      const fullMessageList = [...userMessageList, assistantMessage];
+      setChatMessages(fullMessageList);
+
+      if (didAssistantLikelyAddTransaction(response.message)) {
+        if (currentDraftId) {
+          deleteChatDraft(currentDraftId);
+        }
+        setChatDraftId(null);
+        return;
+      }
+
+      persistGeneralDraft(fullMessageList, response.thread_id, currentDraftId);
     } catch {
       setChatError(DASHBOARD_CHAT_UI_TEXT.assistantError);
     }
@@ -192,6 +241,47 @@ export function DashboardPage() {
     }
   };
 
+  const handleImageFileSelected = async (imageFile: File | null) => {
+    if (!imageFile) {
+      return;
+    }
+
+    if (!imageFile.type.startsWith('image/')) {
+      setChatError('Please select a valid image file.');
+      return;
+    }
+
+    const imagePrompt = `I uploaded an image file (${imageFile.name}). Help me log the transaction from this receipt/bill and ask for any missing fields.`;
+    setShowChatSheet(true);
+    await sendMessageToAssistant(imagePrompt);
+  };
+
+  const handleCloseChat = () => {
+    if (chatMessages.length > 0) {
+      setShowSaveDraftPrompt(true);
+      return;
+    }
+
+    resetChatSession();
+  };
+
+  const handleSaveDraftAndClose = () => {
+    persistGeneralDraft(chatMessages, chatThreadId, chatDraftId);
+    setShowSaveDraftPrompt(false);
+    resetChatSession();
+  };
+
+  const handleDiscardDraftAndClose = () => {
+    if (chatDraftId) {
+      deleteChatDraft(chatDraftId);
+    } else if (chatThreadId) {
+      deleteChatDraftByThreadId(chatThreadId);
+    }
+
+    setShowSaveDraftPrompt(false);
+    resetChatSession();
+  };
+
   const handleQuickActionClick = (actionKey: DashboardQuickActionKey) => {
     if (actionKey === 'add') {
       setShowAddSheet(true);
@@ -212,7 +302,10 @@ export function DashboardPage() {
     <div className='space-y-3'>
       <div className='max-h-[42vh] space-y-2 overflow-y-auto rounded-2xl border border-[var(--bg-border)] bg-[var(--bg-elevated)] p-3'>
         {chatMessages.length === 0 ? (
-          <p className='text-sm text-[var(--text-muted)]'>{DASHBOARD_CHAT_UI_TEXT.emptyState}</p>
+          <div className='flex min-h-40 flex-col items-center justify-center px-5 text-center'>
+            <p className='mb-2 text-base font-semibold text-[var(--text-primary)]'>{openingGreeting}</p>
+            <p className='text-sm text-[var(--text-muted)]'>{DASHBOARD_CHAT_UI_TEXT.emptyState}</p>
+          </div>
         ) : (
           chatMessages.map((message) => (
             <div
@@ -230,6 +323,24 @@ export function DashboardPage() {
       </div>
 
       <div className='flex items-center gap-2'>
+        <button
+          type='button'
+          className='inline-flex h-12 w-12 items-center justify-center rounded-xl border border-[var(--bg-border)] bg-[var(--bg-elevated)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-card)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)] disabled:cursor-not-allowed disabled:opacity-60'
+          aria-label='Transcribe and send voice note'
+          disabled={isTranscribingVoice || isSendingChatMessage}
+          onClick={() => voiceFileInputRef.current?.click()}
+        >
+          <Mic className='h-4 w-4' strokeWidth={2.2} aria-hidden='true' />
+        </button>
+        <button
+          type='button'
+          className='inline-flex h-12 w-12 items-center justify-center rounded-xl border border-[var(--bg-border)] bg-[var(--bg-elevated)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-card)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)] disabled:cursor-not-allowed disabled:opacity-60'
+          aria-label='Upload and send image note'
+          disabled={isSendingChatMessage}
+          onClick={() => imageFileInputRef.current?.click()}
+        >
+          <ImagePlus className='h-4 w-4' strokeWidth={2.2} aria-hidden='true' />
+        </button>
         <Input
           value={chatInput}
           placeholder={DASHBOARD_CHAT_UI_TEXT.inputPlaceholder}
@@ -241,20 +352,23 @@ export function DashboardPage() {
             }
           }}
         />
-        <Button
+        <button
           type='button'
-          variant='primary'
-          className='min-h-12 w-auto px-4'
+          className='inline-flex h-12 min-w-16 items-center justify-center rounded-xl bg-[var(--brand-primary)] px-4 text-sm font-semibold text-white transition-colors hover:bg-[var(--brand-hover)] active:bg-[var(--brand-active)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)] disabled:cursor-not-allowed disabled:opacity-60'
           disabled={chatInput.trim().length === 0 || isSendingChatMessage}
           onClick={() => {
             void handleChatSubmit();
           }}
         >
           {DASHBOARD_CHAT_UI_TEXT.sendButton}
-        </Button>
+        </button>
       </div>
 
       <p className='text-xs text-[var(--text-muted)]'>{DASHBOARD_CHAT_UI_TEXT.voiceHint}</p>
+      <p className='text-xs text-[var(--text-muted)]'>{DASHBOARD_CHAT_UI_TEXT.transactionDetailHint}</p>
+      <Button type='button' variant='secondary' className='min-h-9 w-auto px-3 py-2 text-xs' onClick={() => navigate('/chat')}>
+        {DASHBOARD_CHAT_UI_TEXT.openFinanceChat}
+      </Button>
     </div>
   );
 
@@ -320,6 +434,7 @@ export function DashboardPage() {
             <div className='grid grid-cols-4 gap-2'>
               {DASHBOARD_QUICK_ACTIONS.map((action) => {
                 const isDisabled = action.key === 'image' || (action.key === 'voice' && isTranscribingVoice);
+                const Icon = action.icon;
 
                 return (
                   <Button
@@ -330,9 +445,7 @@ export function DashboardPage() {
                     disabled={isDisabled}
                     onClick={() => handleQuickActionClick(action.key)}
                   >
-                    <span className='text-base' aria-hidden='true'>
-                      {action.icon}
-                    </span>
+                    <Icon className='h-[18px] w-[18px]' strokeWidth={2.2} aria-hidden='true' />
                     {action.label}
                     {action.key === 'image' ? <span className='text-[10px] text-[var(--text-muted)]'>{DASHBOARD_CHAT_UI_TEXT.imageComingSoon}</span> : null}
                   </Button>
@@ -343,9 +456,9 @@ export function DashboardPage() {
             {chatError ? <p className='text-xs text-[var(--negative)]'>{chatError}</p> : null}
           </section>
 
-          <div className='space-y-4 lg:grid lg:grid-cols-2 lg:gap-4 lg:space-y-0'>
-            <section>
-              <Card className='p-4'>
+          <div className='space-y-4 lg:grid lg:grid-cols-2 lg:items-stretch lg:gap-4 lg:space-y-0'>
+            <section className='h-full'>
+              <Card className='h-full p-4'>
                 <div className='mb-3 flex items-center justify-between'>
                   <h2 className='text-base font-semibold text-[var(--text-primary)]'>Spending Overview</h2>
                   <span className='text-xs text-[var(--text-muted)]'>This month</span>
@@ -383,8 +496,8 @@ export function DashboardPage() {
               </Card>
             </section>
 
-            <section>
-              <Card className='p-4'>
+            <section className='h-full'>
+              <Card className='h-full p-4'>
                 <div className='mb-3 flex items-center justify-between'>
                   <h2 className='text-base font-semibold text-[var(--text-primary)]'>Recent Transactions</h2>
                   <Button
@@ -485,35 +598,49 @@ export function DashboardPage() {
           void handleVoiceFileSelected(audioFile);
         }}
       />
+      <input
+        ref={imageFileInputRef}
+        type='file'
+        accept='image/*'
+        className='hidden'
+        onChange={(event) => {
+          const imageFile = event.target.files?.[0] ?? null;
+          event.currentTarget.value = '';
+          void handleImageFileSelected(imageFile);
+        }}
+      />
 
-      {showChatSheet ? (
-        <div
-          className='fixed inset-0 z-50 hidden items-center justify-center bg-black/60 px-4 py-6 lg:flex'
-          role='dialog'
-          aria-modal='true'
-          aria-label={DASHBOARD_CHAT_UI_TEXT.assistantTitle}
-        >
-          <button type='button' aria-label={DASHBOARD_CHAT_UI_TEXT.closeButton} className='absolute inset-0' onClick={() => setShowChatSheet(false)} />
+      {showSaveDraftPrompt ? (
+        <div className='fixed inset-0 z-[70] flex items-center justify-center bg-black/60 px-4 py-6'>
+          <div className='w-full max-w-md rounded-2xl border border-[var(--bg-border)] bg-[var(--bg-card)] p-5 shadow-[0_20px_50px_rgba(0,0,0,0.45)]'>
+            <div className='flex items-start justify-between gap-2'>
+              <h3 className='text-lg font-semibold text-[var(--text-primary)]'>{DASHBOARD_CHAT_UI_TEXT.saveDraftBeforeCloseTitle}</h3>
+              <button
+                type='button'
+                aria-label='Close'
+                className='inline-flex h-8 w-8 items-center justify-center rounded-full border border-[var(--bg-border)] bg-[var(--bg-elevated)] text-base leading-none text-[var(--text-secondary)] hover:bg-[var(--bg-card)]'
+                onClick={() => setShowSaveDraftPrompt(false)}
+              >
+                ×
+              </button>
+            </div>
+            <p className='mt-2 text-sm text-[var(--text-secondary)]'>{DASHBOARD_CHAT_UI_TEXT.saveDraftBeforeClosePrompt}</p>
 
-          <div
-            className='relative w-full max-w-2xl rounded-3xl border border-[var(--bg-border)] bg-[var(--bg-card)] p-5 shadow-[0_24px_60px_rgba(0,0,0,0.55)]'
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className='mb-3 flex items-center justify-between'>
-              <h2 className='text-lg font-semibold text-[var(--text-primary)]'>{DASHBOARD_CHAT_UI_TEXT.assistantTitle}</h2>
-              <Button type='button' variant='secondary' className='min-h-9 w-auto px-3 py-1.5 text-sm' onClick={() => setShowChatSheet(false)}>
-                {DASHBOARD_CHAT_UI_TEXT.closeButton}
+            <div className='mt-4 grid grid-cols-2 gap-2'>
+              <Button type='button' variant='secondary' onClick={handleDiscardDraftAndClose}>
+                {DASHBOARD_CHAT_UI_TEXT.saveDraftNoLabel}
+              </Button>
+              <Button type='button' onClick={handleSaveDraftAndClose}>
+                {DASHBOARD_CHAT_UI_TEXT.saveDraftYesLabel}
               </Button>
             </div>
-
-            {renderChatAssistantContent()}
           </div>
         </div>
       ) : null}
 
       <BottomSheet
         isOpen={showChatSheet}
-        onClose={() => setShowChatSheet(false)}
+        onClose={handleCloseChat}
         title={DASHBOARD_CHAT_UI_TEXT.assistantTitle}
       >
         {renderChatAssistantContent()}

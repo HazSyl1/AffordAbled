@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import { Link } from 'react-router-dom';
 
 import { useListAccountsQuery } from '../../../features/accounts/accountsApi';
 import { useListCategoriesQuery } from '../../../features/categories/categoriesApi';
@@ -174,6 +175,14 @@ export function TransactionList() {
                         <div className='mt-1 flex items-center justify-end gap-2'>
                           <span className='text-xs text-[var(--text-muted)]'>{formatTime(transaction.occurred_at)}</span>
                           <Badge tone={getBadgeTone(transaction.type)}>{TYPE_LABEL[transaction.type]}</Badge>
+                        </div>
+                        <div className='mt-1'>
+                          <Link
+                            to={`/chat?transaction_id=${transaction.id}`}
+                            className='text-xs font-semibold text-[var(--brand-primary)] hover:underline'
+                          >
+                            Chat about this
+                          </Link>
                         </div>
                       </div>
                     </div>
