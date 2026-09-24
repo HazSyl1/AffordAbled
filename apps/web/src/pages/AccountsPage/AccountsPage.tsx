@@ -7,6 +7,7 @@ import { BottomSheet } from '../../components/molecules/BottomSheet';
 import { AccountList } from '../../components/organisms/AccountList';
 import { CreateAccountForm } from '../../components/organisms/CreateAccountForm';
 import { useListAccountsQuery } from '../../features/accounts/accountsApi';
+import { SHEET_TITLES } from '../../constants';
 import { formatPaiseAsInr } from '../../lib/money';
 
 export function AccountsPage() {
@@ -61,7 +62,11 @@ export function AccountsPage() {
         </Card>
       </section>
 
-      <BottomSheet isOpen={isAddAccountSheetOpen} onClose={() => setIsAddAccountSheetOpen(false)} title='Add Account'>
+      <BottomSheet
+        isOpen={isAddAccountSheetOpen}
+        onClose={() => setIsAddAccountSheetOpen(false)}
+        title={SHEET_TITLES.addAccount}
+      >
         <CreateAccountForm onSuccess={() => setIsAddAccountSheetOpen(false)} showHeading={false} />
       </BottomSheet>
     </div>

@@ -1,6 +1,6 @@
 # AffordAbled — Complete Architecture & Decision Documentation
 
-> **Document status:** Phase 1 approved and in progress. Phase 2 fully designed and confirmed — proceed after Phase 1 exit gate is met.
+> **Document status:** Phase 1 complete. Phase 2 in progress.
 
 ---
 
@@ -44,6 +44,8 @@
 - AI failures never break core wallet functionality.
 - Always offer a manual alternative when AI is unavailable.
 - Conversational recovery over hard errors.
+- External-integration execution rule: whenever a phase item depends on Azure or any external service, implementation handoff must include (1) resource provisioning steps, (2) required env vars/secrets, and (3) a concrete verification call/checklist.
+- Queue reliability rule (Celery/Redis): treat background jobs as at-least-once delivery, never exactly-once. Every side-effecting task must be idempotent (idempotency key + dedupe/unique constraint) so duplicate deliveries are safe.
 
 ---
 
@@ -1869,21 +1871,22 @@ POST   /api/v1/notifications/subscribe
 ## 13. Build Order
 
 ### Phase 1 — Core Wallet (Current, Approved)
-- [ ] Categories vertical slice
-- [ ] Transactions vertical slice (with soft delete)
-- [ ] Balance update wiring
-- [ ] Frontend features
-- [ ] Tests per convention
+- [x] Categories vertical slice
+- [x] Transactions vertical slice (with soft delete)
+- [x] Balance update wiring
+- [x] Frontend features
+- [x] Tests per convention
 
 **Exit gate: full manual ledger works end-to-end.**
 
 ### Phase 2 — AI Foundation
-- [ ] Redis setup
-- [ ] Azure Speech adapter + STT endpoint
-- [ ] LangGraph Postgres checkpointer
-- [ ] Basic orchestrator → single node → `/api/v1/chat` (prove round trip)
-- [ ] Semantic guardrail + intent classifier
-- [ ] Prove two-turn conversation persists across HTTP requests
+- [x] Redis setup
+- [x] Azure Speech adapter + STT endpoint
+- [x] LangGraph Postgres checkpointer
+- [x] Basic orchestrator → single node → `/api/v1/chat` (prove round trip)
+- [x] Semantic guardrail + intent classifier
+- [x] Prove two-turn conversation persists across HTTP requests
+- [x] Enable dashboard quick actions: `Chat` and `Voice` (wire to `/api/v1/chat` and `/api/v1/chat/voice` after round-trip is stable)
 
 ### Phase 3 — AI Features
 - [ ] Memory system (all three types + cleanup jobs)
@@ -1892,10 +1895,12 @@ POST   /api/v1/notifications/subscribe
 - [ ] Split Graph (detection, smart split, contacts)
 - [ ] Bill image analysis (vision tools)
 - [ ] File Graph (PDF/Excel + Blob + SAS URL)
+- [ ] Enable dashboard quick action: `Image` (bill/receipt capture + vision extraction flow)
 
 ### Phase 4 — Intelligence Layer
 - [ ] Proactive insights (anomaly, recurring, budget threshold)
 - [ ] Notification system (Celery + Resend + pywebpush)
+- [ ] Notification idempotency gate: enforce idempotency key + dedupe/unique constraint for Celery side-effect tasks (prove duplicate-safe delivery).
 - [ ] Evaluation pipeline (LangSmith + weekly loop)
 - [ ] "What Claude knows about me" page
 - [ ] Self-learning improvement loop
@@ -1925,4 +1930,4 @@ All major decisions are confirmed. Remaining items deferred intentionally:
 ---
 
 *Document last updated: September 2026*
-*Phase 1: In progress | Phase 2: Fully designed, pending Phase 1 completion*
+*Phase 1: Complete | Phase 2: In progress*

@@ -61,3 +61,8 @@ tzdata==2026.4
 uvicorn==0.53.0
 watchfiles==1.2.0
 websockets==17.1
+deepeval==4.2.5
+langchain-core==1.6.4
+langgraph==1.2.12
+langgraph-checkpoint-postgres==3.1.2
+langsmith==0.14.0

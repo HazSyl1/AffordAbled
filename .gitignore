@@ -44,3 +44,6 @@ apps/web/dev_err.log
 # Temporary files
 *.tmp
 *.bak
+
+UI.md
+Affordabled documentation.md

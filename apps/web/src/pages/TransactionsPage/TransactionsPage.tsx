@@ -9,6 +9,7 @@ import { TransactionList } from '../../components/organisms/TransactionList';
 import { useLogoutMutation } from '../../features/auth/authApi';
 import { clearCredentials } from '../../features/auth/authSlice';
 import { useListTransactionsQuery } from '../../features/transactions/transactionsApi';
+import { SHEET_TITLES } from '../../constants';
 import { formatPaiseAsInr } from '../../lib/money';
 
 export function TransactionsPage() {
@@ -110,7 +111,7 @@ export function TransactionsPage() {
       <BottomSheet
         isOpen={isAddTransactionSheetOpen}
         onClose={() => setIsAddTransactionSheetOpen(false)}
-        title='Add Transaction'
+        title={SHEET_TITLES.addTransaction}
       >
         <CreateTransactionForm
           mode='sheet'

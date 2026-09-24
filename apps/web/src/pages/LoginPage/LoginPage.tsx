@@ -11,6 +11,7 @@ import { setCredentials } from '../../features/auth/authSlice';
 import { useAppDispatch } from '../../app/hooks';
 import { loginSchema } from './LoginPage.schema';
 import type { LoginFormValues } from './LoginPage.schema';
+import { AUTH_UI_TEXT } from '../../constants';
 
 export function LoginPage() {
   const dispatch = useAppDispatch();
@@ -31,20 +32,20 @@ export function LoginPage() {
       dispatch(setCredentials({ accessToken: result.access_token }));
       navigate('/', { replace: true });
     } catch {
-      setFormError('Invalid email or password.');
+      setFormError(AUTH_UI_TEXT.invalidCredentialsError);
     }
   });
 
   return (
     <div className="flex min-h-screen items-center justify-center p-4">
       <form className="w-full max-w-[360px]" onSubmit={onSubmit} noValidate>
-        <h1 className="mb-6 text-2xl font-semibold text-[var(--text-primary)]">Log in</h1>
+        <h1 className="mb-6 text-2xl font-semibold text-[var(--text-primary)]">{AUTH_UI_TEXT.loginTitle}</h1>
 
-        <FormField label="Email" htmlFor="email" error={errors.email?.message}>
+        <FormField label={AUTH_UI_TEXT.emailLabel} htmlFor="email" error={errors.email?.message}>
           <Input id="email" type="email" autoComplete="email" {...register('email')} />
         </FormField>
 
-        <FormField label="Password" htmlFor="password" error={errors.password?.message}>
+        <FormField label={AUTH_UI_TEXT.passwordLabel} htmlFor="password" error={errors.password?.message}>
           <Input id="password" type="password" autoComplete="current-password" {...register('password')} />
         </FormField>
 
@@ -55,13 +56,13 @@ export function LoginPage() {
         ) : null}
 
         <Button type="submit" isLoading={isSubmitting}>
-          Log in
+          {AUTH_UI_TEXT.loginAction}
         </Button>
 
         <p className="mt-4 text-sm text-[var(--text-secondary)]">
-          No account?{' '}
+          {AUTH_UI_TEXT.noAccountPrompt}{' '}
           <Link className="text-[var(--brand-primary)]" to="/register">
-            Register
+            {AUTH_UI_TEXT.registerLinkLabel}
           </Link>
         </p>
       </form>
