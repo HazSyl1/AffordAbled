@@ -1,6 +1,7 @@
-﻿from collections.abc import Sequence
+from collections.abc import Sequence
 
 import sqlalchemy as sa
+from sqlalchemy import inspect
 
 from alembic import op
 
@@ -11,7 +12,27 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
+def _table_exists(table_name: str) -> bool:
+    bind = op.get_bind()
+    return table_name in inspect(bind).get_table_names()
+
+
+def _is_app_managed_checkpoints_table() -> bool:
+    if not _table_exists('checkpoints'):
+        return False
+
+    bind = op.get_bind()
+    columns = {column['name'] for column in inspect(bind).get_columns('checkpoints')}
+    expected_columns = {'id', 'user_id', 'thread_id', 'state_json', 'created_at', 'updated_at'}
+    return expected_columns.issubset(columns)
+
+
 def upgrade() -> None:
+    if _table_exists('checkpoints'):
+        # LangGraph's AsyncPostgresSaver creates `checkpoints` and related tables.
+        # Skip creating an app-owned table when one already exists.
+        return
+
     op.create_table(
         'checkpoints',
         sa.Column('id', sa.Uuid(), nullable=False),
@@ -29,6 +50,10 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    if not _is_app_managed_checkpoints_table():
+        # Never drop LangGraph-managed checkpoint tables.
+        return
+
     op.drop_index(op.f('ix_checkpoints_user_id'), table_name='checkpoints')
     op.drop_index(op.f('ix_checkpoints_thread_id'), table_name='checkpoints')
     op.drop_table('checkpoints')

@@ -10,8 +10,12 @@ import { BottomSheet } from '../../components/molecules/BottomSheet';
 import { CreateTransactionForm } from '../../components/organisms/CreateTransactionForm';
 import { useListAccountsQuery } from '../accounts/accountsApi';
 import { useListCategoriesQuery } from '../categories/categoriesApi';
-import { useSendChatMessageMutation, useTranscribeVoiceMutation } from '../chat/chatApi';
-import { didAssistantLikelyAddTransaction } from '../chat/chatHeuristics';
+import {
+  type ChatTransactionProposal,
+  useSendChatMessageMutation,
+  useTranscribeVoiceMutation,
+} from '../chat/chatApi';
+import { mapProposalToCreateTransactionValues } from '../chat/chatProposal';
 import { deleteChatDraft, deleteChatDraftByThreadId, saveChatDraft } from '../chat/chatDrafts';
 import { useListTransactionsQuery } from '../transactions/transactionsApi';
 import type { TransactionType } from '../transactions/transactionsApi';
@@ -65,6 +69,8 @@ export function DashboardPage() {
   const [showAddSheet, setShowAddSheet] = useState(false);
   const [showChatSheet, setShowChatSheet] = useState(false);
   const [showSaveDraftPrompt, setShowSaveDraftPrompt] = useState(false);
+  const [proposalForSheet, setProposalForSheet] = useState<ChatTransactionProposal | null>(null);
+  const [proposalSheetMode, setProposalSheetMode] = useState<'standard' | 'manual_low_confidence'>('standard');
   const [chatInput, setChatInput] = useState('');
   const [chatThreadId, setChatThreadId] = useState<string | null>(null);
   const [chatDraftId, setChatDraftId] = useState<string | null>(null);
@@ -78,6 +84,11 @@ export function DashboardPage() {
   });
 
   const pendingSplits: PendingSplit[] = [];
+
+  const proposalInitialValues = useMemo(
+    () => (proposalForSheet ? mapProposalToCreateTransactionValues(proposalForSheet) : undefined),
+    [proposalForSheet],
+  );
 
   const categoryNameById = useMemo(() => {
     return new Map((categories ?? []).map((category) => [category.id, category.name]));
@@ -167,6 +178,9 @@ export function DashboardPage() {
 
   const resetChatSession = () => {
     setShowChatSheet(false);
+    setShowAddSheet(false);
+    setProposalForSheet(null);
+    setProposalSheetMode('standard');
     setChatInput('');
     setChatDraftId(null);
     setChatThreadId(null);
@@ -197,12 +211,18 @@ export function DashboardPage() {
       const fullMessageList = [...userMessageList, assistantMessage];
       setChatMessages(fullMessageList);
 
-      if (didAssistantLikelyAddTransaction(response.message)) {
+      if (response.transaction_logged) {
         if (currentDraftId) {
           deleteChatDraft(currentDraftId);
         }
         setChatDraftId(null);
         return;
+      }
+
+      if (response.pending_transaction_proposal || response.manual_transaction_input_required) {
+        setProposalForSheet(response.pending_transaction_proposal ?? null);
+        setProposalSheetMode(response.manual_transaction_input_required ? 'manual_low_confidence' : 'standard');
+        setShowAddSheet(true);
       }
 
       persistGeneralDraft(fullMessageList, response.thread_id, currentDraftId);
@@ -284,6 +304,8 @@ export function DashboardPage() {
 
   const handleQuickActionClick = (actionKey: DashboardQuickActionKey) => {
     if (actionKey === 'add') {
+      setProposalForSheet(null);
+      setProposalSheetMode('standard');
       setShowAddSheet(true);
       return;
     }
@@ -646,8 +668,29 @@ export function DashboardPage() {
         {renderChatAssistantContent()}
       </BottomSheet>
 
-      <BottomSheet isOpen={showAddSheet} onClose={() => setShowAddSheet(false)} title={SHEET_TITLES.addTransaction}>
-        <CreateTransactionForm mode='sheet' showHeading={false} onSuccess={() => setShowAddSheet(false)} />
+      <BottomSheet
+        isOpen={showAddSheet}
+        onClose={() => {
+          setShowAddSheet(false);
+          setProposalForSheet(null);
+          setProposalSheetMode('standard');
+        }}
+        title={SHEET_TITLES.addTransaction}
+      >
+        <CreateTransactionForm
+          mode='sheet'
+          showHeading={false}
+          initialValues={proposalInitialValues}
+          prefillMode={proposalSheetMode}
+          submitLabel={proposalForSheet ? 'Confirm & Add' : 'Add transaction'}
+          onSuccess={() => {
+            setShowAddSheet(false);
+            setProposalForSheet(null);
+            setProposalSheetMode('standard');
+            setShowChatSheet(false);
+            navigate('/transactions');
+          }}
+        />
       </BottomSheet>
     </div>
   );

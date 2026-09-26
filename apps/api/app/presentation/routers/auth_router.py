@@ -42,7 +42,14 @@ async def register(
     auth_service: AuthService = Depends(get_auth_service),
     settings: Settings = Depends(get_settings_dependency),
 ) -> AccessTokenResponse:
-    tokens = await auth_service.register(RegisterUserInput(email=payload.email, password=payload.password))
+    tokens = await auth_service.register(
+        RegisterUserInput(
+            email=payload.email,
+            name=payload.name,
+            date_of_birth=payload.date_of_birth,
+            password=payload.password,
+        )
+    )
     _set_refresh_cookie(response, tokens.refresh_token, settings)
     return AccessTokenResponse(access_token=tokens.access_token)
 
@@ -100,4 +107,9 @@ async def logout(
 
 @router.get("/me", response_model=UserResponse)
 async def me(current_user: User = Depends(get_current_user)) -> UserResponse:
-    return UserResponse(id=str(current_user.id), email=current_user.email)
+    return UserResponse(
+        id=str(current_user.id),
+        email=current_user.email,
+        name=current_user.name,
+        date_of_birth=current_user.date_of_birth,
+    )

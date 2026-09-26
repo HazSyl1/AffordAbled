@@ -1,5 +1,5 @@
 import { MessageCircle, Mic } from 'lucide-react';
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 
 import { CollapseToggle } from '../../atoms/CollapseToggle';
@@ -32,24 +32,7 @@ export function Layout({ children }: LayoutProps) {
   const desktopNavItemClass = 'justify-start gap-2 px-3';
   const accountIconClass = 'h-[18px] w-[18px] shrink-0';
   const AccountIcon = ACCOUNTS_NAV_ITEM.icon;
-  const userDisplayName = useMemo(() => {
-    const email = currentUser?.email?.trim();
-    if (!email) {
-      return LAYOUT_UI_TEXT.accountLabel;
-    }
-
-    const localPart = email.split('@')[0] ?? email;
-    const normalizedName = localPart.replace(/[._-]+/g, ' ').trim();
-    if (!normalizedName) {
-      return email;
-    }
-
-    return normalizedName
-      .split(/\s+/)
-      .filter(Boolean)
-      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-      .join(' ');
-  }, [currentUser?.email]);
+  const userDisplayName = currentUser?.name?.trim() || LAYOUT_UI_TEXT.accountLabel;
 
   useEffect(() => {
     if (!accessToken || currentUser) {

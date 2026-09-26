@@ -17,7 +17,7 @@ async def test_chat_router_round_trip_persists_thread_state(client: AsyncClient)
 
     first_response = await client.post(
         '/api/v1/chat',
-        json={'message': 'I paid rent today'},
+        json={'message': 'I want to review my monthly budget today'},
         headers=auth_headers(token),
     )
 
@@ -35,7 +35,7 @@ async def test_chat_router_round_trip_persists_thread_state(client: AsyncClient)
     assert second_response.status_code == 200
     second_payload = second_response.json()
     assert second_payload['thread_id'] == thread_id
-    assert 'I paid rent today' in second_payload['message']
+    assert 'I want to review my monthly budget today' in second_payload['message']
 
 
 async def test_chat_router_isolates_thread_state_per_user(client: AsyncClient) -> None:
@@ -132,3 +132,152 @@ async def test_chat_voice_rejects_unsupported_audio_format(client: AsyncClient) 
 
     assert response.status_code == 400
     assert response.json()['detail'] == 'Unsupported audio format. Use WAV (audio/wav) or OGG/Opus (audio/ogg).'
+
+
+async def test_chat_transaction_proposal_confirm_flow(client: AsyncClient) -> None:
+    token = await register_and_get_token(client, 'chat-transaction-proposal@example.com')
+
+    account_response = await client.post(
+        '/api/v1/accounts',
+        json={'name': 'Main Wallet', 'type': 'wallet', 'balance_paise': 100000, 'currency': 'INR'},
+        headers=auth_headers(token),
+    )
+    assert account_response.status_code == 201
+
+    category_response = await client.post(
+        '/api/v1/categories',
+        json={'name': 'Food', 'type': 'expense'},
+        headers=auth_headers(token),
+    )
+    assert category_response.status_code == 201
+
+    proposal_response = await client.post(
+        '/api/v1/chat',
+        json={'message': 'I spent INR 199.50 at Cafe Roma today'},
+        headers=auth_headers(token),
+    )
+
+    assert proposal_response.status_code == 200
+    proposal_payload = proposal_response.json()
+    thread_id = proposal_payload['thread_id']
+    assert "Reply 'confirm' to log" in proposal_payload['message']
+    assert proposal_payload['pending_transaction_proposal'] is not None
+    assert proposal_payload['pending_transaction_proposal']['confidence_score'] >= 0
+
+    before_confirm = await client.get('/api/v1/transactions', headers=auth_headers(token))
+    assert before_confirm.status_code == 200
+    assert len(before_confirm.json()) == 0
+
+    confirm_response = await client.post(
+        '/api/v1/chat',
+        json={'message': 'confirm', 'thread_id': thread_id},
+        headers=auth_headers(token),
+    )
+
+    assert confirm_response.status_code == 200
+    assert 'Logged transaction: expense INR 199.50' in confirm_response.json()['message']
+
+    after_confirm = await client.get('/api/v1/transactions', headers=auth_headers(token))
+    assert after_confirm.status_code == 200
+    payload = after_confirm.json()
+    assert len(payload) == 1
+    assert payload[0]['amount_paise'] == 19950
+    assert payload[0]['merchant'] == 'Cafe Roma'
+
+
+async def test_chat_transaction_proposal_requires_account(client: AsyncClient) -> None:
+    token = await register_and_get_token(client, 'chat-transaction-needs-account@example.com')
+
+    response = await client.post(
+        '/api/v1/chat',
+        json={'message': 'I spent INR 120 at Coffee House today'},
+        headers=auth_headers(token),
+    )
+
+    assert response.status_code == 200
+    assert response.json()['message'] == 'I can log this transaction, but please create an account first.'
+
+
+async def test_chat_transaction_hitl_clarification_until_confident(client: AsyncClient) -> None:
+    token = await register_and_get_token(client, 'chat-transaction-hitl@example.com')
+
+    account_response = await client.post(
+        '/api/v1/accounts',
+        json={'name': 'Main Wallet', 'type': 'wallet', 'balance_paise': 100000, 'currency': 'INR'},
+        headers=auth_headers(token),
+    )
+    assert account_response.status_code == 201
+
+    category_response = await client.post(
+        '/api/v1/categories',
+        json={'name': 'Food', 'type': 'expense'},
+        headers=auth_headers(token),
+    )
+    assert category_response.status_code == 201
+
+    first_turn = await client.post(
+        '/api/v1/chat',
+        json={'message': 'paid 1229'},
+        headers=auth_headers(token),
+    )
+
+    assert first_turn.status_code == 200
+    first_payload = first_turn.json()
+    assert '(1/5)' in first_payload['message']
+    assert first_payload['pending_transaction_proposal'] is None
+
+    second_turn = await client.post(
+        '/api/v1/chat',
+        json={'message': 'at Axis yesterday', 'thread_id': first_payload['thread_id']},
+        headers=auth_headers(token),
+    )
+
+    assert second_turn.status_code == 200
+    second_payload = second_turn.json()
+    assert second_payload['pending_transaction_proposal'] is not None
+    assert second_payload['pending_transaction_proposal']['confidence_score'] >= 80
+
+
+async def test_chat_transaction_hitl_falls_back_to_manual_after_max_turns(client: AsyncClient) -> None:
+    token = await register_and_get_token(client, 'chat-transaction-hitl-fallback@example.com')
+
+    account_response = await client.post(
+        '/api/v1/accounts',
+        json={'name': 'Main Wallet', 'type': 'wallet', 'balance_paise': 100000, 'currency': 'INR'},
+        headers=auth_headers(token),
+    )
+    assert account_response.status_code == 201
+
+    category_response = await client.post(
+        '/api/v1/categories',
+        json={'name': 'Food', 'type': 'expense'},
+        headers=auth_headers(token),
+    )
+    assert category_response.status_code == 201
+
+    response = await client.post(
+        '/api/v1/chat',
+        json={'message': 'paid 1229'},
+        headers=auth_headers(token),
+    )
+    assert response.status_code == 200
+
+    payload = response.json()
+    thread_id = payload['thread_id']
+
+    for _ in range(5):
+        response = await client.post(
+            '/api/v1/chat',
+            json={'message': 'not sure', 'thread_id': thread_id},
+            headers=auth_headers(token),
+        )
+        assert response.status_code == 200
+        payload = response.json()
+
+    assert payload['manual_transaction_input_required'] is True
+    assert payload['pending_transaction_proposal'] is not None
+    assert payload['pending_transaction_proposal']['type'] == 'expense'
+    assert payload['pending_transaction_proposal']['amount_paise'] == 122900
+
+
+

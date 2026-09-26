@@ -27,6 +27,7 @@ class TokenService(Protocol):
 class GoogleProfile:
     sub: str
     email: str
+    name: str | None = None
 
 
 class GoogleOAuthClient(Protocol):
@@ -61,5 +62,27 @@ class IntentClassifier(Protocol):
     async def classify(self, message: str) -> DetectedIntent: ...
 
 
+@dataclass
+class PendingTransactionProposal:
+    type: str
+    amount_paise: int
+    occurred_at: str
+    account_id: str
+    account_name: str
+    category_id: str
+    category_name: str
+    confidence_score: int
+    merchant: str | None = None
+    note: str | None = None
+
+
+@dataclass
+class ChatTurnResult:
+    message: str
+    pending_transaction_proposal: PendingTransactionProposal | None = None
+    transaction_logged: bool = False
+    manual_transaction_input_required: bool = False
+
+
 class ChatOrchestrator(Protocol):
-    async def run_turn(self, *, user_id: uuid.UUID, thread_id: str, message: str) -> str: ...
+    async def run_turn(self, *, user_id: uuid.UUID, thread_id: str, message: str) -> ChatTurnResult: ...

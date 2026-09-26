@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 
 from app.domain.entities import AccountType, CategoryType, TransactionType
 
@@ -10,6 +10,8 @@ from app.domain.entities import AccountType, CategoryType, TransactionType
 @dataclass
 class RegisterUserInput:
     email: str
+    name: str
+    date_of_birth: date
     password: str
 
 

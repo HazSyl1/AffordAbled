@@ -31,9 +31,15 @@ class Settings(BaseSettings):
     azure_document_intelligence_key: str = ''
     azure_speech_key: str = ''
     azure_speech_region: str = 'centralindia'
+
     azure_openai_endpoint: str = ''
     azure_openai_api_key: str = ''
     azure_openai_deployment: str = ''
+    azure_openai_api_version: str = '2024-10-21'
+    azure_openai_extraction_deployment: str = ''
+
+    chat_proposal_confidence_threshold: int = 80
+    chat_hitl_max_turns: int = 5
 
     langsmith_api_key: str = ''
     langsmith_tracing: bool = False

@@ -1,12 +1,19 @@
 import { ImagePlus, Mic } from 'lucide-react';
 import { useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 
+import { BottomSheet } from '../../components/molecules/BottomSheet';
+import { CreateTransactionForm } from '../../components/organisms/CreateTransactionForm';
 import { Card } from '../../components/atoms/Card';
 import { CollapseToggle } from '../../components/atoms/CollapseToggle';
 import { Input } from '../../components/atoms/Input';
-import { DASHBOARD_CHAT_UI_TEXT } from '../../constants';
-import { useSendChatMessageMutation, useTranscribeVoiceMutation } from '../../features/chat/chatApi';
-import { didAssistantLikelyAddTransaction } from '../../features/chat/chatHeuristics';
+import { DASHBOARD_CHAT_UI_TEXT, SHEET_TITLES } from '../../constants';
+import {
+  type ChatTransactionProposal,
+  useSendChatMessageMutation,
+  useTranscribeVoiceMutation,
+} from '../../features/chat/chatApi';
+import { mapProposalToCreateTransactionValues } from '../../features/chat/chatProposal';
 import {
   createChatDraft,
   deleteChatDraft,
@@ -53,6 +60,7 @@ function formatDraftDeadline(draft: ChatDraft): string | null {
 }
 
 export function ChatPage() {
+  const navigate = useNavigate();
   const [sendChatMessage, { isLoading: isSendingChatMessage }] = useSendChatMessageMutation();
   const [transcribeVoice, { isLoading: isTranscribingVoice }] = useTranscribeVoiceMutation();
   const [drafts, setDrafts] = useState<ChatDraft[]>(() => listChatDrafts());
@@ -61,6 +69,9 @@ export function ChatPage() {
   const [isSideToolCollapsed, setIsSideToolCollapsed] = useState(false);
   const [chatInput, setChatInput] = useState('');
   const [chatError, setChatError] = useState<string | null>(null);
+  const [showProposalSheet, setShowProposalSheet] = useState(false);
+  const [proposalForSheet, setProposalForSheet] = useState<ChatTransactionProposal | null>(null);
+  const [proposalSheetMode, setProposalSheetMode] = useState<'standard' | 'manual_low_confidence'>('standard');
   const voiceFileInputRef = useRef<HTMLInputElement | null>(null);
   const imageFileInputRef = useRef<HTMLInputElement | null>(null);
   const [openingGreeting] = useState(() => {
@@ -84,6 +95,10 @@ export function ChatPage() {
 
   const filteredItems = activeFilter === 'finance' ? groupedDrafts.financeChats : groupedDrafts.draftChats;
   const messageList = selectedDraft?.messages ?? [];
+  const proposalInitialValues = useMemo(
+    () => (proposalForSheet ? mapProposalToCreateTransactionValues(proposalForSheet) : undefined),
+    [proposalForSheet],
+  );
 
   const chatLayoutClass = isSideToolCollapsed
     ? 'grid-cols-1 md:grid-cols-[40px_minmax(0,1fr)]'
@@ -183,10 +198,16 @@ export function ChatPage() {
         content: response.message,
       };
 
-      if (optimisticDraft.lifecycle === 'draft' && didAssistantLikelyAddTransaction(response.message)) {
+      if (optimisticDraft.lifecycle === 'draft' && response.transaction_logged) {
         deleteChatDraft(optimisticDraft.id);
         refreshDrafts(null);
         return;
+      }
+
+      if (response.pending_transaction_proposal || response.manual_transaction_input_required) {
+        setProposalForSheet(response.pending_transaction_proposal ?? null);
+        setProposalSheetMode(response.manual_transaction_input_required ? 'manual_low_confidence' : 'standard');
+        setShowProposalSheet(true);
       }
 
       const nextLifecycle: ChatDraftLifecycle =
@@ -507,6 +528,30 @@ export function ChatPage() {
           />
         </Card>
       </div>
+
+      <BottomSheet
+        isOpen={showProposalSheet}
+        onClose={() => {
+          setShowProposalSheet(false);
+          setProposalForSheet(null);
+          setProposalSheetMode('standard');
+        }}
+        title={SHEET_TITLES.addTransaction}
+      >
+        <CreateTransactionForm
+          mode='sheet'
+          showHeading={false}
+          initialValues={proposalInitialValues}
+          prefillMode={proposalSheetMode}
+          submitLabel={proposalForSheet ? 'Confirm & Add' : 'Add transaction'}
+          onSuccess={() => {
+            setShowProposalSheet(false);
+            setProposalForSheet(null);
+            setProposalSheetMode('standard');
+            navigate('/transactions');
+          }}
+        />
+      </BottomSheet>
     </div>
   );
 }
