@@ -1,7 +1,7 @@
 ﻿from fastapi import FastAPI
 from httpx import AsyncClient
 
-from app.core.dependencies import get_speech_service
+from app.core.dependencies import get_image_service, get_speech_service
 from tests.helpers import auth_headers, register_and_get_token
 
 
@@ -10,6 +10,21 @@ class StubSpeechService:
         del audio_bytes
         del content_type
         return f'Mocked transcript ({locale})'
+
+
+class StubImageService:
+    async def analyze_image(self, image_bytes: bytes, *, content_type: str, filename: str | None):
+        del image_bytes
+        del content_type
+        safe_filename = filename or 'upload'
+        return type(
+            'ImageAnalysis',
+            (),
+            {
+                'extracted_text': f'Mocked OCR from {safe_filename}',
+                'prompt': f'Prompt built from {safe_filename}',
+            },
+        )()
 
 
 async def test_chat_router_round_trip_persists_thread_state(client: AsyncClient) -> None:
@@ -132,6 +147,52 @@ async def test_chat_voice_rejects_unsupported_audio_format(client: AsyncClient) 
 
     assert response.status_code == 400
     assert response.json()['detail'] == 'Unsupported audio format. Use WAV (audio/wav) or OGG/Opus (audio/ogg).'
+
+
+async def test_chat_image_router_smoke(client: AsyncClient, app: FastAPI) -> None:
+    token = await register_and_get_token(client, 'chat-image-smoke@example.com')
+
+    app.dependency_overrides[get_image_service] = lambda: StubImageService()
+
+    try:
+        response = await client.post(
+            '/api/v1/chat/image',
+            files={'image': ('bill.png', b'image-content', 'image/png')},
+            headers=auth_headers(token),
+        )
+        assert response.status_code == 200
+        assert response.json() == {
+            'extracted_text': 'Mocked OCR from bill.png',
+            'prompt': 'Prompt built from bill.png',
+        }
+    finally:
+        app.dependency_overrides.pop(get_image_service, None)
+
+
+async def test_chat_image_rejects_non_image_upload(client: AsyncClient) -> None:
+    token = await register_and_get_token(client, 'chat-image-invalid-upload@example.com')
+
+    response = await client.post(
+        '/api/v1/chat/image',
+        files={'image': ('note.txt', b'not-image', 'text/plain')},
+        headers=auth_headers(token),
+    )
+
+    assert response.status_code == 400
+    assert response.json()['detail'] == 'Only image uploads are supported'
+
+
+async def test_chat_image_rejects_unsupported_image_format(client: AsyncClient) -> None:
+    token = await register_and_get_token(client, 'chat-image-unsupported-format@example.com')
+
+    response = await client.post(
+        '/api/v1/chat/image',
+        files={'image': ('receipt.gif', b'image-content', 'image/gif')},
+        headers=auth_headers(token),
+    )
+
+    assert response.status_code == 400
+    assert response.json()['detail'] == 'Unsupported image format. Use JPG, PNG, or WEBP.'
 
 
 async def test_chat_transaction_proposal_confirm_flow(client: AsyncClient) -> None:

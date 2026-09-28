@@ -76,6 +76,8 @@ const ACCOUNT_TYPE_OPTIONS: Array<{ label: string; value: AccountType }> = [
 const ADD_ACCOUNT_OPTION = '__add_account__';
 const ADD_CATEGORY_OPTION = '__add_category__';
 
+type QuickAccountTarget = 'source' | 'destination';
+
 const DEFAULT_VALUES: CreateTransactionFormValues = {
   accountId: '',
   type: 'expense',
@@ -225,6 +227,7 @@ export function CreateTransactionForm({
   const [quickAccountType, setQuickAccountType] = useState<AccountType>('wallet');
   const [quickAccountError, setQuickAccountError] = useState<string | null>(null);
   const [showQuickAccount, setShowQuickAccount] = useState(false);
+  const [quickAccountTarget, setQuickAccountTarget] = useState<QuickAccountTarget>('source');
   const [quickCategoryName, setQuickCategoryName] = useState('');
   const [quickCategoryError, setQuickCategoryError] = useState<string | null>(null);
   const [showQuickCategory, setShowQuickCategory] = useState(false);
@@ -306,6 +309,7 @@ export function CreateTransactionForm({
       setQuickAccountName('');
       setQuickAccountType('wallet');
       setQuickAccountError(null);
+      setQuickAccountTarget('source');
       reset(resolveInitialValues(initialValues));
       onSuccess?.();
     } catch {
@@ -334,7 +338,12 @@ export function CreateTransactionForm({
       setShowQuickAccount(false);
       setQuickAccountName('');
       setQuickAccountType('wallet');
-      setValue('accountId', account.id, { shouldValidate: true });
+      setQuickAccountTarget('source');
+      if (quickAccountTarget === 'destination' && transactionType === 'transfer') {
+        setValue('toAccountId', account.id, { shouldValidate: true });
+      } else {
+        setValue('accountId', account.id, { shouldValidate: true });
+      }
     } catch {
       setQuickAccountError('Could not add account. Try a different name.');
     }
@@ -374,11 +383,15 @@ export function CreateTransactionForm({
       ) : null}
 
       {prefillMode === 'manual_low_confidence' ? (
-        <div className='mb-4 rounded-xl border border-[var(--info)]/40 bg-[color:rgba(96,165,250,0.08)] p-3'>
-          <div className='flex flex-wrap items-center gap-2'>
-            <AlertCircle size={14} className='text-[var(--info)]' aria-hidden='true' />
-            <Badge tone='info'>{DASHBOARD_CHAT_UI_TEXT.manualPrefillBadgeLabel}</Badge>
-            <p className='m-0 text-xs text-[var(--text-primary)]'>{DASHBOARD_CHAT_UI_TEXT.manualPrefillHint}</p>
+        <div className='mb-4 rounded-2xl border border-[var(--info)]/35 bg-[color:rgba(96,165,250,0.08)] p-3 shadow-sm'>
+          <div className='flex items-start gap-2'>
+            <AlertCircle size={16} className='mt-0.5 shrink-0 text-[var(--info)]' aria-hidden='true' />
+            <div className='min-w-0'>
+              <Badge tone='info'>{DASHBOARD_CHAT_UI_TEXT.manualPrefillBadgeLabel}</Badge>
+              <p className='m-0 mt-1 text-xs leading-5 text-[var(--text-secondary)]'>
+                {DASHBOARD_CHAT_UI_TEXT.manualPrefillHint}
+              </p>
+            </div>
           </div>
         </div>
       ) : null}
@@ -433,19 +446,21 @@ export function CreateTransactionForm({
               { label: '+ Add account', value: ADD_ACCOUNT_OPTION },
               ...(accounts ?? []).map((account) => ({ label: account.name, value: account.id })),
             ]}
-            onChange={(nextValue) => {
-              if (nextValue === ADD_ACCOUNT_OPTION) {
-                setShowQuickAccount(true);
-                setQuickAccountError(null);
-                setValue('accountId', '', { shouldValidate: true });
+              onChange={(nextValue) => {
+                if (nextValue === ADD_ACCOUNT_OPTION) {
+                  setQuickAccountTarget('source');
+                  setShowQuickAccount(true);
+                  setQuickAccountError(null);
+                  setValue('accountId', '', { shouldValidate: true });
                 return;
               }
 
-              setShowQuickAccount(false);
-              setQuickAccountError(null);
-              setValue('accountId', nextValue, { shouldDirty: true, shouldValidate: true });
-            }}
-          />
+                setShowQuickAccount(false);
+                setQuickAccountError(null);
+                setQuickAccountTarget('source');
+                setValue('accountId', nextValue, { shouldDirty: true, shouldValidate: true });
+              }}
+            />
         </FormField>
       </div>
 
@@ -489,6 +504,7 @@ export function CreateTransactionForm({
                 setQuickAccountError(null);
                 setQuickAccountName('');
                 setQuickAccountType('wallet');
+                setQuickAccountTarget('source');
               }}
               className='w-full sm:w-auto'
             >
@@ -511,8 +527,24 @@ export function CreateTransactionForm({
               id='transaction-to-account'
               value={destinationAccountId ?? ''}
               placeholder='Select destination account'
-              options={destinationAccountOptions.map((account) => ({ label: account.name, value: account.id }))}
-              onChange={(nextValue) => setValue('toAccountId', nextValue, { shouldDirty: true, shouldValidate: true })}
+              options={[
+                { label: '+ Add account', value: ADD_ACCOUNT_OPTION },
+                ...destinationAccountOptions.map((account) => ({ label: account.name, value: account.id })),
+              ]}
+              onChange={(nextValue) => {
+                if (nextValue === ADD_ACCOUNT_OPTION) {
+                  setQuickAccountTarget('destination');
+                  setShowQuickAccount(true);
+                  setQuickAccountError(null);
+                  setValue('toAccountId', '', { shouldValidate: true });
+                  return;
+                }
+
+                setShowQuickAccount(false);
+                setQuickAccountError(null);
+                setQuickAccountTarget('source');
+                setValue('toAccountId', nextValue, { shouldDirty: true, shouldValidate: true });
+              }}
             />
           </FormField>
 

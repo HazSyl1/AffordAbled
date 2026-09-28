@@ -11,6 +11,7 @@ import { CreateTransactionForm } from '../../components/organisms/CreateTransact
 import { useListAccountsQuery } from '../accounts/accountsApi';
 import { useListCategoriesQuery } from '../categories/categoriesApi';
 import {
+  useAnalyzeImageMutation,
   type ChatTransactionProposal,
   useSendChatMessageMutation,
   useTranscribeVoiceMutation,
@@ -66,6 +67,7 @@ export function DashboardPage() {
   const { data: categories } = useListCategoriesQuery();
   const [sendChatMessage, { isLoading: isSendingChatMessage }] = useSendChatMessageMutation();
   const [transcribeVoice, { isLoading: isTranscribingVoice }] = useTranscribeVoiceMutation();
+  const [analyzeImage, { isLoading: isAnalyzingImage }] = useAnalyzeImageMutation();
   const [showAddSheet, setShowAddSheet] = useState(false);
   const [showChatSheet, setShowChatSheet] = useState(false);
   const [showSaveDraftPrompt, setShowSaveDraftPrompt] = useState(false);
@@ -271,9 +273,21 @@ export function DashboardPage() {
       return;
     }
 
-    const imagePrompt = `I uploaded an image file (${imageFile.name}). Help me log the transaction from this receipt/bill and ask for any missing fields.`;
-    setShowChatSheet(true);
-    await sendMessageToAssistant(imagePrompt);
+    try {
+      setChatError(null);
+      const analysis = await analyzeImage({ image: imageFile }).unwrap();
+      const imagePrompt = analysis.prompt.trim();
+
+      if (!imagePrompt) {
+        setChatError(DASHBOARD_CHAT_UI_TEXT.imageError);
+        return;
+      }
+
+      setShowChatSheet(true);
+      await sendMessageToAssistant(imagePrompt);
+    } catch {
+      setChatError(DASHBOARD_CHAT_UI_TEXT.imageError);
+    }
   };
 
   const handleCloseChat = () => {
@@ -317,6 +331,11 @@ export function DashboardPage() {
 
     if (actionKey === 'voice') {
       voiceFileInputRef.current?.click();
+      return;
+    }
+
+    if (actionKey === 'image') {
+      imageFileInputRef.current?.click();
     }
   };
 
@@ -358,7 +377,7 @@ export function DashboardPage() {
           type='button'
           className='inline-flex h-12 w-12 items-center justify-center rounded-xl border border-[var(--bg-border)] bg-[var(--bg-elevated)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-card)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)] disabled:cursor-not-allowed disabled:opacity-60'
           aria-label='Upload and send image note'
-          disabled={isSendingChatMessage}
+          disabled={isSendingChatMessage || isAnalyzingImage}
           onClick={() => imageFileInputRef.current?.click()}
         >
           <ImagePlus className='h-4 w-4' strokeWidth={2.2} aria-hidden='true' />
@@ -455,7 +474,9 @@ export function DashboardPage() {
           <section className='mb-4 space-y-2'>
             <div className='grid grid-cols-4 gap-2'>
               {DASHBOARD_QUICK_ACTIONS.map((action) => {
-                const isDisabled = action.key === 'image' || (action.key === 'voice' && isTranscribingVoice);
+                const isDisabled =
+                  (action.key === 'voice' && (isTranscribingVoice || isSendingChatMessage || isAnalyzingImage)) ||
+                  (action.key === 'image' && (isAnalyzingImage || isSendingChatMessage || isTranscribingVoice));
                 const Icon = action.icon;
 
                 return (
@@ -469,7 +490,6 @@ export function DashboardPage() {
                   >
                     <Icon className='h-[18px] w-[18px]' strokeWidth={2.2} aria-hidden='true' />
                     {action.label}
-                    {action.key === 'image' ? <span className='text-[10px] text-[var(--text-muted)]'>{DASHBOARD_CHAT_UI_TEXT.imageComingSoon}</span> : null}
                   </Button>
                 );
               })}

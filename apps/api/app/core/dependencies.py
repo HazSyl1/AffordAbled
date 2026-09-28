@@ -17,6 +17,7 @@ from app.application.services.account_service import AccountService
 from app.application.services.auth_service import AuthService
 from app.application.services.category_service import CategoryService
 from app.application.services.chat_service import ChatService
+from app.application.services.image_service import ImageService
 from app.application.services.speech_service import SpeechService
 from app.application.services.transaction_service import TransactionService
 from app.core.config import Settings, get_settings
@@ -29,6 +30,7 @@ from app.infrastructure.ai.semantic_guardrail import KeywordSemanticGuardrail
 from app.infrastructure.auth.google_oauth import GoogleAuthClient
 from app.infrastructure.auth.jwt_service import JwtTokenService
 from app.infrastructure.auth.password_hasher import Argon2PasswordHasher
+from app.infrastructure.azure.azure_document_intelligence import AzureDocumentIntelligenceClient
 from app.infrastructure.azure.azure_speech_to_text import AzureSpeechToTextClient
 from app.infrastructure.database.repositories.sqlalchemy_account_repository import SqlAlchemyAccountRepository
 from app.infrastructure.database.repositories.sqlalchemy_category_repository import SqlAlchemyCategoryRepository
@@ -85,6 +87,12 @@ def get_google_oauth_client(settings: Settings = Depends(get_settings_dependency
 
 def get_speech_to_text_client(settings: Settings = Depends(get_settings_dependency)) -> AzureSpeechToTextClient:
     return AzureSpeechToTextClient(settings)
+
+
+def get_document_intelligence_client(
+    settings: Settings = Depends(get_settings_dependency),
+) -> AzureDocumentIntelligenceClient:
+    return AzureDocumentIntelligenceClient(settings)
 
 
 def get_semantic_guardrail() -> KeywordSemanticGuardrail:
@@ -194,6 +202,12 @@ def get_speech_service(
     speech_to_text_client: AzureSpeechToTextClient = Depends(get_speech_to_text_client),
 ) -> SpeechService:
     return SpeechService(speech_to_text_client=speech_to_text_client)
+
+
+def get_image_service(
+    document_intelligence_client: AzureDocumentIntelligenceClient = Depends(get_document_intelligence_client),
+) -> ImageService:
+    return ImageService(image_to_text_client=document_intelligence_client)
 
 
 async def get_current_user(

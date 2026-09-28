@@ -3,12 +3,14 @@
 from fastapi import APIRouter, Depends, File, Form, UploadFile, status
 
 from app.application.services.chat_service import ChatService
+from app.application.services.image_service import ImageService
 from app.application.services.speech_service import SpeechService
-from app.core.dependencies import get_chat_service, get_current_user, get_speech_service
+from app.core.dependencies import get_chat_service, get_current_user, get_image_service, get_speech_service
 from app.domain.entities import User
 from app.presentation.schemas.chat import (
     ChatRequest,
     ChatResponse,
+    ImageAnalysisResponse,
     PendingTransactionProposalResponse,
     VoiceTranscriptionResponse,
 )
@@ -68,3 +70,24 @@ async def transcribe_voice(
 
     transcript = await speech_service.transcribe_voice(audio_bytes, content_type=content_type, locale=locale)
     return VoiceTranscriptionResponse(transcript=transcript, locale=locale)
+
+
+@router.post(
+    '/image',
+    response_model=ImageAnalysisResponse,
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(get_current_user)],
+)
+async def analyze_image(
+    image: UploadFile = File(...),
+    image_service: ImageService = Depends(get_image_service),
+) -> ImageAnalysisResponse:
+    image_bytes = await image.read()
+    content_type = image.content_type or 'application/octet-stream'
+
+    analysis = await image_service.analyze_image(
+        image_bytes,
+        content_type=content_type,
+        filename=image.filename,
+    )
+    return ImageAnalysisResponse(extracted_text=analysis.extracted_text, prompt=analysis.prompt)

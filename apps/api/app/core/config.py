@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -40,6 +41,8 @@ class Settings(BaseSettings):
 
     chat_proposal_confidence_threshold: int = 80
     chat_hitl_max_turns: int = 5
+    langgraph_checkpointer_mode: Literal['auto', 'postgres', 'memory'] = 'auto'
+    langgraph_checkpointer_startup_timeout_seconds: int = 8
 
     langsmith_api_key: str = ''
     langsmith_tracing: bool = False

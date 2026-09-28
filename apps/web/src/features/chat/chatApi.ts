@@ -37,6 +37,15 @@ export interface VoiceTranscriptionResponse {
   locale: string;
 }
 
+export interface ImageAnalysisRequest {
+  image: File;
+}
+
+export interface ImageAnalysisResponse {
+  extracted_text: string;
+  prompt: string;
+}
+
 const chatApi = apiClient.injectEndpoints({
   endpoints: (builder) => ({
     sendChatMessage: builder.mutation<ChatResponse, ChatRequest>({
@@ -59,7 +68,19 @@ const chatApi = apiClient.injectEndpoints({
         };
       },
     }),
+    analyzeImage: builder.mutation<ImageAnalysisResponse, ImageAnalysisRequest>({
+      query: ({ image }) => {
+        const formData = new FormData();
+        formData.append('image', image);
+
+        return {
+          url: '/chat/image',
+          method: 'POST',
+          body: formData,
+        };
+      },
+    }),
   }),
 });
 
-export const { useSendChatMessageMutation, useTranscribeVoiceMutation } = chatApi;
+export const { useSendChatMessageMutation, useTranscribeVoiceMutation, useAnalyzeImageMutation } = chatApi;

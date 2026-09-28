@@ -1,4 +1,5 @@
 import { zodResolver } from '@hookform/resolvers/zod';
+import type { FetchBaseQueryError } from '@reduxjs/toolkit/query';
 import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { Link, useNavigate } from 'react-router-dom';
@@ -12,6 +13,19 @@ import { useAppDispatch } from '../../app/hooks';
 import { loginSchema } from './LoginPage.schema';
 import type { LoginFormValues } from './LoginPage.schema';
 import { AUTH_UI_TEXT } from '../../constants';
+
+
+function resolveLoginErrorMessage(error: unknown): string {
+  if (typeof error === 'object' && error !== null && 'status' in error) {
+    const status = (error as FetchBaseQueryError).status;
+    if (status === 401) {
+      return AUTH_UI_TEXT.invalidCredentialsError;
+    }
+    return AUTH_UI_TEXT.serviceUnavailableError;
+  }
+
+  return AUTH_UI_TEXT.serviceUnavailableError;
+}
 
 export function LoginPage() {
   const dispatch = useAppDispatch();
@@ -31,8 +45,8 @@ export function LoginPage() {
       const result = await login(values).unwrap();
       dispatch(setCredentials({ accessToken: result.access_token }));
       navigate('/', { replace: true });
-    } catch {
-      setFormError(AUTH_UI_TEXT.invalidCredentialsError);
+    } catch (error) {
+      setFormError(resolveLoginErrorMessage(error));
     }
   });
 

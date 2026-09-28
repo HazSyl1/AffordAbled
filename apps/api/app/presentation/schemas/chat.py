@@ -30,3 +30,8 @@ class ChatResponse(BaseModel):
 class VoiceTranscriptionResponse(BaseModel):
     transcript: str
     locale: str
+
+
+class ImageAnalysisResponse(BaseModel):
+    extracted_text: str
+    prompt: str

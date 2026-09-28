@@ -38,6 +38,10 @@ class SpeechToTextClient(Protocol):
     async def transcribe(self, audio_bytes: bytes, *, content_type: str, locale: str) -> str: ...
 
 
+class ImageToTextClient(Protocol):
+    async def analyze(self, image_bytes: bytes, *, content_type: str) -> str: ...
+
+
 class GuardrailDecision(str, Enum):
     ALLOW = 'allow'
     BLOCK = 'block'
