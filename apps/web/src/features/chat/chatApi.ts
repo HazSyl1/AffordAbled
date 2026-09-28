@@ -1,13 +1,30 @@
-﻿import { apiClient } from '../../lib/apiClient';
+import type { TransactionType } from '../transactions/transactionsApi';
+import { apiClient } from '../../lib/apiClient';
 
 export interface ChatRequest {
   message: string;
   thread_id?: string;
 }
 
+export interface ChatTransactionProposal {
+  type: TransactionType;
+  amount_paise: number;
+  occurred_at: string;
+  account_id: string;
+  account_name: string;
+  category_id: string;
+  category_name: string;
+  confidence_score: number;
+  merchant: string | null;
+  note: string | null;
+}
+
 export interface ChatResponse {
   thread_id: string;
   message: string;
+  pending_transaction_proposal?: ChatTransactionProposal | null;
+  transaction_logged?: boolean;
+  manual_transaction_input_required?: boolean;
 }
 
 export interface VoiceTranscriptionRequest {
@@ -18,6 +35,15 @@ export interface VoiceTranscriptionRequest {
 export interface VoiceTranscriptionResponse {
   transcript: string;
   locale: string;
+}
+
+export interface ImageAnalysisRequest {
+  image: File;
+}
+
+export interface ImageAnalysisResponse {
+  extracted_text: string;
+  prompt: string;
 }
 
 const chatApi = apiClient.injectEndpoints({
@@ -42,7 +68,19 @@ const chatApi = apiClient.injectEndpoints({
         };
       },
     }),
+    analyzeImage: builder.mutation<ImageAnalysisResponse, ImageAnalysisRequest>({
+      query: ({ image }) => {
+        const formData = new FormData();
+        formData.append('image', image);
+
+        return {
+          url: '/chat/image',
+          method: 'POST',
+          body: formData,
+        };
+      },
+    }),
   }),
 });
 
-export const { useSendChatMessageMutation, useTranscribeVoiceMutation } = chatApi;
+export const { useSendChatMessageMutation, useTranscribeVoiceMutation, useAnalyzeImageMutation } = chatApi;

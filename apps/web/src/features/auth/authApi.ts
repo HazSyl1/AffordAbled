@@ -7,6 +7,8 @@ export interface AccessTokenResponse {
 }
 
 export interface RegisterRequest {
+  name: string;
+  date_of_birth: string;
   email: string;
   password: string;
 }

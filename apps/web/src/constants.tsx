@@ -40,6 +40,8 @@ export const NAV_ITEMS: readonly NavItem[] = [
 export const ACCOUNTS_NAV_ITEM: NavItem = { path: '/accounts', label: 'Accounts', icon: ArrowLeftRight };
 
 export const AUTH_UI_TEXT = {
+  nameLabel: 'Full Name',
+  dobLabel: 'Date of Birth',
   emailLabel: 'Email',
   passwordLabel: 'Password',
   loginTitle: 'Log in',
@@ -51,6 +53,7 @@ export const AUTH_UI_TEXT = {
   alreadyHaveAccountPrompt: 'Already have an account?',
   loginLinkLabel: 'Log in',
   invalidCredentialsError: 'Invalid email or password.',
+  serviceUnavailableError: 'Service is currently unavailable. Please try again in some time.',
   registrationError: 'Could not create an account with those details.',
 } as const;
 
@@ -85,6 +88,8 @@ export const DASHBOARD_CHAT_UI_TEXT = {
   noFinanceChatsLabel: 'No finance chats yet.',
   collapsedChatPanelHint: 'Chat panel is collapsed. Expand to continue.',
   draftExpiryDisclaimer: 'Drafts expire automatically after 72 hours.',
+  manualPrefillBadgeLabel: 'Manual Prefill',
+  manualPrefillHint: 'Low confidence extraction. Review and edit before adding.',
   openFinanceChat: 'Open Finance Chat',
   saveDraftBeforeCloseTitle: 'Save Draft Before Closing?',
   saveDraftBeforeClosePrompt: 'Save this chat as a draft in Finance Chat before closing?',
@@ -99,6 +104,7 @@ export const DASHBOARD_CHAT_UI_TEXT = {
     'Need a quick check on your budget or recent expenses?',
   ],
   voiceHint: 'Use the Voice quick action to transcribe and send audio.',
+  imageError: 'Image analysis failed. Please upload a clear JPG, PNG, or WEBP image.',
   transactionDetailHint: 'Transaction-specific chats can be continued from the transaction detail screen.',
   assistantError: 'Could not reach the assistant right now. Please try again.',
   voiceError: 'Voice transcription failed. Please upload a clear WAV or OGG clip.',

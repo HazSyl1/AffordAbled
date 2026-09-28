@@ -8,10 +8,16 @@ from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
+try:  # optional in local/dev until dependency is installed
+    from langchain_openai import AzureChatOpenAI
+except ImportError:  # pragma: no cover - exercised in environments without langchain-openai
+    AzureChatOpenAI = None
+
 from app.application.services.account_service import AccountService
 from app.application.services.auth_service import AuthService
 from app.application.services.category_service import CategoryService
 from app.application.services.chat_service import ChatService
+from app.application.services.image_service import ImageService
 from app.application.services.speech_service import SpeechService
 from app.application.services.transaction_service import TransactionService
 from app.core.config import Settings, get_settings
@@ -24,6 +30,7 @@ from app.infrastructure.ai.semantic_guardrail import KeywordSemanticGuardrail
 from app.infrastructure.auth.google_oauth import GoogleAuthClient
 from app.infrastructure.auth.jwt_service import JwtTokenService
 from app.infrastructure.auth.password_hasher import Argon2PasswordHasher
+from app.infrastructure.azure.azure_document_intelligence import AzureDocumentIntelligenceClient
 from app.infrastructure.azure.azure_speech_to_text import AzureSpeechToTextClient
 from app.infrastructure.database.repositories.sqlalchemy_account_repository import SqlAlchemyAccountRepository
 from app.infrastructure.database.repositories.sqlalchemy_category_repository import SqlAlchemyCategoryRepository
@@ -82,6 +89,12 @@ def get_speech_to_text_client(settings: Settings = Depends(get_settings_dependen
     return AzureSpeechToTextClient(settings)
 
 
+def get_document_intelligence_client(
+    settings: Settings = Depends(get_settings_dependency),
+) -> AzureDocumentIntelligenceClient:
+    return AzureDocumentIntelligenceClient(settings)
+
+
 def get_semantic_guardrail() -> KeywordSemanticGuardrail:
     return KeywordSemanticGuardrail()
 
@@ -97,27 +110,23 @@ def get_langgraph_checkpointer(request: Request) -> Any:
     return checkpointer
 
 
-def get_chat_orchestrator(
-    request: Request,
-    checkpointer: Any = Depends(get_langgraph_checkpointer),
-    semantic_guardrail: KeywordSemanticGuardrail = Depends(get_semantic_guardrail),
-    intent_classifier: KeywordIntentClassifier = Depends(get_intent_classifier),
-) -> ChatOrchestrator:
-    orchestrator = getattr(request.app.state, 'chat_orchestrator', None)
-    if orchestrator is None:
-        orchestrator = LangGraphChatOrchestrator(
-            checkpointer=checkpointer,
-            semantic_guardrail=semantic_guardrail,
-            intent_classifier=intent_classifier,
-        )
-        request.app.state.chat_orchestrator = orchestrator
-    return orchestrator
+def get_transaction_extraction_llm(settings: Settings = Depends(get_settings_dependency)) -> Any | None:
+    if AzureChatOpenAI is None:
+        return None
 
+    deployment = settings.azure_openai_extraction_deployment or settings.azure_openai_deployment
+    if not settings.azure_openai_endpoint or not settings.azure_openai_api_key or not deployment:
+        return None
 
-def get_chat_service(
-    orchestrator: ChatOrchestrator = Depends(get_chat_orchestrator),
-) -> ChatService:
-    return ChatService(orchestrator=orchestrator)
+    return AzureChatOpenAI(
+        azure_endpoint=settings.azure_openai_endpoint,
+        api_key=settings.azure_openai_api_key,
+        azure_deployment=deployment,
+        api_version=settings.azure_openai_api_version,
+        temperature=0,
+        timeout=20,
+        max_retries=2,
+    )
 
 
 def get_auth_service(
@@ -160,10 +169,45 @@ def get_transaction_service(
     )
 
 
+def get_chat_orchestrator(
+    checkpointer: Any = Depends(get_langgraph_checkpointer),
+    settings: Settings = Depends(get_settings_dependency),
+    semantic_guardrail: KeywordSemanticGuardrail = Depends(get_semantic_guardrail),
+    intent_classifier: KeywordIntentClassifier = Depends(get_intent_classifier),
+    transaction_service: TransactionService = Depends(get_transaction_service),
+    account_repository: SqlAlchemyAccountRepository = Depends(get_account_repository),
+    category_repository: SqlAlchemyCategoryRepository = Depends(get_category_repository),
+    extraction_llm: Any | None = Depends(get_transaction_extraction_llm),
+) -> ChatOrchestrator:
+    return LangGraphChatOrchestrator(
+        checkpointer=checkpointer,
+        semantic_guardrail=semantic_guardrail,
+        intent_classifier=intent_classifier,
+        transaction_service=transaction_service,
+        account_repository=account_repository,
+        category_repository=category_repository,
+        extraction_llm=extraction_llm,
+        proposal_confidence_threshold=settings.chat_proposal_confidence_threshold,
+        hitl_max_turns=settings.chat_hitl_max_turns,
+    )
+
+
+def get_chat_service(
+    orchestrator: ChatOrchestrator = Depends(get_chat_orchestrator),
+) -> ChatService:
+    return ChatService(orchestrator=orchestrator)
+
+
 def get_speech_service(
     speech_to_text_client: AzureSpeechToTextClient = Depends(get_speech_to_text_client),
 ) -> SpeechService:
     return SpeechService(speech_to_text_client=speech_to_text_client)
+
+
+def get_image_service(
+    document_intelligence_client: AzureDocumentIntelligenceClient = Depends(get_document_intelligence_client),
+) -> ImageService:
+    return ImageService(image_to_text_client=document_intelligence_client)
 
 
 async def get_current_user(
@@ -182,6 +226,7 @@ async def get_current_user(
         user_id: uuid.UUID = token_service.decode_access_token(token)
     except InvalidTokenError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid or expired token') from exc
+
     user = await user_repository.get_by_id(user_id)
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid or expired token')

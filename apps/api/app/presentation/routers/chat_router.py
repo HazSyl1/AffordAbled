@@ -3,10 +3,17 @@
 from fastapi import APIRouter, Depends, File, Form, UploadFile, status
 
 from app.application.services.chat_service import ChatService
+from app.application.services.image_service import ImageService
 from app.application.services.speech_service import SpeechService
-from app.core.dependencies import get_chat_service, get_current_user, get_speech_service
+from app.core.dependencies import get_chat_service, get_current_user, get_image_service, get_speech_service
 from app.domain.entities import User
-from app.presentation.schemas.chat import ChatRequest, ChatResponse, VoiceTranscriptionResponse
+from app.presentation.schemas.chat import (
+    ChatRequest,
+    ChatResponse,
+    ImageAnalysisResponse,
+    PendingTransactionProposalResponse,
+    VoiceTranscriptionResponse,
+)
 
 router = APIRouter(prefix='/chat', tags=['chat'])
 
@@ -22,7 +29,29 @@ async def send_chat_message(
         message=payload.message,
         thread_id=payload.thread_id,
     )
-    return ChatResponse(thread_id=response.thread_id, message=response.message)
+    proposal = response.pending_transaction_proposal
+    return ChatResponse(
+        thread_id=response.thread_id,
+        message=response.message,
+        pending_transaction_proposal=(
+            PendingTransactionProposalResponse(
+                type=proposal.type,
+                amount_paise=proposal.amount_paise,
+                occurred_at=proposal.occurred_at,
+                account_id=proposal.account_id,
+                account_name=proposal.account_name,
+                category_id=proposal.category_id,
+                category_name=proposal.category_name,
+                confidence_score=proposal.confidence_score,
+                merchant=proposal.merchant,
+                note=proposal.note,
+            )
+            if proposal is not None
+            else None
+        ),
+        transaction_logged=response.transaction_logged,
+        manual_transaction_input_required=response.manual_transaction_input_required,
+    )
 
 
 @router.post(
@@ -41,3 +70,24 @@ async def transcribe_voice(
 
     transcript = await speech_service.transcribe_voice(audio_bytes, content_type=content_type, locale=locale)
     return VoiceTranscriptionResponse(transcript=transcript, locale=locale)
+
+
+@router.post(
+    '/image',
+    response_model=ImageAnalysisResponse,
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(get_current_user)],
+)
+async def analyze_image(
+    image: UploadFile = File(...),
+    image_service: ImageService = Depends(get_image_service),
+) -> ImageAnalysisResponse:
+    image_bytes = await image.read()
+    content_type = image.content_type or 'application/octet-stream'
+
+    analysis = await image_service.analyze_image(
+        image_bytes,
+        content_type=content_type,
+        filename=image.filename,
+    )
+    return ImageAnalysisResponse(extracted_text=analysis.extracted_text, prompt=analysis.prompt)

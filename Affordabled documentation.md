@@ -1,6 +1,6 @@
-# AffordAbled — Complete Architecture & Decision Documentation
+﻿# AffordAbled â€” Complete Architecture & Decision Documentation
 
-> **Document status:** Phase 1 complete. Phase 2 in progress.
+> **Document status:** Phase 1 complete. Phase 2 complete. Phase 3 next.
 
 ---
 
@@ -8,11 +8,11 @@
 
 1. [Guiding Principles](#1-guiding-principles)
 2. [Tech Stack](#2-tech-stack)
-3. [Phase 1 — Core Wallet](#3-phase-1--core-wallet)
-4. [Phase 2 — AI Layer](#4-phase-2--ai-layer)
+3. [Phase 1 â€” Core Wallet](#3-phase-1--core-wallet)
+4. [Phase 2 â€” AI Layer](#4-phase-2--ai-layer)
    - [4.1 Model & Providers](#41-model--providers)
    - [4.2 Multi-Graph Orchestrator Architecture](#42-multi-graph-orchestrator-architecture)
-   - [4.3 Graph Flows — Detailed](#43-graph-flows--detailed)
+   - [4.3 Graph Flows â€” Detailed](#43-graph-flows--detailed)
    - [4.4 Complete Tool List](#44-complete-tool-list)
    - [4.5 Memory System](#45-memory-system)
    - [4.6 Human In The Loop](#46-human-in-the-loop)
@@ -37,7 +37,7 @@
 
 ## 1. Guiding Principles
 
-- AI proposes, deterministic code validates and executes. The agent never fabricates numbers — every financial figure comes from a repository/service call, not from LLM text generation.
+- AI proposes, deterministic code validates and executes. The agent never fabricates numbers â€” every financial figure comes from a repository/service call, not from LLM text generation.
 - No AI-created transaction is committed without an explicit user confirmation step.
 - Every tool the agent can call is scoped to the authenticated `user_id` server-side. The LLM never supplies `user_id` as an argument.
 - Keep the wallet fully usable without AI. AI is an enhancement layer on top of the plain CRUD app from Phase 1.
@@ -46,6 +46,7 @@
 - Conversational recovery over hard errors.
 - External-integration execution rule: whenever a phase item depends on Azure or any external service, implementation handoff must include (1) resource provisioning steps, (2) required env vars/secrets, and (3) a concrete verification call/checklist.
 - Queue reliability rule (Celery/Redis): treat background jobs as at-least-once delivery, never exactly-once. Every side-effecting task must be idempotent (idempotency key + dedupe/unique constraint) so duplicate deliveries are safe.
+- Receipt AI execution rule: do not rely on one heavy model for all image tasks. Use a staged pipeline: (1) OCR/layout first via Azure Document Intelligence, (2) low-cost LLM for normalization/extraction, (3) vision model fallback only for low-confidence OCR/extraction failures.
 
 ---
 
@@ -93,14 +94,14 @@
 
 ---
 
-## 3. Phase 1 — Core Wallet
+## 3. Phase 1 â€” Core Wallet
 
-**Status: APPROVED — proceed.**
+**Status: APPROVED â€” proceed.**
 
 ### Scope
 
-1. **Categories** vertical slice — entity, repository, service, router, migration (mirrors `accounts`)
-2. **Transactions** vertical slice — expense/income/transfer/refund, paise amounts, category + account references, ownership + transfer-balance validation in `TransactionService`, soft delete (`deleted_at` column)
+1. **Categories** vertical slice â€” entity, repository, service, router, migration (mirrors `accounts`)
+2. **Transactions** vertical slice â€” expense/income/transfer/refund, paise amounts, category + account references, ownership + transfer-balance validation in `TransactionService`, soft delete (`deleted_at` column)
 3. Account balance updates wired into transaction create/update
 4. Frontend: `features/categories`, `features/transactions`, `TransactionsPage`, `CreateTransactionForm` organism
 5. Tests: one smoke test per router, one financial-rule test per service
@@ -111,16 +112,16 @@ Full manual ledger works end-to-end before any AI exists.
 
 ### Transaction Actions (every transaction)
 
-- Edit manually → standard form (no AI)
-- Chat about it → opens agent with transaction as context
-- Delete → soft delete (recoverable)
-- Undo delete → restores the transaction
+- Edit manually â†’ standard form (no AI)
+- Chat about it â†’ opens agent with transaction as context
+- Delete â†’ soft delete (recoverable)
+- Undo delete â†’ restores the transaction
 
 ---
 
-## 4. Phase 2 — AI Layer
+## 4. Phase 2 â€” AI Layer
 
-**Status: FULLY CONFIRMED — begin after Phase 1 exit gate.**
+**Status: FULLY CONFIRMED â€” begin after Phase 1 exit gate.**
 
 ---
 
@@ -129,7 +130,7 @@ Full manual ledger works end-to-end before any AI exists.
 | Capability | Decision |
 |---|---|
 | Chat / reasoning / extraction | Sonnet 4.6 via Azure AI Foundry |
-| Image analysis (receipts, bills) | Sonnet native vision — no separate OCR |
+| Image analysis (receipts, bills) | Staged pipeline: OCR/layout (Azure Document Intelligence) -> lightweight LLM normalization -> vision fallback only when needed |
 | Voice input | Azure Speech-to-Text |
 | Voice output (TTS) | Dropped entirely |
 | Tracing / observability | LangSmith |
@@ -145,15 +146,15 @@ affordabled-production
 
 **Chat endpoints:**
 ```
-POST /api/v1/chat        → text input → directly into orchestrator
-POST /api/v1/chat/voice  → audio → Azure STT → same orchestrator
+POST /api/v1/chat        â†’ text input â†’ directly into orchestrator
+POST /api/v1/chat/voice  â†’ audio â†’ Azure STT â†’ same orchestrator
 ```
 
 ---
 
 ### 4.2 Multi-Graph Orchestrator Architecture
 
-Instead of a single monolithic graph, AffordAbled uses an **orchestrator pattern** — one routing graph that delegates to specialist subgraphs.
+Instead of a single monolithic graph, AffordAbled uses an **orchestrator pattern** â€” one routing graph that delegates to specialist subgraphs.
 
 **Why orchestrator over single graph:**
 - Single graph becomes unmanageable at this feature scope
@@ -166,28 +167,28 @@ Instead of a single monolithic graph, AffordAbled uses an **orchestrator pattern
 
 ```
                     User Message
-                         ↓
-              ┌──────────────────────┐
-              │   ORCHESTRATOR GRAPH  │
-              │                      │
-              │  classify intent     │
-              │  load user context   │
-              │  route to subgraph   │
-              │  handle errors       │
-              │  proactive insights  │
-              └──────────┬───────────┘
-                         ↓
-         ┌───────────────┼───────────────┐
-         ↓               ↓               ↓
-┌─────────────┐  ┌─────────────┐  ┌─────────────┐
-│ TRANSACTION │  │  ANALYTICS  │  │    SPLIT    │
-│    GRAPH    │  │    GRAPH    │  │    GRAPH    │
-└─────────────┘  └─────────────┘  └─────────────┘
-         ↓               ↓
-┌─────────────┐  ┌─────────────┐
-│   MEMORY    │  │    FILE     │
-│    GRAPH    │  │    GRAPH    │
-└─────────────┘  └─────────────┘
+                         â†“
+              â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+              â”‚   ORCHESTRATOR GRAPH  â”‚
+              â”‚                      â”‚
+              â”‚  classify intent     â”‚
+              â”‚  load user context   â”‚
+              â”‚  route to subgraph   â”‚
+              â”‚  handle errors       â”‚
+              â”‚  proactive insights  â”‚
+              â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
+                         â†“
+         â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¼â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+         â†“               â†“               â†“
+â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”  â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”  â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+â”‚ TRANSACTION â”‚  â”‚  ANALYTICS  â”‚  â”‚    SPLIT    â”‚
+â”‚    GRAPH    â”‚  â”‚    GRAPH    â”‚  â”‚    GRAPH    â”‚
+â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜  â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜  â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
+         â†“               â†“
+â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”  â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+â”‚   MEMORY    â”‚  â”‚    FILE     â”‚
+â”‚    GRAPH    â”‚  â”‚    GRAPH    â”‚
+â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜  â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
 ```
 
 #### Orchestrator Routing Logic
@@ -206,27 +207,27 @@ def route_intent(state: OrchestratorState) -> str:
 
 ---
 
-### 4.3 Graph Flows — Detailed
+### 4.3 Graph Flows â€” Detailed
 
 #### Orchestrator Graph
 
 ```
 User message
-      ↓
+      â†“
 Load user context (semantic + procedural memory + split contacts)
-      ↓
+      â†“
 Semantic guardrail check
-      ↓ (blocked?) → return refusal with finance suggestion
+      â†“ (blocked?) â†’ return refusal with finance suggestion
 Intent classification (Haiku)
-      ↓
+      â†“
 Route to subgraph
-      ↓
+      â†“
 Collect subgraph result
-      ↓
+      â†“
 Update episodic memory
-      ↓
+      â†“
 Check for proactive insights (anomaly, recurring, budget threshold)
-      ↓
+      â†“
 Return final response to user
 ```
 
@@ -234,59 +235,59 @@ Return final response to user
 
 ```
 Input: raw message (text or image)
-      ↓
+      â†“
 Extract: amount, merchant, category, date, account
-      ↓
-Image attached? → analyze_bill_image tool
-      ↓
+      â†“
+Image attached? â†’ analyze_bill_image tool
+      â†“
 Validate extraction:
   amount > 0?
   account exists for user?
   category valid?
-      ↓
+      â†“
 Split signals detected?
-  yes → hand off to Split Graph
-  no  → continue
-      ↓
+  yes â†’ hand off to Split Graph
+  no  â†’ continue
+      â†“
 Build proposal
-      ↓
-interrupt() → human confirmation card
-      ↓
-user edits?   → update proposal → show card again (loop)
-user cancels? → discard → return to orchestrator
-user confirms? → TransactionService.create()
-      ↓
+      â†“
+interrupt() â†’ human confirmation card
+      â†“
+user edits?   â†’ update proposal â†’ show card again (loop)
+user cancels? â†’ discard â†’ return to orchestrator
+user confirms? â†’ TransactionService.create()
+      â†“
 Update semantic memory (monthly averages)
 Update procedural memory (reinforce matching rules)
-      ↓
+      â†“
 Trigger anomaly check
-      ↓
-Return: "Logged ✅" + optional insight
+      â†“
+Return: "Logged âœ…" + optional insight
 ```
 
 #### Analytics Graph
 
 ```
 Input: user question
-      ↓
+      â†“
 Parse query intent:
   spending_summary / period_comparison /
   category_breakdown / balance_check / pattern_query
-      ↓
+      â†“
 Select and call tools:
   get_transactions / get_spending_summary /
   compare_spending / get_account_balances /
   get_spending_patterns / compare_to_baseline
-      ↓
+      â†“
 Result large? (>10 rows)
-  yes → trigger File Graph (PDF/Excel)
-  no  → format inline (text or table)
-      ↓
+  yes â†’ trigger File Graph (PDF/Excel)
+  no  â†’ format inline (text or table)
+      â†“
 Format response:
   plain text bubble
   highlighted insight card
   download link (if file generated)
-      ↓
+      â†“
 Return to orchestrator
 ```
 
@@ -294,31 +295,31 @@ Return to orchestrator
 
 ```
 Input: transaction proposal + split signals
-      ↓
+      â†“
 Determine split type:
-  equal  → divide total equally
-  custom → user sets each amount
-  smart  → read bill image line items per person
-      ↓
+  equal  â†’ divide total equally
+  custom â†’ user sets each amount
+  smart  â†’ read bill image line items per person
+      â†“
 Smart split path:
   analyze line items from bill image
   group by person (veg/nonveg/shared etc)
   calculate per-person amounts
-      ↓
+      â†“
 search_split_contacts (autocomplete existing contacts)
-      ↓
+      â†“
 Build split proposal:
   member names + per-person amounts + total pending
-      ↓
-interrupt() → enhanced confirmation card
-      ↓
-user disables split? → return to Transaction Graph (commit without split)
-user edits members?  → update → show again (loop)
+      â†“
+interrupt() â†’ enhanced confirmation card
+      â†“
+user disables split? â†’ return to Transaction Graph (commit without split)
+user edits members?  â†’ update â†’ show again (loop)
 user confirms?
-  → TransactionService.create()
-  → SplitService.create()
-  → split_contacts totals updated
-      ↓
+  â†’ TransactionService.create()
+  â†’ SplitService.create()
+  â†’ split_contacts totals updated
+      â†“
 Return: confirmed transaction + split summary
 ```
 
@@ -326,23 +327,23 @@ Return: confirmed transaction + split summary
 
 ```
 Input: memory operation type
-      ↓
+      â†“
 read:
   load episodic (recent 10 events)
   load semantic (all user facts)
   load procedural (all user rules)
   inject into orchestrator context
-      ↓
+      â†“
 write (semantic/procedural):
-  confidence >= 0.85 → auto save silently
-  confidence < 0.85  → interrupt() ask user to confirm
-      ↓
+  confidence >= 0.85 â†’ auto save silently
+  confidence < 0.85  â†’ interrupt() ask user to confirm
+      â†“
 decay (scheduled):
-  inferred facts older than 90 days → reduce confidence 10%
-  user_confirmed facts → never decay
-      ↓
+  inferred facts older than 90 days â†’ reduce confidence 10%
+  user_confirmed facts â†’ never decay
+      â†“
 conflict (procedural):
-  correction count >= 3 on same pattern → update rule
+  correction count >= 3 on same pattern â†’ update rule
   log rule change as episodic event
 ```
 
@@ -350,48 +351,48 @@ conflict (procedural):
 
 ```
 Input: data + format hint from Analytics Graph
-      ↓
+      â†“
 Determine format:
   agent decides: text / table / PDF / Excel
   triggers: "report", "export", "download",
             "spreadsheet", result > 10 rows
-      ↓
-text/table → format inline → return to Analytics Graph
-      ↓
+      â†“
+text/table â†’ format inline â†’ return to Analytics Graph
+      â†“
 PDF/Excel:
   render bytes deterministically (fpdf2 / openpyxl)
-      ↓
+      â†“
 PUT to Azure Blob: exports/{user_id}/{export_id}.{ext}
-      ↓
+      â†“
 Insert file_exports row (status = ready)
-      ↓
+      â†“
 Mint 15 min SAS URL
-      ↓
+      â†“
 Return download link to orchestrator
 ```
 
 #### Key Conditional Decision Points
 
 ```python
-# Transaction graph — split detection
+# Transaction graph â€” split detection
 def check_split_signals(state: TransactionState) -> str:
     if state.split_detected:
         return "split_graph"
     return "build_proposal"
 
-# Transaction graph — confirmation loop
+# Transaction graph â€” confirmation loop
 def handle_confirmation(state: TransactionState) -> str:
     if state.user_action == "confirm":   return "commit_transaction"
     elif state.user_action == "edit":    return "build_proposal"
     else:                                return "discard"
 
-# Analytics graph — file decision
+# Analytics graph â€” file decision
 def check_result_size(state: AnalyticsState) -> str:
     if len(state.results) > 10:
         return "file_graph"
     return "format_response"
 
-# Memory graph — confidence routing
+# Memory graph â€” confidence routing
 def check_confidence(state: MemoryState) -> str:
     if state.confidence >= 0.85:
         return "auto_save"
@@ -405,8 +406,8 @@ def check_confidence(state: MemoryState) -> str:
 #### Transaction Tools
 | Tool | Subgraph | What it does |
 |---|---|---|
-| `create_transaction_proposal` | Transaction | NLP extraction → confirm → commit |
-| `update_transaction_proposal` | Transaction | Edit suggestion → confirm → commit |
+| `create_transaction_proposal` | Transaction | NLP extraction â†’ confirm â†’ commit |
+| `update_transaction_proposal` | Transaction | Edit suggestion â†’ confirm â†’ commit |
 | `soft_delete_transaction` | Transaction | Marks deleted, recoverable |
 | `restore_transaction` | Transaction | Undoes soft delete |
 
@@ -443,12 +444,12 @@ def check_confidence(state: MemoryState) -> str:
 #### File Tools
 | Tool | Subgraph | What it does |
 |---|---|---|
-| `generate_file(data, format)` | File | Renders PDF/Excel → Blob → SAS URL |
+| `generate_file(data, format)` | File | Renders PDF/Excel â†’ Blob â†’ SAS URL |
 
 #### Vision Tools
 | Tool | Subgraph | What it does |
 |---|---|---|
-| `analyze_bill_image` | Transaction/Split | Sonnet reads bill → extracts line items + total |
+| `analyze_bill_image` | Transaction/Split | Sonnet reads bill â†’ extracts line items + total |
 
 #### Intelligence Tools
 | Tool | Subgraph | What it does |
@@ -456,15 +457,15 @@ def check_confidence(state: MemoryState) -> str:
 | `detect_anomaly` | Orchestrator | Flags unusual spend vs user baseline |
 | `detect_recurring` | Orchestrator | Identifies recurring transaction patterns |
 
-**Isolation rule:** every tool takes `user_id` from authenticated request/graph config — never from LLM tool-call arguments.
+**Isolation rule:** every tool takes `user_id` from authenticated request/graph config â€” never from LLM tool-call arguments.
 
 ---
 
 ### 4.5 Memory System
 
-Three memory types, all stored in Postgres — no vector DB needed until RAG (Phase 5).
+Three memory types, all stored in Postgres â€” no vector DB needed until RAG (Phase 5).
 
-#### Episodic Memory — What Happened
+#### Episodic Memory â€” What Happened
 
 ```sql
 user_episodic_memory (
@@ -485,7 +486,7 @@ user_episodic_memory (
   - `query`: 30 days
   - `transaction_deleted`: 90 days
 
-#### Semantic Memory — What Agent Knows About User
+#### Semantic Memory â€” What Agent Knows About User
 
 ```sql
 user_semantic_memory (
@@ -499,13 +500,13 @@ user_semantic_memory (
 )
 ```
 
-- `confidence >= 0.85` → saved automatically (silently)
-- `confidence < 0.85` → `interrupt()` asks user to confirm
+- `confidence >= 0.85` â†’ saved automatically (silently)
+- `confidence < 0.85` â†’ `interrupt()` asks user to confirm
 - User-confirmed facts: never decay
 - Inferred facts: decay 10% every 90 days without reinforcement (weekly job)
-- Below `0.5` confidence → flagged for removal
+- Below `0.5` confidence â†’ flagged for removal
 
-#### Procedural Memory — How User Likes Things Done
+#### Procedural Memory â€” How User Likes Things Done
 
 ```sql
 user_procedural_memory (
@@ -523,7 +524,7 @@ user_procedural_memory (
 - Conflict resolution: 3 new corrections within 30 days override old rule
 - Rule changes logged as episodic event
 
-#### Context Injection — Every Conversation
+#### Context Injection â€” Every Conversation
 
 ```python
 system_prompt = f"""
@@ -535,7 +536,7 @@ WHAT YOU KNOW ABOUT THIS USER (Semantic):
 HOW THIS USER LIKES THINGS DONE (Procedural):
 {format_procedural(procedural_rules)}
 
-RECENT CONTEXT (Episodic — last 10 events):
+RECENT CONTEXT (Episodic â€” last 10 events):
 {format_episodic(recent_episodes)}
 
 FREQUENT SPLIT CONTACTS:
@@ -552,20 +553,20 @@ Rules:
 #### "What Claude Knows About Me" Page
 
 User-facing memory management at `/memory`:
-- **Facts Claude knows** (Semantic) → view / edit / delete
-- **How Claude behaves** (Procedural) → view / edit / delete
-- **Recent activity** (Episodic) → read only
-- **[Reset all memory]** → nuclear option
+- **Facts Claude knows** (Semantic) â†’ view / edit / delete
+- **How Claude behaves** (Procedural) â†’ view / edit / delete
+- **Recent activity** (Episodic) â†’ read only
+- **[Reset all memory]** â†’ nuclear option
 
 #### Scheduled Memory Jobs
 
 ```python
-# Nightly — episodic cleanup
+# Nightly â€” episodic cleanup
 async def cleanup_episodic_memory():
     for event_type, days in RETENTION_POLICY.items():
         await memory_repo.delete_old_episodes(event_type, days)
 
-# Weekly — semantic decay
+# Weekly â€” semantic decay
 async def decay_semantic_confidence():
     await memory_repo.decay_confidence(
         source="inferred",
@@ -577,23 +578,23 @@ async def decay_semantic_confidence():
 #### Self-Learning Loop
 
 ```
-User corrects agent (e.g. Zomato → food delivery)
-        ↓
+User corrects agent (e.g. Zomato â†’ food delivery)
+        â†“
 Correction logged as episodic event
-        ↓
+        â†“
 correction_count for this pattern checked
-        ↓
-count >= 3 → procedural rule saved automatically
-        ↓
+        â†“
+count >= 3 â†’ procedural rule saved automatically
+        â†“
 Next interaction: rule applied, no correction needed
 
 Cross-user signal:
 Zomato misclassified for 200+ users
-        ↓
+        â†“
 Analytics detect pattern in agent_corrections
-        ↓
+        â†“
 System prompt updated globally
-        ↓
+        â†“
 Fixed for all users
 ```
 
@@ -601,43 +602,43 @@ Fixed for all users
 
 ### 4.6 Human In The Loop
 
-#### Confirmation Card — Inline In Chat
+#### Confirmation Card â€” Inline In Chat
 
 All fields inline editable by default. No separate edit mode.
 
 ```
-┌─────────────────────────────────┐
-│ 🧾 Log this transaction?        │
-│                                 │
-│ Merchant  [Swiggy        ]  ✏️  │
-│ Amount    [₹500          ]  ✏️  │
-│ Category  [Food delivery ]  ✏️  │
-│ Date      [Today         ]  ✏️  │
-│ Account   [SBI           ]  ✏️  │
-│                                 │
-│ [Confirm ✅] [Cancel ❌]        │
-│ 💬 Continue chatting →          │
-└─────────────────────────────────┘
+â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+â”‚ ðŸ§¾ Log this transaction?        â”‚
+â”‚                                 â”‚
+â”‚ Merchant  [Swiggy        ]  âœï¸  â”‚
+â”‚ Amount    [â‚¹500          ]  âœï¸  â”‚
+â”‚ Category  [Food delivery ]  âœï¸  â”‚
+â”‚ Date      [Today         ]  âœï¸  â”‚
+â”‚ Account   [SBI           ]  âœï¸  â”‚
+â”‚                                 â”‚
+â”‚ [Confirm âœ…] [Cancel âŒ]        â”‚
+â”‚ ðŸ’¬ Continue chatting â†’          â”‚
+â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
 ```
 
 #### Three Actions
 
-**Confirm ✅**
+**Confirm âœ…**
 - Commits via `TransactionService.create()`
 - Updates episodic, semantic, procedural memory
 - Shows proactive insight if relevant
-- Chat bubble: "Done! Logged ₹500 🎉"
+- Chat bubble: "Done! Logged â‚¹500 ðŸŽ‰"
 
-**Cancel ❌**
+**Cancel âŒ**
 - Proposal discarded, nothing committed
 - Logs `proposal_cancelled` episodic event
 - Chat bubble: "Okay, cancelled. Anything else?"
 
-**Continue chatting 💬**
+**Continue chatting ðŸ’¬**
 - Returns to chat view
 - Proposal stays alive in `GraphState.pending_proposal`
 - User can modify via natural language
-- "Actually make it 600" → updates proposal → card shown again
+- "Actually make it 600" â†’ updates proposal â†’ card shown again
 
 #### Proposal Lifetime In Graph State
 
@@ -656,40 +657,40 @@ Proposal survives multiple chat turns until explicitly confirmed or cancelled.
 When split is detected, additional section appears below transaction fields:
 
 ```
-┌─────────────────────────────────┐
-│ [transaction fields above...]   │
-│                                 │
-│ ┌─────────────────────────────┐ │
-│ │ 🔀 Split detected           │ │
-│ │ ₹6000 among 5 people        │ │
-│ │                             │ │
-│ │ 1. Sarthak (you)  ₹1200 ✓  │ │
-│ │ 2. [Name...    ]  ₹1200    │ │
-│ │ 3. [Name...    ]  ₹1200    │ │
-│ │                             │ │
-│ │ ● Equal  ○ Custom           │ │
-│ │ [Disable split ✕]           │ │
-│ └─────────────────────────────┘ │
-│                                 │
-│ [Confirm ✅] [Cancel ❌]        │
-└─────────────────────────────────┘
+â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+â”‚ [transaction fields above...]   â”‚
+â”‚                                 â”‚
+â”‚ â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â” â”‚
+â”‚ â”‚ ðŸ”€ Split detected           â”‚ â”‚
+â”‚ â”‚ â‚¹6000 among 5 people        â”‚ â”‚
+â”‚ â”‚                             â”‚ â”‚
+â”‚ â”‚ 1. Sarthak (you)  â‚¹1200 âœ“  â”‚ â”‚
+â”‚ â”‚ 2. [Name...    ]  â‚¹1200    â”‚ â”‚
+â”‚ â”‚ 3. [Name...    ]  â‚¹1200    â”‚ â”‚
+â”‚ â”‚                             â”‚ â”‚
+â”‚ â”‚ â— Equal  â—‹ Custom           â”‚ â”‚
+â”‚ â”‚ [Disable split âœ•]           â”‚ â”‚
+â”‚ â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜ â”‚
+â”‚                                 â”‚
+â”‚ [Confirm âœ…] [Cancel âŒ]        â”‚
+â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
 ```
 
 #### Frontend State Machine
 
 ```
 IDLE
-  ↓ user sends message
+  â†“ user sends message
 AGENT_THINKING
-  ↓ proposal returned
+  â†“ proposal returned
 PROPOSAL_SHOWN
-  ↓ user edits
+  â†“ user edits
 PROPOSAL_EDITING
-  ↓
+  â†“
 PROPOSAL_SHOWN
-  ↓            ↓              ↓
+  â†“            â†“              â†“
 CONFIRM      CANCEL      CONTINUE_CHAT
-  ↓            ↓              ↓
+  â†“            â†“              â†“
 COMMITTED    IDLE          IDLE (proposal in state)
 ```
 
@@ -717,18 +718,18 @@ COMMITTED    IDLE          IDLE (proposal in state)
 
 ### 4.7 File Exports
 
-#### Flow — Synchronous, No Queue
+#### Flow â€” Synchronous, No Queue
 
 ```
 Agent decides to generate file
-        ↓
+        â†“
 FastAPI generate_file tool:
   1. Render PDF/Excel bytes (fpdf2 / openpyxl)
   2. PUT to Blob: exports/{user_id}/{export_id}.{ext}
   3. Insert file_exports row: status = ready
   4. Mint 15 min SAS URL
   5. Return URL to orchestrator
-        ↓
+        â†“
 Agent returns inline download link to user
 ```
 
@@ -741,7 +742,7 @@ file_exports (
     id,
     user_id,
     thread_id,
-    blob_path,       -- never a URL, just the path — permanent
+    blob_path,       -- never a URL, just the path â€” permanent
     filename,
     format,          -- "pdf" or "excel"
     content_type,
@@ -755,19 +756,19 @@ file_exports (
 
 ```
 User clicks download (any session)
-        ↓
+        â†“
 GET /api/v1/exports/{export_id}/download-url
-        ↓
+        â†“
 Server looks up blob_path (scoped to user_id ownership check)
-        ↓
+        â†“
 Mints fresh 15 min SAS URL
-        ↓
-User downloads ✅
+        â†“
+User downloads âœ…
 ```
 
 #### When Agent Generates A File
 
-Agent autonomously decides — not only when user says "PDF":
+Agent autonomously decides â€” not only when user says "PDF":
 - User asks for "report", "export", "download", "spreadsheet"
 - Query result has more than 10 rows
 - User asks to compare multiple periods or categories
@@ -782,7 +783,7 @@ Agent autonomously decides — not only when user says "PDF":
 
 #### SAS TTL: 15 minutes
 
-Fresh URL minted on every click — TTL only needs to cover the download window.
+Fresh URL minted on every click â€” TTL only needs to cover the download window.
 
 ---
 
@@ -790,21 +791,21 @@ Fresh URL minted on every click — TTL only needs to cover the download window.
 
 #### Split Types
 
-- **Equal** — divide total equally among all members
-- **Custom** — user sets each person's amount manually
-- **Smart** — agent reads bill image line items, splits by what each person ordered
+- **Equal** â€” divide total equally among all members
+- **Custom** â€” user sets each person's amount manually
+- **Smart** â€” agent reads bill image line items, splits by what each person ordered
 
 #### Smart Split Example
 
 ```
 Bill image: dinner for 5
-  Veg thali x2:    ₹1200
-  Non-veg thali x3: ₹2800
-  Dessert x5:      ₹2000 (shared)
+  Veg thali x2:    â‚¹1200
+  Non-veg thali x3: â‚¹2800
+  Dessert x5:      â‚¹2000 (shared)
 
 Smart split:
-  Veg person:     ₹600 + ₹400 = ₹1000 each
-  Non-veg person: ₹933 + ₹400 = ₹1333 each
+  Veg person:     â‚¹600 + â‚¹400 = â‚¹1000 each
+  Non-veg person: â‚¹933 + â‚¹400 = â‚¹1333 each
 ```
 
 #### Split Contacts
@@ -856,24 +857,24 @@ split_members (
 #### Transaction List Badge
 
 ```
-Swiggy     ₹500    [🔀 ₹400 pending]
+Swiggy     â‚¹500    [ðŸ”€ â‚¹400 pending]
 ```
 
-Tapping badge → split detail with per-member status and settle buttons.
+Tapping badge â†’ split detail with per-member status and settle buttons.
 
 #### Dashboard Split Tracker Widget
 
-Grouped by contact — shows everything each person owes across all transactions:
+Grouped by contact â€” shows everything each person owes across all transactions:
 
 ```
-🔀 Split Tracker — Total pending: ₹14,200
-  👤 Rahul    ₹8,400  6 splits   [View] [Remind]
-  👤 Priya    ₹3,600  3 splits   [View] [Remind]
+ðŸ”€ Split Tracker â€” Total pending: â‚¹14,200
+  ðŸ‘¤ Rahul    â‚¹8,400  6 splits   [View] [Remind]
+  ðŸ‘¤ Priya    â‚¹3,600  3 splits   [View] [Remind]
 ```
 
 #### Manual Split
 
-Always available on any transaction via **[🔀 Add Split]** button — even after the fact.
+Always available on any transaction via **[ðŸ”€ Add Split]** button â€” even after the fact.
 
 #### AI Split Detection Signals
 
@@ -886,8 +887,8 @@ split_signals = [
 # Also: multiple covers on restaurant bill, group booking reference
 ```
 
-No signal + no image → no split suggested (default off).
-Signal detected → split card shown, ON by default.
+No signal + no image â†’ no split suggested (default off).
+Signal detected â†’ split card shown, ON by default.
 
 ---
 
@@ -895,7 +896,7 @@ Signal detected → split card shown, ON by default.
 
 Three layers operating in sequence:
 
-#### Layer 1 — Semantic Similarity (Fastest)
+#### Layer 1 â€” Semantic Similarity (Fastest)
 
 ```python
 # One-time setup at startup
@@ -914,10 +915,10 @@ finance_score  = max(cosine_similarity(message_vector, fv) for fv in finance_vec
 # Three zones
 if finance_score > 0.75:  return Decision.ALLOW         # clearly finance
 if finance_score < 0.25:  return Decision.BLOCK          # clearly off-topic
-else:                     return Decision.NEEDS_CLASSIFICATION  # borderline → Layer 2
+else:                     return Decision.NEEDS_CLASSIFICATION  # borderline â†’ Layer 2
 ```
 
-#### Layer 2 — Intent Classifier (Borderline Only)
+#### Layer 2 â€” Intent Classifier (Borderline Only)
 
 Uses Claude Haiku (cheap + fast) to classify borderline messages:
 
@@ -932,10 +933,10 @@ class DetectedIntent(Enum):
     OFF_TOPIC
 ```
 
-#### Layer 3 — System Prompt (Always Present)
+#### Layer 3 â€” System Prompt (Always Present)
 
 Agent itself refuses non-finance requests. Refusal format:
-> "I'm your finance assistant — I can only help with money matters. Want me to [relevant finance suggestion]?"
+> "I'm your finance assistant â€” I can only help with money matters. Want me to [relevant finance suggestion]?"
 
 #### Guardrail Logging
 
@@ -951,18 +952,18 @@ Used to identify abuse patterns and improve classifier over time.
 #### Borderline Handling
 
 ```
-"Is inflation affecting my spending?" → finance-adjacent → ALLOW
-"Should I invest my savings?"         → finance-adjacent → ALLOW with disclaimer
-"What's the USD to INR rate?"         → useful for finance → ALLOW
-"Write a poem about my expenses"      → off-topic → BLOCK
-"Explain machine learning"            → off-topic → BLOCK
+"Is inflation affecting my spending?" â†’ finance-adjacent â†’ ALLOW
+"Should I invest my savings?"         â†’ finance-adjacent â†’ ALLOW with disclaimer
+"What's the USD to INR rate?"         â†’ useful for finance â†’ ALLOW
+"Write a poem about my expenses"      â†’ off-topic â†’ BLOCK
+"Explain machine learning"            â†’ off-topic â†’ BLOCK
 ```
 
 ---
 
 ### 4.10 Evaluation Pipeline
 
-#### Dataset — Built From Production
+#### Dataset â€” Built From Production
 
 ```sql
 eval_dataset (
@@ -980,9 +981,9 @@ eval_dataset (
 ```
 
 **Auto-labelling logic:**
-- User confirms without edits → `passed = true`
-- User edits before confirming → `passed = false`, expected = corrected version
-- User cancels → ambiguous, logged but not labelled
+- User confirms without edits â†’ `passed = true`
+- User edits before confirming â†’ `passed = false`, expected = corrected version
+- User cancels â†’ ambiguous, logged but not labelled
 
 #### Metrics Tracked
 
@@ -1026,18 +1027,18 @@ agent_metrics (
 )
 ```
 
-#### Improvement Loop — Weekly
+#### Improvement Loop â€” Weekly
 
 ```
 Run LangSmith eval suite
-        ↓
+        â†“
 Identify top corrections across users
-(e.g. "Zomato misclassified as groceries — 234 users")
-        ↓
+(e.g. "Zomato misclassified as groceries â€” 234 users")
+        â†“
 Update system prompt
-        ↓
-Re-run eval → measure improvement
-        ↓
+        â†“
+Re-run eval â†’ measure improvement
+        â†“
 Repeat weekly
 ```
 
@@ -1074,13 +1075,13 @@ chat_messages (
 
 | Decision | Choice |
 |---|---|
-| Thread creation | User controlled — explicit new chat |
+| Thread creation | User controlled â€” explicit new chat |
 | Thread types | General + Transaction-scoped |
 | History | Full list, infinite scroll, grouped by date |
 | Retention | 90 days |
 | Conversation storage | Opt-out (default on) |
 
-**Transaction-scoped thread:** opened via "Chat about this" on any transaction. Opens `/chat?transaction_id=xyz` — agent receives transaction as context automatically.
+**Transaction-scoped thread:** opened via "Chat about this" on any transaction. Opens `/chat?transaction_id=xyz` â€” agent receives transaction as context automatically.
 
 ---
 
@@ -1096,9 +1097,9 @@ Redis-based, per user:
 | `POST /chat` | 10 messages | Per minute (burst) |
 | All endpoints | 200 requests | Per minute |
 
-Remaining count shown in chat header: `💬 AffordAbled AI [38/50 msgs]`
+Remaining count shown in chat header: `ðŸ’¬ AffordAbled AI [38/50 msgs]`
 
-When limit reached — friendly message shown with manual alternatives.
+When limit reached â€” friendly message shown with manual alternatives.
 
 ---
 
@@ -1143,19 +1144,19 @@ response.set_cookie(
 **Email + Password:**
 ```
 POST /api/v1/auth/login
-→ validate credentials
-→ return access token (body)
-→ set refresh token (httpOnly cookie)
+â†’ validate credentials
+â†’ return access token (body)
+â†’ set refresh token (httpOnly cookie)
 ```
 
 **Google OAuth (via Authlib):**
 ```
 GET /api/v1/auth/google
-→ redirect to Google consent screen
-→ Google returns auth code
-→ exchange for profile
-→ find or create user
-→ same token flow
+â†’ redirect to Google consent screen
+â†’ Google returns auth code
+â†’ exchange for profile
+â†’ find or create user
+â†’ same token flow
 ```
 
 ### Auto Token Refresh (RTK Query)
@@ -1214,32 +1215,32 @@ GET  /api/v1/auth/me
 
 ```
 FastAPI publishes event
-        ↓
+        â†“
 Redis queue (Celery broker)
-        ↓
+        â†“
 Celery Worker processes event:
-  → checks triggers
-  → checks user preferences
-  → sends via channels
-        ↓
+  â†’ checks triggers
+  â†’ checks user preferences
+  â†’ sends via channels
+        â†“
 Channels:
-  Resend → email
-  pywebpush → web push
-  notifications table → in-app
+  Resend â†’ email
+  pywebpush â†’ web push
+  notifications table â†’ in-app
 ```
 
 ### Channel Routing
 
 | Trigger | Email | Push |
 |---|---|---|
-| Split reminder | ✅ | ✅ |
-| Split settled | ❌ | ✅ |
-| Budget 80% | ❌ | ✅ |
-| Budget exceeded | ✅ | ✅ |
-| Anomaly detected | ✅ | ✅ |
-| Weekly summary | ✅ | ❌ |
-| Monthly report | ✅ | ❌ |
-| New login | ✅ | ❌ |
+| Split reminder | âœ… | âœ… |
+| Split settled | âŒ | âœ… |
+| Budget 80% | âŒ | âœ… |
+| Budget exceeded | âœ… | âœ… |
+| Anomaly detected | âœ… | âœ… |
+| Weekly summary | âœ… | âŒ |
+| Monthly report | âœ… | âŒ |
+| New login | âœ… | âŒ |
 
 ### Scheduled Jobs (Celery Beat)
 
@@ -1273,9 +1274,9 @@ notification_preferences (
 ### Three Processes
 
 ```
-Process 1 — FastAPI:        handles HTTP requests, publishes events
-Process 2 — Celery Worker:  processes notification events, sends emails/push
-Process 3 — Celery Beat:    fires scheduled tasks (summaries, reminders)
+Process 1 â€” FastAPI:        handles HTTP requests, publishes events
+Process 2 â€” Celery Worker:  processes notification events, sends emails/push
+Process 3 â€” Celery Beat:    fires scheduled tasks (summaries, reminders)
 ```
 
 ---
@@ -1300,8 +1301,8 @@ Process 3 — Celery Beat:    fires scheduled tasks (summaries, reminders)
   --text-secondary: #9CA3AF;
   --text-muted:     #6B7280;
 
-  --positive:       #4ADE80;   /* green-400 — income */
-  --negative:       #F87171;   /* red-400 — expense */
+  --positive:       #4ADE80;   /* green-400 â€” income */
+  --negative:       #F87171;   /* red-400 â€” expense */
   --warning:        #FACC15;   /* yellow-400 */
   --info:           #60A5FA;   /* blue-400 */
 
@@ -1314,7 +1315,7 @@ Process 3 — Celery Beat:    fires scheduled tasks (summaries, reminders)
 ### Typography
 
 - **Font:** Inter (Google Fonts)
-- **Scale:** xs(12) → sm(14) → base(16) → lg(18) → xl(20) → 2xl(24) → 3xl(30) → 4xl(36)
+- **Scale:** xs(12) â†’ sm(14) â†’ base(16) â†’ lg(18) â†’ xl(20) â†’ 2xl(24) â†’ 3xl(30) â†’ 4xl(36)
 - **Weights:** 400 body / 500 labels / 600 titles / 700 hero numbers
 
 ### Dashboard Widget Order
@@ -1330,8 +1331,8 @@ Process 3 — Celery Beat:    fires scheduled tasks (summaries, reminders)
 ### Navigation
 
 ```
-Bottom nav: 🏠 Home | 💳 Transactions | 🔀 Splits | 👤 Profile
-FABs above nav: [🎤] mic shortcut  [💬] chat
+Bottom nav: ðŸ  Home | ðŸ’³ Transactions | ðŸ”€ Splits | ðŸ‘¤ Profile
+FABs above nav: [ðŸŽ¤] mic shortcut  [ðŸ’¬] chat
 ```
 
 ### Page Routes
@@ -1381,7 +1382,7 @@ FABs above nav: [🎤] mic shortcut  [💬] chat
 ### Local Development
 
 ```yaml
-# docker-compose.yml — one command: docker-compose up
+# docker-compose.yml â€” one command: docker-compose up
 services:
   api:     FastAPI (uvicorn --reload)
   worker:  Celery worker
@@ -1391,7 +1392,7 @@ services:
   redis:   Redis alpine
 ```
 
-### Cloud — Azure Container Apps
+### Cloud â€” Azure Container Apps
 
 ```
 Environment: affordabled-env
@@ -1414,7 +1415,7 @@ Azure Speech Services          (STT, centralindia region)
 Azure AI Foundry               (Sonnet 4.6)
 ```
 
-### Secrets — Azure Key Vault
+### Secrets â€” Azure Key Vault
 
 All secrets stored in Key Vault, pulled via managed identity (no credentials in code):
 ```
@@ -1426,28 +1427,28 @@ vapid-private-key, anthropic-api-key,
 sentry-dsn
 ```
 
-### CI/CD — GitHub Actions
+### CI/CD â€” GitHub Actions
 
 ```
 PR pipeline:
-  → unit + integration tests
-  → type check + lint
-  → must pass to merge
+  â†’ unit + integration tests
+  â†’ type check + lint
+  â†’ must pass to merge
 
 Staging pipeline (on merge to main):
-  → build + push Docker images to ACR
-  → deploy to staging Container Apps
-  → run Alembic migrations
+  â†’ build + push Docker images to ACR
+  â†’ deploy to staging Container Apps
+  â†’ run Alembic migrations
 
 Production pipeline (on v* tag):
-  → requires manual approval
-  → same deploy flow to production
+  â†’ requires manual approval
+  â†’ same deploy flow to production
 ```
 
 ### Branch Strategy
 
 ```
-feature/*  →  PR  →  main  →  [auto] staging  →  v* tag  →  [manual] production
+feature/*  â†’  PR  â†’  main  â†’  [auto] staging  â†’  v* tag  â†’  [manual] production
 ```
 
 ### Monitoring
@@ -1475,7 +1476,7 @@ feature/*  →  PR  →  main  →  [auto] staging  →  v* tag  →  [manual] p
 | E2E | Playwright | Nightly |
 | Eval pipeline | LangSmith experiments | Weekly |
 
-### Unit Tests — What To Cover
+### Unit Tests â€” What To Cover
 
 ```
 Transaction validation rules
@@ -1488,7 +1489,7 @@ Budget threshold checks
 Cross-user isolation
 ```
 
-### Integration Tests — What To Cover
+### Integration Tests â€” What To Cover
 
 ```
 All auth endpoints
@@ -1502,7 +1503,7 @@ Repository methods + complex aggregations
 
 ### AI-Specific Tests
 
-**Tool tests (deterministic — run on every PR):**
+**Tool tests (deterministic â€” run on every PR):**
 ```python
 # Tools never return another user's data
 # Spending summary math is correct
@@ -1510,7 +1511,7 @@ Repository methods + complex aggregations
 # Guardrail blocks/allows correctly
 ```
 
-**Extraction tests (LLM — run nightly):**
+**Extraction tests (LLM â€” run nightly):**
 ```python
 @pytest.mark.llm
 @pytest.mark.parametrize("input,expected", [
@@ -1521,13 +1522,13 @@ Repository methods + complex aggregations
 async def test_transaction_extraction(input, expected): ...
 ```
 
-### E2E Tests (Playwright — 5 critical flows)
+### E2E Tests (Playwright â€” 5 critical flows)
 
-1. Complete transaction log flow (chat → proposal → confirm → list)
+1. Complete transaction log flow (chat â†’ proposal â†’ confirm â†’ list)
 2. Split creation and settlement flow
 3. Google OAuth login flow
 4. File export generation and download
-5. Voice input → transcription → transaction
+5. Voice input â†’ transcription â†’ transaction
 
 ### Coverage Targets
 
@@ -1629,145 +1630,145 @@ checkpoints (managed by LangGraph Postgres checkpointer)
 
 ```
 AffordAbled/
-├── apps/
-│   ├── api/
-│   │   ├── app/
-│   │   │   ├── core/
-│   │   │   │   ├── config.py
-│   │   │   │   ├── security.py
-│   │   │   │   └── dependencies.py
-│   │   │   │
-│   │   │   ├── domain/
-│   │   │   │   ├── entities/
-│   │   │   │   │   ├── transaction.py
-│   │   │   │   │   ├── account.py
-│   │   │   │   │   ├── category.py
-│   │   │   │   │   ├── split.py
-│   │   │   │   │   └── split_contact.py
-│   │   │   │   └── ports.py
-│   │   │   │       # ChatModel, SpeechToTextService,
-│   │   │   │       # ObjectStorageService, TokenService
-│   │   │   │
-│   │   │   ├── application/
-│   │   │   │   ├── services/
-│   │   │   │   │   ├── transaction_service.py
-│   │   │   │   │   ├── account_service.py
-│   │   │   │   │   ├── category_service.py
-│   │   │   │   │   ├── split_service.py
-│   │   │   │   │   ├── memory_service.py
-│   │   │   │   │   ├── file_export_service.py
-│   │   │   │   │   └── notification_service.py
-│   │   │   │   └── use_cases/
-│   │   │   │
-│   │   │   ├── infrastructure/
-│   │   │   │   ├── database/
-│   │   │   │   │   ├── models/
-│   │   │   │   │   └── repositories/
-│   │   │   │   │       ├── transaction_repo.py
-│   │   │   │   │       ├── account_repo.py
-│   │   │   │   │       ├── category_repo.py
-│   │   │   │   │       ├── split_repo.py
-│   │   │   │   │       ├── memory_repo.py
-│   │   │   │   │       ├── file_exports_repo.py
-│   │   │   │   │       └── notification_repo.py
-│   │   │   │   │
-│   │   │   │   ├── ai/
-│   │   │   │   │   ├── providers/
-│   │   │   │   │   │   ├── foundry_chat_model.py
-│   │   │   │   │   │   └── azure_speech.py
-│   │   │   │   │   ├── graphs/
-│   │   │   │   │   │   ├── orchestrator_graph.py
-│   │   │   │   │   │   ├── transaction_graph.py
-│   │   │   │   │   │   ├── analytics_graph.py
-│   │   │   │   │   │   ├── split_graph.py
-│   │   │   │   │   │   ├── memory_graph.py
-│   │   │   │   │   │   └── file_graph.py
-│   │   │   │   │   ├── tools/
-│   │   │   │   │   │   ├── transaction_tools.py
-│   │   │   │   │   │   ├── query_tools.py
-│   │   │   │   │   │   ├── memory_tools.py
-│   │   │   │   │   │   ├── split_tools.py
-│   │   │   │   │   │   ├── file_tools.py
-│   │   │   │   │   │   └── vision_tools.py
-│   │   │   │   │   ├── guardrails/
-│   │   │   │   │   │   ├── semantic_guardrail.py
-│   │   │   │   │   │   └── intent_classifier.py
-│   │   │   │   │   └── checkpointer.py
-│   │   │   │   │
-│   │   │   │   ├── storage/
-│   │   │   │   │   └── azure_blob.py
-│   │   │   │   │
-│   │   │   │   └── celery/
-│   │   │   │       ├── celery_app.py
-│   │   │   │       └── tasks/
-│   │   │   │           ├── notification_tasks.py
-│   │   │   │           └── scheduled_tasks.py
-│   │   │   │
-│   │   │   └── presentation/
-│   │   │       └── routers/
-│   │   │           ├── auth_router.py
-│   │   │           ├── accounts_router.py
-│   │   │           ├── transactions_router.py
-│   │   │           ├── categories_router.py
-│   │   │           ├── splits_router.py
-│   │   │           ├── contacts_router.py
-│   │   │           ├── memory_router.py
-│   │   │           ├── exports_router.py
-│   │   │           ├── notifications_router.py
-│   │   │           └── chat_router.py
-│   │   │
-│   │   ├── alembic/
-│   │   │   └── versions/
-│   │   ├── tests/
-│   │   │   ├── conftest.py
-│   │   │   ├── unit/
-│   │   │   ├── integration/
-│   │   │   ├── ai/
-│   │   │   └── e2e/
-│   │   ├── Dockerfile
-│   │   └── requirements.txt
-│   │
-│   └── web/
-│       └── src/
-│           ├── features/
-│           │   ├── auth/
-│           │   ├── dashboard/
-│           │   ├── transactions/
-│           │   ├── categories/
-│           │   ├── accounts/
-│           │   ├── splits/
-│           │   ├── contacts/
-│           │   ├── chat/
-│           │   ├── memory/
-│           │   ├── exports/
-│           │   └── notifications/
-│           ├── store/
-│           │   ├── store.ts
-│           │   ├── slices/
-│           │   │   ├── authSlice.ts
-│           │   │   └── uiSlice.ts
-│           │   └── services/
-│           │       ├── api.ts
-│           │       ├── authApi.ts
-│           │       ├── transactionsApi.ts
-│           │       ├── splitsApi.ts
-│           │       ├── chatApi.ts
-│           │       └── memoryApi.ts
-│           ├── components/
-│           │   ├── ui/
-│           │   └── organisms/
-│           │       ├── TransactionProposalCard.tsx
-│           │       ├── SplitProposalCard.tsx
-│           │       ├── InsightCard.tsx
-│           │       └── ChatInput.tsx
-│           └── Dockerfile
-│
-├── docker-compose.yml
-└── .github/
-    └── workflows/
-        ├── pr.yml
-        ├── staging.yml
-        └── production.yml
+â”œâ”€â”€ apps/
+â”‚   â”œâ”€â”€ api/
+â”‚   â”‚   â”œâ”€â”€ app/
+â”‚   â”‚   â”‚   â”œâ”€â”€ core/
+â”‚   â”‚   â”‚   â”‚   â”œâ”€â”€ config.py
+â”‚   â”‚   â”‚   â”‚   â”œâ”€â”€ security.py
+â”‚   â”‚   â”‚   â”‚   â””â”€â”€ dependencies.py
+â”‚   â”‚   â”‚   â”‚
+â”‚   â”‚   â”‚   â”œâ”€â”€ domain/
+â”‚   â”‚   â”‚   â”‚   â”œâ”€â”€ entities/
+â”‚   â”‚   â”‚   â”‚   â”‚   â”œâ”€â”€ transaction.py
+â”‚   â”‚   â”‚   â”‚   â”‚   â”œâ”€â”€ account.py
+â”‚   â”‚   â”‚   â”‚   â”‚   â”œâ”€â”€ category.py
+â”‚   â”‚   â”‚   â”‚   â”‚   â”œâ”€â”€ split.py
+â”‚   â”‚   â”‚   â”‚   â”‚   â””â”€â”€ split_contact.py
+â”‚   â”‚   â”‚   â”‚   â””â”€â”€ ports.py
+â”‚   â”‚   â”‚   â”‚       # ChatModel, SpeechToTextService,
+â”‚   â”‚   â”‚   â”‚       # ObjectStorageService, TokenService
+â”‚   â”‚   â”‚   â”‚
+â”‚   â”‚   â”‚   â”œâ”€â”€ application/
+â”‚   â”‚   â”‚   â”‚   â”œâ”€â”€ services/
+â”‚   â”‚   â”‚   â”‚   â”‚   â”œâ”€â”€ transaction_service.py
+â”‚   â”‚   â”‚   â”‚   â”‚   â”œâ”€â”€ account_service.py
+â”‚   â”‚   â”‚   â”‚   â”‚   â”œâ”€â”€ category_service.py
+â”‚   â”‚   â”‚   â”‚   â”‚   â”œâ”€â”€ split_service.py
+â”‚   â”‚   â”‚   â”‚   â”‚   â”œâ”€â”€ memory_service.py
+â”‚   â”‚   â”‚   â”‚   â”‚   â”œâ”€â”€ file_export_service.py
+â”‚   â”‚   â”‚   â”‚   â”‚   â””â”€â”€ notification_service.py
+â”‚   â”‚   â”‚   â”‚   â””â”€â”€ use_cases/
+â”‚   â”‚   â”‚   â”‚
+â”‚   â”‚   â”‚   â”œâ”€â”€ infrastructure/
+â”‚   â”‚   â”‚   â”‚   â”œâ”€â”€ database/
+â”‚   â”‚   â”‚   â”‚   â”‚   â”œâ”€â”€ models/
+â”‚   â”‚   â”‚   â”‚   â”‚   â””â”€â”€ repositories/
+â”‚   â”‚   â”‚   â”‚   â”‚       â”œâ”€â”€ transaction_repo.py
+â”‚   â”‚   â”‚   â”‚   â”‚       â”œâ”€â”€ account_repo.py
+â”‚   â”‚   â”‚   â”‚   â”‚       â”œâ”€â”€ category_repo.py
+â”‚   â”‚   â”‚   â”‚   â”‚       â”œâ”€â”€ split_repo.py
+â”‚   â”‚   â”‚   â”‚   â”‚       â”œâ”€â”€ memory_repo.py
+â”‚   â”‚   â”‚   â”‚   â”‚       â”œâ”€â”€ file_exports_repo.py
+â”‚   â”‚   â”‚   â”‚   â”‚       â””â”€â”€ notification_repo.py
+â”‚   â”‚   â”‚   â”‚   â”‚
+â”‚   â”‚   â”‚   â”‚   â”œâ”€â”€ ai/
+â”‚   â”‚   â”‚   â”‚   â”‚   â”œâ”€â”€ providers/
+â”‚   â”‚   â”‚   â”‚   â”‚   â”‚   â”œâ”€â”€ foundry_chat_model.py
+â”‚   â”‚   â”‚   â”‚   â”‚   â”‚   â””â”€â”€ azure_speech.py
+â”‚   â”‚   â”‚   â”‚   â”‚   â”œâ”€â”€ graphs/
+â”‚   â”‚   â”‚   â”‚   â”‚   â”‚   â”œâ”€â”€ orchestrator_graph.py
+â”‚   â”‚   â”‚   â”‚   â”‚   â”‚   â”œâ”€â”€ transaction_graph.py
+â”‚   â”‚   â”‚   â”‚   â”‚   â”‚   â”œâ”€â”€ analytics_graph.py
+â”‚   â”‚   â”‚   â”‚   â”‚   â”‚   â”œâ”€â”€ split_graph.py
+â”‚   â”‚   â”‚   â”‚   â”‚   â”‚   â”œâ”€â”€ memory_graph.py
+â”‚   â”‚   â”‚   â”‚   â”‚   â”‚   â””â”€â”€ file_graph.py
+â”‚   â”‚   â”‚   â”‚   â”‚   â”œâ”€â”€ tools/
+â”‚   â”‚   â”‚   â”‚   â”‚   â”‚   â”œâ”€â”€ transaction_tools.py
+â”‚   â”‚   â”‚   â”‚   â”‚   â”‚   â”œâ”€â”€ query_tools.py
+â”‚   â”‚   â”‚   â”‚   â”‚   â”‚   â”œâ”€â”€ memory_tools.py
+â”‚   â”‚   â”‚   â”‚   â”‚   â”‚   â”œâ”€â”€ split_tools.py
+â”‚   â”‚   â”‚   â”‚   â”‚   â”‚   â”œâ”€â”€ file_tools.py
+â”‚   â”‚   â”‚   â”‚   â”‚   â”‚   â””â”€â”€ vision_tools.py
+â”‚   â”‚   â”‚   â”‚   â”‚   â”œâ”€â”€ guardrails/
+â”‚   â”‚   â”‚   â”‚   â”‚   â”‚   â”œâ”€â”€ semantic_guardrail.py
+â”‚   â”‚   â”‚   â”‚   â”‚   â”‚   â””â”€â”€ intent_classifier.py
+â”‚   â”‚   â”‚   â”‚   â”‚   â””â”€â”€ checkpointer.py
+â”‚   â”‚   â”‚   â”‚   â”‚
+â”‚   â”‚   â”‚   â”‚   â”œâ”€â”€ storage/
+â”‚   â”‚   â”‚   â”‚   â”‚   â””â”€â”€ azure_blob.py
+â”‚   â”‚   â”‚   â”‚   â”‚
+â”‚   â”‚   â”‚   â”‚   â””â”€â”€ celery/
+â”‚   â”‚   â”‚   â”‚       â”œâ”€â”€ celery_app.py
+â”‚   â”‚   â”‚   â”‚       â””â”€â”€ tasks/
+â”‚   â”‚   â”‚   â”‚           â”œâ”€â”€ notification_tasks.py
+â”‚   â”‚   â”‚   â”‚           â””â”€â”€ scheduled_tasks.py
+â”‚   â”‚   â”‚   â”‚
+â”‚   â”‚   â”‚   â””â”€â”€ presentation/
+â”‚   â”‚   â”‚       â””â”€â”€ routers/
+â”‚   â”‚   â”‚           â”œâ”€â”€ auth_router.py
+â”‚   â”‚   â”‚           â”œâ”€â”€ accounts_router.py
+â”‚   â”‚   â”‚           â”œâ”€â”€ transactions_router.py
+â”‚   â”‚   â”‚           â”œâ”€â”€ categories_router.py
+â”‚   â”‚   â”‚           â”œâ”€â”€ splits_router.py
+â”‚   â”‚   â”‚           â”œâ”€â”€ contacts_router.py
+â”‚   â”‚   â”‚           â”œâ”€â”€ memory_router.py
+â”‚   â”‚   â”‚           â”œâ”€â”€ exports_router.py
+â”‚   â”‚   â”‚           â”œâ”€â”€ notifications_router.py
+â”‚   â”‚   â”‚           â””â”€â”€ chat_router.py
+â”‚   â”‚   â”‚
+â”‚   â”‚   â”œâ”€â”€ alembic/
+â”‚   â”‚   â”‚   â””â”€â”€ versions/
+â”‚   â”‚   â”œâ”€â”€ tests/
+â”‚   â”‚   â”‚   â”œâ”€â”€ conftest.py
+â”‚   â”‚   â”‚   â”œâ”€â”€ unit/
+â”‚   â”‚   â”‚   â”œâ”€â”€ integration/
+â”‚   â”‚   â”‚   â”œâ”€â”€ ai/
+â”‚   â”‚   â”‚   â””â”€â”€ e2e/
+â”‚   â”‚   â”œâ”€â”€ Dockerfile
+â”‚   â”‚   â””â”€â”€ requirements.txt
+â”‚   â”‚
+â”‚   â””â”€â”€ web/
+â”‚       â””â”€â”€ src/
+â”‚           â”œâ”€â”€ features/
+â”‚           â”‚   â”œâ”€â”€ auth/
+â”‚           â”‚   â”œâ”€â”€ dashboard/
+â”‚           â”‚   â”œâ”€â”€ transactions/
+â”‚           â”‚   â”œâ”€â”€ categories/
+â”‚           â”‚   â”œâ”€â”€ accounts/
+â”‚           â”‚   â”œâ”€â”€ splits/
+â”‚           â”‚   â”œâ”€â”€ contacts/
+â”‚           â”‚   â”œâ”€â”€ chat/
+â”‚           â”‚   â”œâ”€â”€ memory/
+â”‚           â”‚   â”œâ”€â”€ exports/
+â”‚           â”‚   â””â”€â”€ notifications/
+â”‚           â”œâ”€â”€ store/
+â”‚           â”‚   â”œâ”€â”€ store.ts
+â”‚           â”‚   â”œâ”€â”€ slices/
+â”‚           â”‚   â”‚   â”œâ”€â”€ authSlice.ts
+â”‚           â”‚   â”‚   â””â”€â”€ uiSlice.ts
+â”‚           â”‚   â””â”€â”€ services/
+â”‚           â”‚       â”œâ”€â”€ api.ts
+â”‚           â”‚       â”œâ”€â”€ authApi.ts
+â”‚           â”‚       â”œâ”€â”€ transactionsApi.ts
+â”‚           â”‚       â”œâ”€â”€ splitsApi.ts
+â”‚           â”‚       â”œâ”€â”€ chatApi.ts
+â”‚           â”‚       â””â”€â”€ memoryApi.ts
+â”‚           â”œâ”€â”€ components/
+â”‚           â”‚   â”œâ”€â”€ ui/
+â”‚           â”‚   â””â”€â”€ organisms/
+â”‚           â”‚       â”œâ”€â”€ TransactionProposalCard.tsx
+â”‚           â”‚       â”œâ”€â”€ SplitProposalCard.tsx
+â”‚           â”‚       â”œâ”€â”€ InsightCard.tsx
+â”‚           â”‚       â””â”€â”€ ChatInput.tsx
+â”‚           â””â”€â”€ Dockerfile
+â”‚
+â”œâ”€â”€ docker-compose.yml
+â””â”€â”€ .github/
+    â””â”€â”€ workflows/
+        â”œâ”€â”€ pr.yml
+        â”œâ”€â”€ staging.yml
+        â””â”€â”€ production.yml
 ```
 
 ---
@@ -1870,7 +1871,7 @@ POST   /api/v1/notifications/subscribe
 
 ## 13. Build Order
 
-### Phase 1 — Core Wallet (Current, Approved)
+### Phase 1 â€” Core Wallet (Current, Approved)
 - [x] Categories vertical slice
 - [x] Transactions vertical slice (with soft delete)
 - [x] Balance update wiring
@@ -1879,25 +1880,44 @@ POST   /api/v1/notifications/subscribe
 
 **Exit gate: full manual ledger works end-to-end.**
 
-### Phase 2 — AI Foundation
+### Phase 2 â€” AI Foundation
 - [x] Redis setup
 - [x] Azure Speech adapter + STT endpoint
 - [x] LangGraph Postgres checkpointer
-- [x] Basic orchestrator → single node → `/api/v1/chat` (prove round trip)
+- [x] Basic orchestrator â†’ single node â†’ `/api/v1/chat` (prove round trip)
 - [x] Semantic guardrail + intent classifier
 - [x] Prove two-turn conversation persists across HTTP requests
 - [x] Enable dashboard quick actions: `Chat` and `Voice` (wire to `/api/v1/chat` and `/api/v1/chat/voice` after round-trip is stable)
+- [x] Desktop quick-action chat UX parity: on `lg+`, `Chat` opens desktop chat surface (`/chat` sidebar+main or modal panel), `Voice` upload opens the same surface and posts transcript; on mobile keep `BottomSheet` behavior; add viewport-aware verification checklist (desktop + mobile).
+- [x] Halfway-chat continuity UX: persist unfinished chat drafts, show `Continue where you left off` in finance chat (`/chat`), and support transaction-scoped resume entry (`/chat?transaction_id=...`).
+- [x] Auth profile completion: capture user `name` during email registration, include it in login/refresh/me payload wiring, and render real name (not email-derived fallback) in sidebar/profile surfaces.
+- [x] Migration safety gate: treat `checkpoints` as LangGraph-managed, keep Alembic migrations idempotent, and enforce DB head checks before running API in new environments.
+- [x] Chat-to-transaction MVP (LangGraph + Azure AI Foundry LLM): extract transaction via LLM with deterministic fallback, build proposal, require explicit confirm/cancel in-thread, then commit via `TransactionService.create_transaction` (with setup prompts when account/category is missing).
 
-### Phase 3 — AI Features
+- [x] Confidence-gated transaction HITL loop: backend threshold (CHAT_PROPOSAL_CONFIDENCE_THRESHOLD=80) + max clarification turns (CHAT_HITL_MAX_TURNS=5) with same-thread interrupt()/resume flow.
+- [x] Manual fallback parity: when HITL exhausts max turns, backend returns the same pending_transaction_proposal payload shape (best-effort prefill) so popup prefill path stays unified.
+- [x] UI transparency for low-confidence autofill: Add Transaction popup now shows a Manual Prefill indicator and review hint when backend requests manual input.
+
+**Database sync checklist (always run):**
+- `alembic current` must match the repo head.
+- `alembic upgrade head` must run successfully before app/API startup on fresh or changed environments.
+- Never drop or redefine LangGraph checkpoint tables (`checkpoints`, `checkpoint_blobs`, `checkpoint_writes`, `checkpoint_migrations`) in app migrations.
+- For deploys: run migration -> run API health check -> run one authenticated smoke call (`/api/v1/auth/me`).
+
+
+### Phase 3 â€” AI Features
 - [ ] Memory system (all three types + cleanup jobs)
 - [ ] Transaction Graph (extraction, proposal, confirm, commit)
 - [ ] Analytics Graph (query tools, spending summary, comparison)
 - [ ] Split Graph (detection, smart split, contacts)
 - [ ] Bill image analysis (vision tools)
+- [ ] Receipt pipeline stage 1: OCR/layout extraction via Azure Document Intelligence
+- [ ] Receipt pipeline stage 2: low-cost LLM normalization + field mapping
+- [ ] Receipt pipeline stage 3: vision fallback only for low-confidence/OCR-failure cases
 - [ ] File Graph (PDF/Excel + Blob + SAS URL)
 - [ ] Enable dashboard quick action: `Image` (bill/receipt capture + vision extraction flow)
 
-### Phase 4 — Intelligence Layer
+### Phase 4 â€” Intelligence Layer
 - [ ] Proactive insights (anomaly, recurring, budget threshold)
 - [ ] Notification system (Celery + Resend + pywebpush)
 - [ ] Notification idempotency gate: enforce idempotency key + dedupe/unique constraint for Celery side-effect tasks (prove duplicate-safe delivery).
@@ -1905,11 +1925,11 @@ POST   /api/v1/notifications/subscribe
 - [ ] "What Claude knows about me" page
 - [ ] Self-learning improvement loop
 
-### Phase 5 — RAG (Deferred)
+### Phase 5 â€” RAG (Deferred)
 - [ ] pgvector extension
 - [ ] Embedding pipeline for transactions
 - [ ] `find_similar_past_transactions` tool
-- [ ] No graph redesign needed — purely additive
+- [ ] No graph redesign needed â€” purely additive
 
 ---
 
@@ -1929,5 +1949,10 @@ All major decisions are confirmed. Remaining items deferred intentionally:
 
 ---
 
-*Document last updated: September 2026*
-*Phase 1: Complete | Phase 2: In progress*
+*Document last updated: September 25, 2026*
+*Phase 1: Complete | Phase 2: Complete | Phase 3: Next*
+
+
+
+
+

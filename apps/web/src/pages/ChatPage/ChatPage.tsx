@@ -1,12 +1,20 @@
 import { ImagePlus, Mic } from 'lucide-react';
 import { useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 
+import { BottomSheet } from '../../components/molecules/BottomSheet';
+import { CreateTransactionForm } from '../../components/organisms/CreateTransactionForm';
 import { Card } from '../../components/atoms/Card';
 import { CollapseToggle } from '../../components/atoms/CollapseToggle';
 import { Input } from '../../components/atoms/Input';
-import { DASHBOARD_CHAT_UI_TEXT } from '../../constants';
-import { useSendChatMessageMutation, useTranscribeVoiceMutation } from '../../features/chat/chatApi';
-import { didAssistantLikelyAddTransaction } from '../../features/chat/chatHeuristics';
+import { DASHBOARD_CHAT_UI_TEXT, SHEET_TITLES } from '../../constants';
+import {
+  useAnalyzeImageMutation,
+  type ChatTransactionProposal,
+  useSendChatMessageMutation,
+  useTranscribeVoiceMutation,
+} from '../../features/chat/chatApi';
+import { mapProposalToCreateTransactionValues } from '../../features/chat/chatProposal';
 import {
   createChatDraft,
   deleteChatDraft,
@@ -53,14 +61,19 @@ function formatDraftDeadline(draft: ChatDraft): string | null {
 }
 
 export function ChatPage() {
+  const navigate = useNavigate();
   const [sendChatMessage, { isLoading: isSendingChatMessage }] = useSendChatMessageMutation();
   const [transcribeVoice, { isLoading: isTranscribingVoice }] = useTranscribeVoiceMutation();
+  const [analyzeImage, { isLoading: isAnalyzingImage }] = useAnalyzeImageMutation();
   const [drafts, setDrafts] = useState<ChatDraft[]>(() => listChatDrafts());
   const [selectedDraftId, setSelectedDraftId] = useState<string | null>(null);
   const [activeFilter, setActiveFilter] = useState<ChatListFilter>('finance');
   const [isSideToolCollapsed, setIsSideToolCollapsed] = useState(false);
   const [chatInput, setChatInput] = useState('');
   const [chatError, setChatError] = useState<string | null>(null);
+  const [showProposalSheet, setShowProposalSheet] = useState(false);
+  const [proposalForSheet, setProposalForSheet] = useState<ChatTransactionProposal | null>(null);
+  const [proposalSheetMode, setProposalSheetMode] = useState<'standard' | 'manual_low_confidence'>('standard');
   const voiceFileInputRef = useRef<HTMLInputElement | null>(null);
   const imageFileInputRef = useRef<HTMLInputElement | null>(null);
   const [openingGreeting] = useState(() => {
@@ -84,6 +97,10 @@ export function ChatPage() {
 
   const filteredItems = activeFilter === 'finance' ? groupedDrafts.financeChats : groupedDrafts.draftChats;
   const messageList = selectedDraft?.messages ?? [];
+  const proposalInitialValues = useMemo(
+    () => (proposalForSheet ? mapProposalToCreateTransactionValues(proposalForSheet) : undefined),
+    [proposalForSheet],
+  );
 
   const chatLayoutClass = isSideToolCollapsed
     ? 'grid-cols-1 md:grid-cols-[40px_minmax(0,1fr)]'
@@ -183,10 +200,16 @@ export function ChatPage() {
         content: response.message,
       };
 
-      if (optimisticDraft.lifecycle === 'draft' && didAssistantLikelyAddTransaction(response.message)) {
+      if (optimisticDraft.lifecycle === 'draft' && response.transaction_logged) {
         deleteChatDraft(optimisticDraft.id);
         refreshDrafts(null);
         return;
+      }
+
+      if (response.pending_transaction_proposal || response.manual_transaction_input_required) {
+        setProposalForSheet(response.pending_transaction_proposal ?? null);
+        setProposalSheetMode(response.manual_transaction_input_required ? 'manual_low_confidence' : 'standard');
+        setShowProposalSheet(true);
       }
 
       const nextLifecycle: ChatDraftLifecycle =
@@ -244,8 +267,20 @@ export function ChatPage() {
       return;
     }
 
-    const imagePrompt = `I uploaded an image file (${imageFile.name}). Help me log the transaction from this receipt/bill and ask for any missing fields.`;
-    await handleSendMessage(imagePrompt);
+    try {
+      setChatError(null);
+      const analysis = await analyzeImage({ image: imageFile }).unwrap();
+      const imagePrompt = analysis.prompt.trim();
+
+      if (!imagePrompt) {
+        setChatError(DASHBOARD_CHAT_UI_TEXT.imageError);
+        return;
+      }
+
+      await handleSendMessage(imagePrompt);
+    } catch {
+      setChatError(DASHBOARD_CHAT_UI_TEXT.imageError);
+    }
   };
 
   return (
@@ -269,7 +304,7 @@ export function ChatPage() {
             isSideToolCollapsed ? 'p-0' : 'p-3',
           ].join(' ')}
         >
-          <div className='relative min-h-0 flex-1 bg-[var(--bg-card)]'>
+          <div className='relative flex min-h-0 flex-1 flex-col bg-[var(--bg-card)]'>
             <div
               className={[
                 'flex min-h-0 flex-1 flex-col transition-opacity duration-150 ease-out',
@@ -309,7 +344,7 @@ export function ChatPage() {
                 <p className='mb-2 text-xs text-[var(--text-muted)]'>{DASHBOARD_CHAT_UI_TEXT.draftExpiryDisclaimer}</p>
               ) : null}
 
-              <div className='min-h-0 flex-1'>
+              <div className='min-h-0 flex-1 overflow-y-auto'>
                 {filteredItems.length === 0 ? (
                   <p className='text-sm text-[var(--text-muted)]'>
                     {activeFilter === 'drafts'
@@ -317,7 +352,7 @@ export function ChatPage() {
                       : DASHBOARD_CHAT_UI_TEXT.noFinanceChatsLabel}
                   </p>
                 ) : (
-                  <ul className='m-0 h-full list-none space-y-2 overflow-y-auto p-0'>
+                  <ul className='m-0 list-none space-y-2 p-0'>
                     {filteredItems.map((draft) => {
                       const isActive = draft.id === selectedDraftId;
                       const deadline = formatDraftDeadline(draft);
@@ -389,7 +424,7 @@ export function ChatPage() {
               type='button'
               aria-label={DASHBOARD_CHAT_UI_TEXT.expandSideToolAriaLabel}
               className={[
-                'absolute inset-0 inline-flex h-full w-full items-center justify-center border-0 bg-[var(--bg-card)] p-0 text-lg font-semibold leading-none text-[var(--text-muted)] transition-[opacity,color] duration-200 ease-out active:bg-[var(--bg-card)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)]',
+                'absolute inset-0 z-10 inline-flex h-full w-full items-center justify-center border-0 bg-[var(--bg-card)] p-0 text-lg font-semibold leading-none text-[var(--text-muted)] transition-[opacity,color] duration-200 ease-out active:bg-[var(--bg-card)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)]',
                 isSideToolCollapsed ? 'pointer-events-auto opacity-100 hover:text-[var(--text-primary)]' : 'pointer-events-none opacity-0',
               ].join(' ')}
               onClick={() => setIsSideToolCollapsed(false)}
@@ -459,7 +494,7 @@ export function ChatPage() {
               type='button'
               className='inline-flex h-12 w-12 items-center justify-center rounded-xl border border-[var(--bg-border)] bg-[var(--bg-elevated)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-card)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)] disabled:cursor-not-allowed disabled:opacity-60'
               aria-label='Upload and send image note'
-              disabled={isSendingChatMessage}
+              disabled={isSendingChatMessage || isAnalyzingImage}
               onClick={() => imageFileInputRef.current?.click()}
             >
               <ImagePlus className='h-4 w-4' strokeWidth={2.2} aria-hidden='true' />
@@ -507,6 +542,30 @@ export function ChatPage() {
           />
         </Card>
       </div>
+
+      <BottomSheet
+        isOpen={showProposalSheet}
+        onClose={() => {
+          setShowProposalSheet(false);
+          setProposalForSheet(null);
+          setProposalSheetMode('standard');
+        }}
+        title={SHEET_TITLES.addTransaction}
+      >
+        <CreateTransactionForm
+          mode='sheet'
+          showHeading={false}
+          initialValues={proposalInitialValues}
+          prefillMode={proposalSheetMode}
+          submitLabel={proposalForSheet ? 'Confirm & Add' : 'Add transaction'}
+          onSuccess={() => {
+            setShowProposalSheet(false);
+            setProposalForSheet(null);
+            setProposalSheetMode('standard');
+            navigate('/transactions');
+          }}
+        />
+      </BottomSheet>
     </div>
   );
 }

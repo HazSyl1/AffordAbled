@@ -26,6 +26,8 @@ class AuthService:
         user = User(
             id=uuid.uuid4(),
             email=data.email,
+            name=data.name,
+            date_of_birth=data.date_of_birth,
             hashed_password=self.password_hasher.hash(data.password),
             google_sub=None,
             created_at=datetime.now(UTC),
@@ -50,6 +52,8 @@ class AuthService:
             user = User(
                 id=uuid.uuid4(),
                 email=profile.email,
+                name=profile.name or profile.email.split('@')[0],
+                date_of_birth=None,
                 hashed_password=None,
                 google_sub=profile.sub,
                 created_at=datetime.now(UTC),

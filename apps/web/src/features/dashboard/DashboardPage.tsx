@@ -10,8 +10,13 @@ import { BottomSheet } from '../../components/molecules/BottomSheet';
 import { CreateTransactionForm } from '../../components/organisms/CreateTransactionForm';
 import { useListAccountsQuery } from '../accounts/accountsApi';
 import { useListCategoriesQuery } from '../categories/categoriesApi';
-import { useSendChatMessageMutation, useTranscribeVoiceMutation } from '../chat/chatApi';
-import { didAssistantLikelyAddTransaction } from '../chat/chatHeuristics';
+import {
+  useAnalyzeImageMutation,
+  type ChatTransactionProposal,
+  useSendChatMessageMutation,
+  useTranscribeVoiceMutation,
+} from '../chat/chatApi';
+import { mapProposalToCreateTransactionValues } from '../chat/chatProposal';
 import { deleteChatDraft, deleteChatDraftByThreadId, saveChatDraft } from '../chat/chatDrafts';
 import { useListTransactionsQuery } from '../transactions/transactionsApi';
 import type { TransactionType } from '../transactions/transactionsApi';
@@ -62,9 +67,12 @@ export function DashboardPage() {
   const { data: categories } = useListCategoriesQuery();
   const [sendChatMessage, { isLoading: isSendingChatMessage }] = useSendChatMessageMutation();
   const [transcribeVoice, { isLoading: isTranscribingVoice }] = useTranscribeVoiceMutation();
+  const [analyzeImage, { isLoading: isAnalyzingImage }] = useAnalyzeImageMutation();
   const [showAddSheet, setShowAddSheet] = useState(false);
   const [showChatSheet, setShowChatSheet] = useState(false);
   const [showSaveDraftPrompt, setShowSaveDraftPrompt] = useState(false);
+  const [proposalForSheet, setProposalForSheet] = useState<ChatTransactionProposal | null>(null);
+  const [proposalSheetMode, setProposalSheetMode] = useState<'standard' | 'manual_low_confidence'>('standard');
   const [chatInput, setChatInput] = useState('');
   const [chatThreadId, setChatThreadId] = useState<string | null>(null);
   const [chatDraftId, setChatDraftId] = useState<string | null>(null);
@@ -78,6 +86,11 @@ export function DashboardPage() {
   });
 
   const pendingSplits: PendingSplit[] = [];
+
+  const proposalInitialValues = useMemo(
+    () => (proposalForSheet ? mapProposalToCreateTransactionValues(proposalForSheet) : undefined),
+    [proposalForSheet],
+  );
 
   const categoryNameById = useMemo(() => {
     return new Map((categories ?? []).map((category) => [category.id, category.name]));
@@ -167,6 +180,9 @@ export function DashboardPage() {
 
   const resetChatSession = () => {
     setShowChatSheet(false);
+    setShowAddSheet(false);
+    setProposalForSheet(null);
+    setProposalSheetMode('standard');
     setChatInput('');
     setChatDraftId(null);
     setChatThreadId(null);
@@ -197,12 +213,18 @@ export function DashboardPage() {
       const fullMessageList = [...userMessageList, assistantMessage];
       setChatMessages(fullMessageList);
 
-      if (didAssistantLikelyAddTransaction(response.message)) {
+      if (response.transaction_logged) {
         if (currentDraftId) {
           deleteChatDraft(currentDraftId);
         }
         setChatDraftId(null);
         return;
+      }
+
+      if (response.pending_transaction_proposal || response.manual_transaction_input_required) {
+        setProposalForSheet(response.pending_transaction_proposal ?? null);
+        setProposalSheetMode(response.manual_transaction_input_required ? 'manual_low_confidence' : 'standard');
+        setShowAddSheet(true);
       }
 
       persistGeneralDraft(fullMessageList, response.thread_id, currentDraftId);
@@ -251,9 +273,21 @@ export function DashboardPage() {
       return;
     }
 
-    const imagePrompt = `I uploaded an image file (${imageFile.name}). Help me log the transaction from this receipt/bill and ask for any missing fields.`;
-    setShowChatSheet(true);
-    await sendMessageToAssistant(imagePrompt);
+    try {
+      setChatError(null);
+      const analysis = await analyzeImage({ image: imageFile }).unwrap();
+      const imagePrompt = analysis.prompt.trim();
+
+      if (!imagePrompt) {
+        setChatError(DASHBOARD_CHAT_UI_TEXT.imageError);
+        return;
+      }
+
+      setShowChatSheet(true);
+      await sendMessageToAssistant(imagePrompt);
+    } catch {
+      setChatError(DASHBOARD_CHAT_UI_TEXT.imageError);
+    }
   };
 
   const handleCloseChat = () => {
@@ -284,6 +318,8 @@ export function DashboardPage() {
 
   const handleQuickActionClick = (actionKey: DashboardQuickActionKey) => {
     if (actionKey === 'add') {
+      setProposalForSheet(null);
+      setProposalSheetMode('standard');
       setShowAddSheet(true);
       return;
     }
@@ -295,6 +331,11 @@ export function DashboardPage() {
 
     if (actionKey === 'voice') {
       voiceFileInputRef.current?.click();
+      return;
+    }
+
+    if (actionKey === 'image') {
+      imageFileInputRef.current?.click();
     }
   };
 
@@ -336,7 +377,7 @@ export function DashboardPage() {
           type='button'
           className='inline-flex h-12 w-12 items-center justify-center rounded-xl border border-[var(--bg-border)] bg-[var(--bg-elevated)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-card)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)] disabled:cursor-not-allowed disabled:opacity-60'
           aria-label='Upload and send image note'
-          disabled={isSendingChatMessage}
+          disabled={isSendingChatMessage || isAnalyzingImage}
           onClick={() => imageFileInputRef.current?.click()}
         >
           <ImagePlus className='h-4 w-4' strokeWidth={2.2} aria-hidden='true' />
@@ -433,7 +474,9 @@ export function DashboardPage() {
           <section className='mb-4 space-y-2'>
             <div className='grid grid-cols-4 gap-2'>
               {DASHBOARD_QUICK_ACTIONS.map((action) => {
-                const isDisabled = action.key === 'image' || (action.key === 'voice' && isTranscribingVoice);
+                const isDisabled =
+                  (action.key === 'voice' && (isTranscribingVoice || isSendingChatMessage || isAnalyzingImage)) ||
+                  (action.key === 'image' && (isAnalyzingImage || isSendingChatMessage || isTranscribingVoice));
                 const Icon = action.icon;
 
                 return (
@@ -447,7 +490,6 @@ export function DashboardPage() {
                   >
                     <Icon className='h-[18px] w-[18px]' strokeWidth={2.2} aria-hidden='true' />
                     {action.label}
-                    {action.key === 'image' ? <span className='text-[10px] text-[var(--text-muted)]'>{DASHBOARD_CHAT_UI_TEXT.imageComingSoon}</span> : null}
                   </Button>
                 );
               })}
@@ -646,8 +688,29 @@ export function DashboardPage() {
         {renderChatAssistantContent()}
       </BottomSheet>
 
-      <BottomSheet isOpen={showAddSheet} onClose={() => setShowAddSheet(false)} title={SHEET_TITLES.addTransaction}>
-        <CreateTransactionForm mode='sheet' showHeading={false} onSuccess={() => setShowAddSheet(false)} />
+      <BottomSheet
+        isOpen={showAddSheet}
+        onClose={() => {
+          setShowAddSheet(false);
+          setProposalForSheet(null);
+          setProposalSheetMode('standard');
+        }}
+        title={SHEET_TITLES.addTransaction}
+      >
+        <CreateTransactionForm
+          mode='sheet'
+          showHeading={false}
+          initialValues={proposalInitialValues}
+          prefillMode={proposalSheetMode}
+          submitLabel={proposalForSheet ? 'Confirm & Add' : 'Add transaction'}
+          onSuccess={() => {
+            setShowAddSheet(false);
+            setProposalForSheet(null);
+            setProposalSheetMode('standard');
+            setShowChatSheet(false);
+            navigate('/transactions');
+          }}
+        />
       </BottomSheet>
     </div>
   );

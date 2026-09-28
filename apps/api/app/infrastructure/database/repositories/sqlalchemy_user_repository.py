@@ -31,6 +31,8 @@ class SqlAlchemyUserRepository:
         model = UserModel(
             id=user.id,
             email=user.email,
+            name=user.name,
+            date_of_birth=user.date_of_birth,
             hashed_password=user.hashed_password,
             google_sub=user.google_sub,
         )
@@ -44,6 +46,8 @@ class SqlAlchemyUserRepository:
         return User(
             id=model.id,
             email=model.email,
+            name=model.name,
+            date_of_birth=model.date_of_birth,
             hashed_password=model.hashed_password,
             google_sub=model.google_sub,
             created_at=model.created_at,

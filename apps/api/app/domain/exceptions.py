@@ -44,3 +44,15 @@ class SpeechServiceNotConfiguredError(DomainError):
 
 class SpeechTranscriptionError(DomainError):
     'Raised when speech-to-text provider fails to produce a transcript.'
+
+
+class InvalidImageInputError(DomainError):
+    'Raised when uploaded image input is missing, oversized, or unsupported.'
+
+
+class ImageServiceNotConfiguredError(DomainError):
+    'Raised when image analysis service credentials/endpoint are missing.'
+
+
+class ImageAnalysisError(DomainError):
+    'Raised when image analysis provider fails or returns unusable output.'
