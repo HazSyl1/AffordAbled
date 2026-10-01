@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from typing import Protocol
 
-from app.domain.entities import Account, Category, RefreshSession, Transaction, User
+from app.domain.entities import Account, Category, GuardrailLog, RefreshSession, Transaction, User
 
 
 class UserRepository(Protocol):
@@ -47,3 +47,7 @@ class RefreshSessionRepository(Protocol):
     async def create(self, session: RefreshSession) -> RefreshSession: ...
     async def get_by_jti(self, jti: str) -> RefreshSession | None: ...
     async def revoke(self, jti: str) -> None: ...
+
+
+class GuardrailLogRepository(Protocol):
+    async def create(self, guardrail_log: GuardrailLog) -> GuardrailLog: ...

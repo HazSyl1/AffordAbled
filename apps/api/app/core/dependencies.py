@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import logging
 import uuid
 from collections.abc import AsyncGenerator
 from typing import Any
@@ -23,10 +24,12 @@ from app.application.services.transaction_service import TransactionService
 from app.core.config import Settings, get_settings
 from app.domain.entities import User
 from app.domain.exceptions import InvalidTokenError
-from app.domain.ports import ChatOrchestrator
+from app.domain.ports import ChatOrchestrator, IntentClassifier, SemanticGuardrail
 from app.infrastructure.ai.intent_classifier import KeywordIntentClassifier
 from app.infrastructure.ai.langgraph_chat_orchestrator import LangGraphChatOrchestrator
-from app.infrastructure.ai.semantic_guardrail import KeywordSemanticGuardrail
+from app.infrastructure.ai.nemo_semantic_guardrail import NemoSemanticGuardrail
+from app.infrastructure.ai.tools import CategoryTools, TransactionQueryTools
+from app.infrastructure.audio.ffmpeg_audio_transcoder import FFmpegAudioTranscoder
 from app.infrastructure.auth.google_oauth import GoogleAuthClient
 from app.infrastructure.auth.jwt_service import JwtTokenService
 from app.infrastructure.auth.password_hasher import Argon2PasswordHasher
@@ -34,12 +37,17 @@ from app.infrastructure.azure.azure_document_intelligence import AzureDocumentIn
 from app.infrastructure.azure.azure_speech_to_text import AzureSpeechToTextClient
 from app.infrastructure.database.repositories.sqlalchemy_account_repository import SqlAlchemyAccountRepository
 from app.infrastructure.database.repositories.sqlalchemy_category_repository import SqlAlchemyCategoryRepository
+from app.infrastructure.database.repositories.sqlalchemy_guardrail_log_repository import (
+    SqlAlchemyGuardrailLogRepository,
+)
 from app.infrastructure.database.repositories.sqlalchemy_refresh_session_repository import (
     SqlAlchemyRefreshSessionRepository,
 )
 from app.infrastructure.database.repositories.sqlalchemy_transaction_repository import SqlAlchemyTransactionRepository
 from app.infrastructure.database.repositories.sqlalchemy_user_repository import SqlAlchemyUserRepository
 from app.infrastructure.database.session import get_session
+
+logger = logging.getLogger(__name__)
 
 
 async def get_db(session: AsyncSession = Depends(get_session)) -> AsyncGenerator[AsyncSession]:
@@ -73,6 +81,10 @@ def get_refresh_session_repository(db: AsyncSession = Depends(get_db)) -> SqlAlc
     return SqlAlchemyRefreshSessionRepository(db)
 
 
+def get_guardrail_log_repository(db: AsyncSession = Depends(get_db)) -> SqlAlchemyGuardrailLogRepository:
+    return SqlAlchemyGuardrailLogRepository(db)
+
+
 def get_password_hasher() -> Argon2PasswordHasher:
     return Argon2PasswordHasher()
 
@@ -89,17 +101,63 @@ def get_speech_to_text_client(settings: Settings = Depends(get_settings_dependen
     return AzureSpeechToTextClient(settings)
 
 
+def get_audio_transcoder(settings: Settings = Depends(get_settings_dependency)) -> FFmpegAudioTranscoder:
+    return FFmpegAudioTranscoder(
+        binary=settings.ffmpeg_binary,
+        timeout_seconds=settings.audio_transcode_timeout_seconds,
+    )
+
+
 def get_document_intelligence_client(
     settings: Settings = Depends(get_settings_dependency),
 ) -> AzureDocumentIntelligenceClient:
     return AzureDocumentIntelligenceClient(settings)
 
 
-def get_semantic_guardrail() -> KeywordSemanticGuardrail:
-    return KeywordSemanticGuardrail()
+def get_guardrail_llm(settings: Settings = Depends(get_settings_dependency)) -> Any | None:
+    if AzureChatOpenAI is None:
+        return None
+
+    deployment = settings.azure_openai_extraction_deployment or settings.azure_openai_deployment
+    if not settings.azure_openai_endpoint or not settings.azure_openai_api_key or not deployment:
+        return None
+
+    return AzureChatOpenAI(
+        azure_endpoint=settings.azure_openai_endpoint,
+        api_key=settings.azure_openai_api_key,
+        azure_deployment=deployment,
+        api_version=settings.azure_openai_api_version,
+        temperature=0,
+        timeout=20,
+        max_retries=2,
+    )
 
 
-def get_intent_classifier() -> KeywordIntentClassifier:
+def get_semantic_guardrail(
+    settings: Settings = Depends(get_settings_dependency),
+    guardrail_llm: Any | None = Depends(get_guardrail_llm),
+) -> SemanticGuardrail:
+    if settings.chat_guardrail_provider != 'nemo':
+        logger.warning(
+            'CHAT_GUARDRAIL_PROVIDER=%s is unsupported. Using NeMo guardrails.',
+            settings.chat_guardrail_provider,
+        )
+
+    return NemoSemanticGuardrail(
+        config_path=settings.nemo_guardrails_config_path,
+        llm=guardrail_llm,
+        block_token=settings.nemo_guardrails_block_token,
+        allow_token=settings.nemo_guardrails_allow_token,
+        needs_classification_token=settings.nemo_guardrails_needs_classification_token,
+    )
+
+
+def get_intent_classifier(settings: Settings = Depends(get_settings_dependency)) -> IntentClassifier:
+    if settings.chat_intent_provider != 'keyword':
+        logger.warning(
+            'CHAT_INTENT_PROVIDER=%s is not implemented yet. Falling back to keyword intent classifier.',
+            settings.chat_intent_provider,
+        )
     return KeywordIntentClassifier()
 
 
@@ -169,14 +227,34 @@ def get_transaction_service(
     )
 
 
+def get_category_tools(
+    category_repository: SqlAlchemyCategoryRepository = Depends(get_category_repository),
+) -> CategoryTools:
+    return CategoryTools(category_repository=category_repository)
+
+
+def get_transaction_query_tools(
+    transaction_repository: SqlAlchemyTransactionRepository = Depends(get_transaction_repository),
+    account_repository: SqlAlchemyAccountRepository = Depends(get_account_repository),
+    category_repository: SqlAlchemyCategoryRepository = Depends(get_category_repository),
+) -> TransactionQueryTools:
+    return TransactionQueryTools(
+        transaction_repository=transaction_repository,
+        account_repository=account_repository,
+        category_repository=category_repository,
+    )
+
+
 def get_chat_orchestrator(
     checkpointer: Any = Depends(get_langgraph_checkpointer),
     settings: Settings = Depends(get_settings_dependency),
-    semantic_guardrail: KeywordSemanticGuardrail = Depends(get_semantic_guardrail),
-    intent_classifier: KeywordIntentClassifier = Depends(get_intent_classifier),
+    semantic_guardrail: SemanticGuardrail = Depends(get_semantic_guardrail),
+    intent_classifier: IntentClassifier = Depends(get_intent_classifier),
     transaction_service: TransactionService = Depends(get_transaction_service),
     account_repository: SqlAlchemyAccountRepository = Depends(get_account_repository),
     category_repository: SqlAlchemyCategoryRepository = Depends(get_category_repository),
+    category_tools: CategoryTools = Depends(get_category_tools),
+    transaction_query_tools: TransactionQueryTools = Depends(get_transaction_query_tools),
     extraction_llm: Any | None = Depends(get_transaction_extraction_llm),
 ) -> ChatOrchestrator:
     return LangGraphChatOrchestrator(
@@ -186,22 +264,35 @@ def get_chat_orchestrator(
         transaction_service=transaction_service,
         account_repository=account_repository,
         category_repository=category_repository,
+        category_tools=category_tools,
+        transaction_query_tools=transaction_query_tools,
         extraction_llm=extraction_llm,
         proposal_confidence_threshold=settings.chat_proposal_confidence_threshold,
         hitl_max_turns=settings.chat_hitl_max_turns,
+        deterministic_transaction_first=settings.chat_deterministic_transaction_first,
     )
 
 
 def get_chat_service(
     orchestrator: ChatOrchestrator = Depends(get_chat_orchestrator),
+    user_repository: SqlAlchemyUserRepository = Depends(get_user_repository),
+    guardrail_log_repository: SqlAlchemyGuardrailLogRepository = Depends(get_guardrail_log_repository),
 ) -> ChatService:
-    return ChatService(orchestrator=orchestrator)
+    return ChatService(
+        orchestrator=orchestrator,
+        user_repository=user_repository,
+        guardrail_log_repository=guardrail_log_repository,
+    )
 
 
 def get_speech_service(
     speech_to_text_client: AzureSpeechToTextClient = Depends(get_speech_to_text_client),
+    audio_transcoder: FFmpegAudioTranscoder = Depends(get_audio_transcoder),
 ) -> SpeechService:
-    return SpeechService(speech_to_text_client=speech_to_text_client)
+    return SpeechService(
+        speech_to_text_client=speech_to_text_client,
+        audio_transcoder=audio_transcoder,
+    )
 
 
 def get_image_service(
