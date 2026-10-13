@@ -36,6 +36,13 @@ class _EmptyCategoryRepository:
         return []
 
 
+class _EmptyTransactionRepository:
+    async def list_for_user(self, user_id: Any, *, include_deleted: bool = False) -> list[Any]:  # pragma: no cover
+        del user_id
+        del include_deleted
+        return []
+
+
 def _build_optional_extraction_llm(settings: Any) -> Any | None:
     try:
         from langchain_openai import AzureChatOpenAI
@@ -64,6 +71,7 @@ def main() -> None:
     from app.infrastructure.ai.intent_classifier import KeywordIntentClassifier
     from app.infrastructure.ai.langgraph_chat_orchestrator import LangGraphChatOrchestrator
     from app.infrastructure.ai.semantic_guardrail import KeywordSemanticGuardrail
+    from app.infrastructure.ai.tools import CategoryTools, TransactionQueryTools
 
     parser = argparse.ArgumentParser(description='Export LangGraph chat workflow diagram.')
     parser.add_argument(
@@ -83,6 +91,12 @@ def main() -> None:
         transaction_service=_NoopTransactionService(),
         account_repository=_EmptyAccountRepository(),
         category_repository=_EmptyCategoryRepository(),
+        category_tools=CategoryTools(category_repository=_EmptyCategoryRepository()),
+        transaction_query_tools=TransactionQueryTools(
+            transaction_repository=_EmptyTransactionRepository(),
+            account_repository=_EmptyAccountRepository(),
+            category_repository=_EmptyCategoryRepository(),
+        ),
         extraction_llm=extraction_llm,
     )
 

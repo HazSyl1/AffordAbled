@@ -8,6 +8,7 @@ from app.application.services.speech_service import SpeechService
 from app.core.dependencies import get_chat_service, get_current_user, get_image_service, get_speech_service
 from app.domain.entities import User
 from app.presentation.schemas.chat import (
+    ChatInsightResponse,
     ChatRequest,
     ChatResponse,
     ImageAnalysisResponse,
@@ -51,6 +52,17 @@ async def send_chat_message(
         ),
         transaction_logged=response.transaction_logged,
         manual_transaction_input_required=response.manual_transaction_input_required,
+        insights=(
+            [
+                ChatInsightResponse(
+                    title=str(item.get('title') or '').strip(),
+                    detail=str(item.get('detail') or '').strip(),
+                )
+                for item in (response.insights or [])
+                if str(item.get('title') or '').strip() and str(item.get('detail') or '').strip()
+            ]
+            or None
+        ),
     )
 
 

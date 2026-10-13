@@ -4,10 +4,16 @@ from app.domain.ports import DetectedIntent
 
 _INTENT_KEYWORDS: dict[DetectedIntent, tuple[str, ...]] = {
     DetectedIntent.LOG_TRANSACTION: (
+        'spend',
         'spent',
         'expense',
         'paid',
+        'pay',
         'payment',
+        'purchase',
+        'bought',
+        'debit',
+        'debited',
         'income',
         'salary',
         'refund',

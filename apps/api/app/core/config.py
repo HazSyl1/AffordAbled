@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file='.env', extra='ignore')
 
     app_env: str = 'development'
+    log_level: str = 'INFO'
 
     database_url: str = 'postgresql+asyncpg://postgres:postgres@localhost:5432/affordable'
     redis_url: str = 'redis://localhost:6379/0'
@@ -32,6 +33,9 @@ class Settings(BaseSettings):
     azure_document_intelligence_key: str = ''
     azure_speech_key: str = ''
     azure_speech_region: str = 'centralindia'
+    ffmpeg_binary: str = 'ffmpeg'
+    audio_transcode_timeout_seconds: int = 15
+    audio_transcoder_required: bool = False
 
     azure_openai_endpoint: str = ''
     azure_openai_api_key: str = ''
@@ -41,8 +45,18 @@ class Settings(BaseSettings):
 
     chat_proposal_confidence_threshold: int = 80
     chat_hitl_max_turns: int = 5
+    chat_deterministic_transaction_first: bool = True
+    chat_guardrail_provider: Literal['nemo'] = 'nemo'
+    chat_intent_provider: Literal['keyword', 'llm'] = 'keyword'
+    nemo_guardrails_config_path: str = 'app/infrastructure/ai/nemo_guardrails'
+    nemo_guardrails_block_token: str = '__BLOCK__'
+    nemo_guardrails_allow_token: str = '__ALLOW__'
+    nemo_guardrails_needs_classification_token: str = '__NEEDS_CLASSIFICATION__'
     langgraph_checkpointer_mode: Literal['auto', 'postgres', 'memory'] = 'auto'
     langgraph_checkpointer_startup_timeout_seconds: int = 8
+    retention_cleanup_enabled: bool = False
+    retention_cleanup_interval_minutes: int = 60
+    chat_message_retention_days: int = 180
 
     langsmith_api_key: str = ''
     langsmith_tracing: bool = False

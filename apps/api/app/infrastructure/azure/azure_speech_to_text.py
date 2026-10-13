@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import logging
+
 import httpx
 
 from app.core.config import Settings
 from app.domain.exceptions import InvalidSpeechInputError, SpeechServiceNotConfiguredError, SpeechTranscriptionError
+
+logger = logging.getLogger(__name__)
 
 
 class AzureSpeechToTextClient:
@@ -26,11 +30,31 @@ class AzureSpeechToTextClient:
         }
         params = {'language': locale, 'format': 'simple'}
 
+        logger.info(
+            'speech.transcription.request',
+            extra={
+                'provider': 'azure_speech',
+                'content_type': content_type,
+                'locale': locale,
+                'audio_size_bytes': len(audio_bytes),
+            },
+        )
+
         async with httpx.AsyncClient(timeout=20) as client:
             response = await client.post(endpoint, params=params, headers=headers, content=audio_bytes)
 
+        logger.info(
+            'speech.transcription.response',
+            extra={
+                'provider': 'azure_speech',
+                'status_code': response.status_code,
+                'content_type': content_type,
+                'locale': locale,
+            },
+        )
+
         if response.status_code == 400:
-            raise InvalidSpeechInputError('Speech not recognized. Upload clear speech in WAV/OGG format.')
+            raise InvalidSpeechInputError('Speech not recognized. Upload clear speech and try again.')
 
         if response.status_code != 200:
             raise SpeechTranscriptionError('Speech transcription request failed')
@@ -41,8 +65,10 @@ class AzureSpeechToTextClient:
         if not transcript:
             if recognition_status and recognition_status.lower() != 'success':
                 raise InvalidSpeechInputError(
-                    f'Speech not recognized ({recognition_status}). Upload clear speech in WAV/OGG format.'
+                    f'Speech not recognized ({recognition_status}). Upload clear speech and try again.'
                 )
-            raise SpeechTranscriptionError('Speech transcription returned empty text')
+            raise InvalidSpeechInputError(
+                'Speech not recognized. Please record clear speech (1-15 seconds) and try again.'
+            )
 
         return transcript

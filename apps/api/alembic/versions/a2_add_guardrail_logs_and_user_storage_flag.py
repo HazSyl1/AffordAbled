@@ -5,7 +5,7 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = 'a2_add_guardrail_logs_and_user_storage_flag'
+revision: str = 'a2_guardrail_logs_user_storage'
 down_revision: str | None = 'f1_add_user_profile_fields'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None

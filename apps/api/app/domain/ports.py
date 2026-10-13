@@ -8,7 +8,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Protocol
+from typing import Any, Protocol
 
 
 class PasswordHasher(Protocol):
@@ -102,6 +102,7 @@ class ChatTurnResult:
     guardrail_confidence: float = 1.0
     guardrail_layer: str = 'semantic'
     insights: list[dict[str, str]] | None = None
+    agent_correction: dict[str, Any] | None = None
 
 
 class ChatOrchestrator(Protocol):

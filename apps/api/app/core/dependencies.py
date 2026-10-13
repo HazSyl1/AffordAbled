@@ -18,8 +18,10 @@ from app.application.services.account_service import AccountService
 from app.application.services.auth_service import AuthService
 from app.application.services.category_service import CategoryService
 from app.application.services.chat_service import ChatService
+from app.application.services.export_service import ExportService
 from app.application.services.image_service import ImageService
 from app.application.services.speech_service import SpeechService
+from app.application.services.thread_service import ThreadService
 from app.application.services.transaction_service import TransactionService
 from app.core.config import Settings, get_settings
 from app.domain.entities import User
@@ -36,7 +38,15 @@ from app.infrastructure.auth.password_hasher import Argon2PasswordHasher
 from app.infrastructure.azure.azure_document_intelligence import AzureDocumentIntelligenceClient
 from app.infrastructure.azure.azure_speech_to_text import AzureSpeechToTextClient
 from app.infrastructure.database.repositories.sqlalchemy_account_repository import SqlAlchemyAccountRepository
+from app.infrastructure.database.repositories.sqlalchemy_agent_correction_repository import (
+    SqlAlchemyAgentCorrectionRepository,
+)
 from app.infrastructure.database.repositories.sqlalchemy_category_repository import SqlAlchemyCategoryRepository
+from app.infrastructure.database.repositories.sqlalchemy_chat_message_repository import SqlAlchemyChatMessageRepository
+from app.infrastructure.database.repositories.sqlalchemy_chat_thread_repository import SqlAlchemyChatThreadRepository
+from app.infrastructure.database.repositories.sqlalchemy_export_artifact_repository import (
+    SqlAlchemyExportArtifactRepository,
+)
 from app.infrastructure.database.repositories.sqlalchemy_guardrail_log_repository import (
     SqlAlchemyGuardrailLogRepository,
 )
@@ -83,6 +93,22 @@ def get_refresh_session_repository(db: AsyncSession = Depends(get_db)) -> SqlAlc
 
 def get_guardrail_log_repository(db: AsyncSession = Depends(get_db)) -> SqlAlchemyGuardrailLogRepository:
     return SqlAlchemyGuardrailLogRepository(db)
+
+
+def get_agent_correction_repository(db: AsyncSession = Depends(get_db)) -> SqlAlchemyAgentCorrectionRepository:
+    return SqlAlchemyAgentCorrectionRepository(db)
+
+
+def get_chat_thread_repository(db: AsyncSession = Depends(get_db)) -> SqlAlchemyChatThreadRepository:
+    return SqlAlchemyChatThreadRepository(db)
+
+
+def get_chat_message_repository(db: AsyncSession = Depends(get_db)) -> SqlAlchemyChatMessageRepository:
+    return SqlAlchemyChatMessageRepository(db)
+
+
+def get_export_artifact_repository(db: AsyncSession = Depends(get_db)) -> SqlAlchemyExportArtifactRepository:
+    return SqlAlchemyExportArtifactRepository(db)
 
 
 def get_password_hasher() -> Argon2PasswordHasher:
@@ -227,6 +253,22 @@ def get_transaction_service(
     )
 
 
+def get_thread_service(
+    chat_thread_repository: SqlAlchemyChatThreadRepository = Depends(get_chat_thread_repository),
+    chat_message_repository: SqlAlchemyChatMessageRepository = Depends(get_chat_message_repository),
+) -> ThreadService:
+    return ThreadService(
+        chat_thread_repository=chat_thread_repository,
+        chat_message_repository=chat_message_repository,
+    )
+
+
+def get_export_service(
+    export_artifact_repository: SqlAlchemyExportArtifactRepository = Depends(get_export_artifact_repository),
+) -> ExportService:
+    return ExportService(export_artifact_repository=export_artifact_repository)
+
+
 def get_category_tools(
     category_repository: SqlAlchemyCategoryRepository = Depends(get_category_repository),
 ) -> CategoryTools:
@@ -276,11 +318,17 @@ def get_chat_orchestrator(
 def get_chat_service(
     orchestrator: ChatOrchestrator = Depends(get_chat_orchestrator),
     user_repository: SqlAlchemyUserRepository = Depends(get_user_repository),
+    chat_thread_repository: SqlAlchemyChatThreadRepository = Depends(get_chat_thread_repository),
+    chat_message_repository: SqlAlchemyChatMessageRepository = Depends(get_chat_message_repository),
+    agent_correction_repository: SqlAlchemyAgentCorrectionRepository = Depends(get_agent_correction_repository),
     guardrail_log_repository: SqlAlchemyGuardrailLogRepository = Depends(get_guardrail_log_repository),
 ) -> ChatService:
     return ChatService(
         orchestrator=orchestrator,
         user_repository=user_repository,
+        chat_thread_repository=chat_thread_repository,
+        chat_message_repository=chat_message_repository,
+        agent_correction_repository=agent_correction_repository,
         guardrail_log_repository=guardrail_log_repository,
     )
 

@@ -6,10 +6,16 @@ from datetime import UTC, datetime, timedelta
 
 from langsmith import traceable
 
-from app.domain.entities import GuardrailLog
+from app.domain.entities import AgentCorrection, ChatMessage, ChatThread, GuardrailLog
 from app.domain.exceptions import InvalidChatInputError
 from app.domain.ports import ChatOrchestrator, PendingTransactionProposal
-from app.domain.repositories import GuardrailLogRepository, UserRepository
+from app.domain.repositories import (
+    AgentCorrectionRepository,
+    ChatMessageRepository,
+    ChatThreadRepository,
+    GuardrailLogRepository,
+    UserRepository,
+)
 
 
 @dataclass
@@ -30,6 +36,9 @@ class ChatResponseOutput:
 class ChatService:
     orchestrator: ChatOrchestrator
     user_repository: UserRepository
+    chat_thread_repository: ChatThreadRepository
+    chat_message_repository: ChatMessageRepository
+    agent_correction_repository: AgentCorrectionRepository
     guardrail_log_repository: GuardrailLogRepository
 
     @traceable(name='chat_service.send_message', run_type='chain')
@@ -53,7 +62,61 @@ class ChatService:
 
         user = await self.user_repository.get_by_id(user_id)
         if user is not None and user.conversation_storage_enabled:
-            expires_at = datetime.now(UTC) + timedelta(days=365 if result.guardrail_decision == 'block' else 90)
+            now = datetime.now(UTC)
+            existing_thread = await self.chat_thread_repository.get_for_user(user_id, resolved_thread_id)
+            if existing_thread is None:
+                await self.chat_thread_repository.create(
+                    ChatThread(
+                        id=uuid.uuid4(),
+                        user_id=user_id,
+                        thread_id=resolved_thread_id,
+                        title=normalized_message[:160],
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+            else:
+                await self.chat_thread_repository.touch_for_user(user_id, resolved_thread_id)
+
+            await self.chat_message_repository.create(
+                ChatMessage(
+                    id=uuid.uuid4(),
+                    user_id=user_id,
+                    thread_id=resolved_thread_id,
+                    role='user',
+                    content=normalized_message,
+                    created_at=now,
+                )
+            )
+            await self.chat_message_repository.create(
+                ChatMessage(
+                    id=uuid.uuid4(),
+                    user_id=user_id,
+                    thread_id=resolved_thread_id,
+                    role='assistant',
+                    content=result.message,
+                    created_at=now,
+                )
+            )
+
+            agent_correction_payload = result.agent_correction
+            if isinstance(agent_correction_payload, dict):
+                original_proposal = agent_correction_payload.get('original_proposal')
+                corrected_proposal = agent_correction_payload.get('corrected_proposal')
+                if isinstance(original_proposal, dict) and isinstance(corrected_proposal, dict):
+                    await self.agent_correction_repository.create(
+                        AgentCorrection(
+                            id=uuid.uuid4(),
+                            user_id=user_id,
+                            thread_id=resolved_thread_id,
+                            original_proposal=original_proposal,
+                            corrected_proposal=corrected_proposal,
+                            user_message=str(agent_correction_payload.get('user_message') or normalized_message),
+                            created_at=now,
+                        )
+                    )
+
+            expires_at = now + timedelta(days=365 if result.guardrail_decision == 'block' else 90)
             await self.guardrail_log_repository.create(
                 GuardrailLog(
                     id=uuid.uuid4(),
@@ -64,7 +127,7 @@ class ChatService:
                     confidence=float(result.guardrail_confidence),
                     triggered=result.guardrail_decision == 'block',
                     layer=result.guardrail_layer,
-                    created_at=datetime.now(UTC),
+                    created_at=now,
                     expires_at=expires_at,
                 )
             )

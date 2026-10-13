@@ -3,7 +3,18 @@ from __future__ import annotations
 import uuid
 from typing import Protocol
 
-from app.domain.entities import Account, Category, GuardrailLog, RefreshSession, Transaction, User
+from app.domain.entities import (
+    Account,
+    AgentCorrection,
+    Category,
+    ChatMessage,
+    ChatThread,
+    ExportArtifact,
+    GuardrailLog,
+    RefreshSession,
+    Transaction,
+    User,
+)
 
 
 class UserRepository(Protocol):
@@ -47,6 +58,28 @@ class RefreshSessionRepository(Protocol):
     async def create(self, session: RefreshSession) -> RefreshSession: ...
     async def get_by_jti(self, jti: str) -> RefreshSession | None: ...
     async def revoke(self, jti: str) -> None: ...
+
+
+class ChatThreadRepository(Protocol):
+    async def create(self, chat_thread: ChatThread) -> ChatThread: ...
+    async def get_for_user(self, user_id: uuid.UUID, thread_id: str) -> ChatThread | None: ...
+    async def list_for_user(self, user_id: uuid.UUID) -> list[ChatThread]: ...
+    async def touch_for_user(self, user_id: uuid.UUID, thread_id: str) -> None: ...
+    async def delete_for_user(self, user_id: uuid.UUID, thread_id: str) -> bool: ...
+
+
+class ChatMessageRepository(Protocol):
+    async def create(self, chat_message: ChatMessage) -> ChatMessage: ...
+    async def list_for_user_thread(self, user_id: uuid.UUID, thread_id: str) -> list[ChatMessage]: ...
+    async def delete_for_user_thread(self, user_id: uuid.UUID, thread_id: str) -> int: ...
+
+
+class AgentCorrectionRepository(Protocol):
+    async def create(self, agent_correction: AgentCorrection) -> AgentCorrection: ...
+
+
+class ExportArtifactRepository(Protocol):
+    async def get_for_user(self, user_id: uuid.UUID, export_id: uuid.UUID) -> ExportArtifact | None: ...
 
 
 class GuardrailLogRepository(Protocol):

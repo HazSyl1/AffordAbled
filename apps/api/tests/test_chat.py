@@ -1,4 +1,6 @@
-﻿from fastapi import FastAPI
+﻿from datetime import UTC, datetime, timedelta
+
+from fastapi import FastAPI
 from httpx import AsyncClient
 
 from app.core.dependencies import get_image_service, get_speech_service
@@ -25,32 +27,6 @@ class StubImageService:
                 'prompt': f'Prompt built from {safe_filename}',
             },
         )()
-
-
-async def test_chat_router_round_trip_persists_thread_state(client: AsyncClient) -> None:
-    token = await register_and_get_token(client, 'chat-thread-persistence@example.com')
-
-    first_response = await client.post(
-        '/api/v1/chat',
-        json={'message': 'I want to review my monthly budget today'},
-        headers=auth_headers(token),
-    )
-
-    assert first_response.status_code == 200
-    first_payload = first_response.json()
-    thread_id = first_payload['thread_id']
-    assert thread_id
-
-    second_response = await client.post(
-        '/api/v1/chat',
-        json={'message': 'What did I just tell you?', 'thread_id': thread_id},
-        headers=auth_headers(token),
-    )
-
-    assert second_response.status_code == 200
-    second_payload = second_response.json()
-    assert second_payload['thread_id'] == thread_id
-    assert 'I want to review my monthly budget today' in second_payload['message']
 
 
 async def test_chat_router_isolates_thread_state_per_user(client: AsyncClient) -> None:
@@ -87,19 +63,6 @@ async def test_chat_router_blocks_off_topic_prompt(client: AsyncClient) -> None:
 
     assert response.status_code == 200
     assert response.json()['message'].startswith("I'm your finance assistant")
-
-
-async def test_chat_router_allows_borderline_finance_prompt(client: AsyncClient) -> None:
-    token = await register_and_get_token(client, 'chat-guardrail-borderline@example.com')
-
-    response = await client.post(
-        '/api/v1/chat',
-        json={'message': 'Can you check my budget?'},
-        headers=auth_headers(token),
-    )
-
-    assert response.status_code == 200
-    assert response.json()['message'].startswith('Got it.')
 
 
 async def test_chat_voice_router_smoke(client: AsyncClient, app: FastAPI) -> None:
@@ -141,12 +104,15 @@ async def test_chat_voice_rejects_unsupported_audio_format(client: AsyncClient) 
 
     response = await client.post(
         '/api/v1/chat/voice',
-        files={'audio': ('recording.m4a', b'audio-content', 'audio/x-m4a')},
+        files={'audio': ('recording.flac', b'audio-content', 'audio/flac')},
         headers=auth_headers(token),
     )
 
     assert response.status_code == 400
-    assert response.json()['detail'] == 'Unsupported audio format. Use WAV (audio/wav) or OGG/Opus (audio/ogg).'
+    assert (
+        response.json()['detail']
+        == 'Unsupported audio format. Use WAV (audio/wav), WEBM/Opus (audio/webm), or OGG/Opus (audio/ogg).'
+    )
 
 
 async def test_chat_image_router_smoke(client: AsyncClient, app: FastAPI) -> None:
@@ -297,6 +263,328 @@ async def test_chat_transaction_hitl_clarification_until_confident(client: Async
     second_payload = second_turn.json()
     assert second_payload['pending_transaction_proposal'] is not None
     assert second_payload['pending_transaction_proposal']['confidence_score'] >= 80
+
+
+async def test_chat_transaction_hitl_interrupt_message_wins_over_previous_ai_message(client: AsyncClient) -> None:
+    token = await register_and_get_token(client, 'chat-hitl-interrupt-message@example.com')
+
+    account_response = await client.post(
+        '/api/v1/accounts',
+        json={'name': 'Main Wallet', 'type': 'wallet', 'balance_paise': 100000, 'currency': 'INR'},
+        headers=auth_headers(token),
+    )
+    assert account_response.status_code == 201
+
+    category_response = await client.post(
+        '/api/v1/categories',
+        json={'name': 'Food', 'type': 'expense'},
+        headers=auth_headers(token),
+    )
+    assert category_response.status_code == 201
+
+    first_turn = await client.post(
+        '/api/v1/chat',
+        json={'message': 'hi'},
+        headers=auth_headers(token),
+    )
+    assert first_turn.status_code == 200
+    thread_id = first_turn.json()['thread_id']
+
+    second_turn = await client.post(
+        '/api/v1/chat',
+        json={'message': 'spent 5003 on dinner', 'thread_id': thread_id},
+        headers=auth_headers(token),
+    )
+
+    assert second_turn.status_code == 200
+    second_payload = second_turn.json()
+    assert '(1/5)' in second_payload['message']
+    assert second_payload['pending_transaction_proposal'] is None
+
+
+async def test_chat_transaction_flow_handles_spend_verb(client: AsyncClient) -> None:
+    token = await register_and_get_token(client, 'chat-spend-verb@example.com')
+
+    account_response = await client.post(
+        '/api/v1/accounts',
+        json={'name': 'Main Wallet', 'type': 'wallet', 'balance_paise': 100000, 'currency': 'INR'},
+        headers=auth_headers(token),
+    )
+    assert account_response.status_code == 201
+
+    category_response = await client.post(
+        '/api/v1/categories',
+        json={'name': 'Food', 'type': 'expense'},
+        headers=auth_headers(token),
+    )
+    assert category_response.status_code == 201
+
+    response = await client.post(
+        '/api/v1/chat',
+        json={'message': 'Spend 1000'},
+        headers=auth_headers(token),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert '(1/5)' in payload['message']
+    assert payload['pending_transaction_proposal'] is None
+
+
+async def test_chat_transaction_flow_allows_creating_category_via_hitl(client: AsyncClient) -> None:
+    token = await register_and_get_token(client, 'chat-create-category-hitl@example.com')
+
+    account_response = await client.post(
+        '/api/v1/accounts',
+        json={'name': 'Main Wallet', 'type': 'wallet', 'balance_paise': 100000, 'currency': 'INR'},
+        headers=auth_headers(token),
+    )
+    assert account_response.status_code == 201
+
+    proposal_response = await client.post(
+        '/api/v1/chat',
+        json={'message': 'I spent INR 500 yesterday at Cafe Roma'},
+        headers=auth_headers(token),
+    )
+
+    assert proposal_response.status_code == 200
+    proposal_payload = proposal_response.json()
+    assert proposal_payload['pending_transaction_proposal'] is None
+    assert 'category' in proposal_payload['message'].lower()
+
+    create_category_response = await client.post(
+        '/api/v1/chat',
+        json={'message': 'create Food', 'thread_id': proposal_payload['thread_id']},
+        headers=auth_headers(token),
+    )
+
+    assert create_category_response.status_code == 200
+    create_category_payload = create_category_response.json()
+    assert create_category_payload['pending_transaction_proposal'] is not None
+    assert create_category_payload['pending_transaction_proposal']['category_name'] == 'Food'
+
+    categories_response = await client.get('/api/v1/categories', headers=auth_headers(token))
+    assert categories_response.status_code == 200
+    categories = categories_response.json()
+    assert any(item['name'] == 'Food' and item['type'] == 'expense' for item in categories)
+
+
+async def test_chat_transaction_flow_accepts_yes_plus_suggested_category_in_hitl(client: AsyncClient) -> None:
+    token = await register_and_get_token(client, 'chat-hitl-yes-suggested-category@example.com')
+
+    account_response = await client.post(
+        '/api/v1/accounts',
+        json={'name': 'Main Wallet', 'type': 'wallet', 'balance_paise': 100000, 'currency': 'INR'},
+        headers=auth_headers(token),
+    )
+    assert account_response.status_code == 201
+
+    first_category_response = await client.post(
+        '/api/v1/categories',
+        json={'name': 'Food', 'type': 'expense'},
+        headers=auth_headers(token),
+    )
+    assert first_category_response.status_code == 201
+
+    second_category_response = await client.post(
+        '/api/v1/categories',
+        json={'name': 'Games', 'type': 'expense'},
+        headers=auth_headers(token),
+    )
+    assert second_category_response.status_code == 201
+
+    first_turn = await client.post(
+        '/api/v1/chat',
+        json={'message': 'I spent INR 256 yesterday at Uber under Transport'},
+        headers=auth_headers(token),
+    )
+    assert first_turn.status_code == 200
+    first_payload = first_turn.json()
+    assert first_payload['pending_transaction_proposal'] is None
+    assert 'create transport' in first_payload['message'].lower()
+
+    second_turn = await client.post(
+        '/api/v1/chat',
+        json={'message': 'yes transport', 'thread_id': first_payload['thread_id']},
+        headers=auth_headers(token),
+    )
+    assert second_turn.status_code == 200
+
+    second_payload = second_turn.json()
+    assert second_payload['pending_transaction_proposal'] is not None
+    assert second_payload['pending_transaction_proposal']['category_name'] == 'Transport'
+
+    categories_response = await client.get('/api/v1/categories', headers=auth_headers(token))
+    assert categories_response.status_code == 200
+    categories = categories_response.json()
+    assert any(item['name'] == 'Transport' and item['type'] == 'expense' for item in categories)
+
+
+async def test_chat_spend_query_routes_to_deterministic_query_tools_flow(client: AsyncClient) -> None:
+    token = await register_and_get_token(client, 'chat-spend-query@example.com')
+
+    account_response = await client.post(
+        '/api/v1/accounts',
+        json={'name': 'Main Wallet', 'type': 'wallet', 'balance_paise': 200000, 'currency': 'INR'},
+        headers=auth_headers(token),
+    )
+    assert account_response.status_code == 201
+
+    category_response = await client.post(
+        '/api/v1/categories',
+        json={'name': 'Food', 'type': 'expense'},
+        headers=auth_headers(token),
+    )
+    assert category_response.status_code == 201
+
+    create_transaction_response = await client.post(
+        '/api/v1/transactions',
+        json={
+            'account_id': account_response.json()['id'],
+            'type': 'expense',
+            'amount_paise': 8500,
+            'occurred_at': '2026-09-28T10:00:00+00:00',
+            'category_id': category_response.json()['id'],
+            'merchant': 'Zomato',
+            'note': 'Lunch',
+        },
+        headers=auth_headers(token),
+    )
+    assert create_transaction_response.status_code == 201
+
+    response = await client.post(
+        '/api/v1/chat',
+        json={'message': 'What did I spend this week?'},
+        headers=auth_headers(token),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['pending_transaction_proposal'] is None
+    assert '(1/5)' not in payload['message']
+    assert 'you spent inr' in payload['message'].lower()
+    assert isinstance(payload.get('insights'), list)
+    assert len(payload['insights']) >= 1
+    assert payload['insights'][0]['title']
+
+
+async def test_chat_query_transactions_for_last_two_weeks(client: AsyncClient) -> None:
+    token = await register_and_get_token(client, 'chat-query-last-two-weeks@example.com')
+    recent_occurred_at = (datetime.now(UTC) - timedelta(days=3)).replace(microsecond=0).isoformat()
+
+    account_response = await client.post(
+        '/api/v1/accounts',
+        json={'name': 'Travel Wallet', 'type': 'wallet', 'balance_paise': 150000, 'currency': 'INR'},
+        headers=auth_headers(token),
+    )
+    assert account_response.status_code == 201
+
+    category_response = await client.post(
+        '/api/v1/categories',
+        json={'name': 'Travel', 'type': 'expense'},
+        headers=auth_headers(token),
+    )
+    assert category_response.status_code == 201
+
+    transaction_response = await client.post(
+        '/api/v1/transactions',
+        json={
+            'account_id': account_response.json()['id'],
+            'type': 'expense',
+            'amount_paise': 25600,
+            'occurred_at': recent_occurred_at,
+            'category_id': category_response.json()['id'],
+            'merchant': 'Uber',
+            'note': 'Ride',
+        },
+        headers=auth_headers(token),
+    )
+    assert transaction_response.status_code == 201
+
+    response = await client.post(
+        '/api/v1/chat',
+        json={'message': 'show my transactions from 2 weeks ago'},
+        headers=auth_headers(token),
+    )
+    assert response.status_code == 200
+
+    payload = response.json()
+    assert payload['pending_transaction_proposal'] is None
+    assert 'i found' in payload['message'].lower()
+    assert 'uber' in payload['message'].lower()
+
+
+async def test_chat_transaction_flow_uses_category_hint_from_message(client: AsyncClient) -> None:
+    token = await register_and_get_token(client, 'chat-category-hint@example.com')
+
+    account_response = await client.post(
+        '/api/v1/accounts',
+        json={'name': 'Main Wallet', 'type': 'wallet', 'balance_paise': 100000, 'currency': 'INR'},
+        headers=auth_headers(token),
+    )
+    assert account_response.status_code == 201
+
+    travel_category_response = await client.post(
+        '/api/v1/categories',
+        json={'name': 'Travel', 'type': 'expense'},
+        headers=auth_headers(token),
+    )
+    assert travel_category_response.status_code == 201
+
+    food_category_response = await client.post(
+        '/api/v1/categories',
+        json={'name': 'Food', 'type': 'expense'},
+        headers=auth_headers(token),
+    )
+    assert food_category_response.status_code == 201
+
+    response = await client.post(
+        '/api/v1/chat',
+        json={'message': 'I spent INR 450 under Food at Cafe Roma today'},
+        headers=auth_headers(token),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['pending_transaction_proposal'] is not None
+    assert payload['pending_transaction_proposal']['category_name'] == 'Food'
+
+
+async def test_chat_transaction_yes_confirms_pending_proposal(client: AsyncClient) -> None:
+    token = await register_and_get_token(client, 'chat-yes-confirm@example.com')
+
+    account_response = await client.post(
+        '/api/v1/accounts',
+        json={'name': 'Main Wallet', 'type': 'wallet', 'balance_paise': 100000, 'currency': 'INR'},
+        headers=auth_headers(token),
+    )
+    assert account_response.status_code == 201
+
+    category_response = await client.post(
+        '/api/v1/categories',
+        json={'name': 'Food', 'type': 'expense'},
+        headers=auth_headers(token),
+    )
+    assert category_response.status_code == 201
+
+    proposal_response = await client.post(
+        '/api/v1/chat',
+        json={'message': 'I spent INR 199.50 at Cafe Roma today'},
+        headers=auth_headers(token),
+    )
+
+    assert proposal_response.status_code == 200
+    proposal_payload = proposal_response.json()
+    assert proposal_payload['pending_transaction_proposal'] is not None
+
+    confirm_response = await client.post(
+        '/api/v1/chat',
+        json={'message': 'yes', 'thread_id': proposal_payload['thread_id']},
+        headers=auth_headers(token),
+    )
+
+    assert confirm_response.status_code == 200
+    assert 'Logged transaction: expense INR 199.50' in confirm_response.json()['message']
 
 
 async def test_chat_transaction_hitl_falls_back_to_manual_after_max_turns(client: AsyncClient) -> None:

@@ -164,6 +164,7 @@ class ChatGraphState(TypedDict, total=False):
     guardrail_confidence: float
     guardrail_layer: str
     insights: list[dict[str, str]] | None
+    agent_correction: dict[str, Any] | None
 
 
 class CategoryToolGraphState(TypedDict, total=False):
@@ -420,6 +421,7 @@ class LangGraphChatOrchestrator:
                     'transaction_logged': False,
                     'manual_transaction_input_required': False,
                     'insights': None,
+                    'agent_correction': None,
                 },
             )
         else:
@@ -429,6 +431,7 @@ class LangGraphChatOrchestrator:
                 'transaction_logged': False,
                 'manual_transaction_input_required': False,
                 'insights': None,
+                'agent_correction': None,
             }
 
         result = await self._graph.ainvoke(graph_input, config=config)
@@ -476,6 +479,7 @@ class LangGraphChatOrchestrator:
             guardrail_confidence=float(result.get('guardrail_confidence', 1.0)),
             guardrail_layer=str(result.get('guardrail_layer', 'semantic')),
             insights=result.get('insights'),
+            agent_correction=result.get('agent_correction'),
         )
 
     async def _analyze_turn(self, state: ChatGraphState) -> dict[str, Any]:
@@ -949,6 +953,14 @@ class LangGraphChatOrchestrator:
             if updated_merchant is not None:
                 updated['merchant'] = updated_merchant
 
+            correction_payload: dict[str, Any] | None = None
+            if updated != pending_proposal:
+                correction_payload = {
+                    'original_proposal': dict(pending_proposal),
+                    'corrected_proposal': dict(updated),
+                    'user_message': latest_user_message,
+                }
+
             return {
                 'pending_proposal': updated,
                 'extracted_candidate': None,
@@ -956,6 +968,7 @@ class LangGraphChatOrchestrator:
                 'hitl_attempt_count': 0,
                 'hitl_context_message': None,
                 'hitl_missing_fields': [],
+                'agent_correction': correction_payload,
                 'transaction_logged': False,
                 'manual_transaction_input_required': False,
                 'messages': [AIMessage(content=f'Updated proposal. {self._format_proposal_message(updated)}')],
@@ -1194,10 +1207,29 @@ class LangGraphChatOrchestrator:
 
         parsed_payload = self._parse_tool_payload(tool_message.content if tool_message is not None else None)
         reply = str(parsed_payload.get('reply') or 'No matching transactions found for that time range.')
+        insights = self._normalize_insights_payload(parsed_payload.get('insights'))
         return {
             'messages': [AIMessage(content=reply)],
             'query_tool_call_id': None,
+            'insights': insights,
         }
+
+    @staticmethod
+    def _normalize_insights_payload(raw_insights: Any) -> list[dict[str, str]] | None:
+        if not isinstance(raw_insights, list):
+            return None
+
+        insights: list[dict[str, str]] = []
+        for raw_item in raw_insights:
+            if not isinstance(raw_item, dict):
+                continue
+            title = str(raw_item.get('title') or '').strip()
+            detail = str(raw_item.get('detail') or '').strip()
+            if not title or not detail:
+                continue
+            insights.append({'title': title, 'detail': detail})
+
+        return insights or None
 
     @staticmethod
     def _latest_tool_message(
