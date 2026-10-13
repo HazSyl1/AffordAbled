@@ -5,18 +5,39 @@ import { Button } from '../../components/atoms/Button';
 import { Card } from '../../components/atoms/Card';
 import { BottomSheet } from '../../components/molecules/BottomSheet';
 import { CreateTransactionForm } from '../../components/organisms/CreateTransactionForm';
+import type { CreateTransactionFormValues } from '../../components/organisms/CreateTransactionForm/CreateTransactionForm.schema';
 import { TransactionList } from '../../components/organisms/TransactionList';
 import { useLogoutMutation } from '../../features/auth/authApi';
 import { clearCredentials } from '../../features/auth/authSlice';
 import { useListTransactionsQuery } from '../../features/transactions/transactionsApi';
+import type { Transaction } from '../../features/transactions/transactionsApi';
 import { SHEET_TITLES } from '../../constants';
 import { formatPaiseAsInr } from '../../lib/money';
+
+function mapTransactionToFormValues(transaction: Transaction): Partial<CreateTransactionFormValues> {
+  return {
+    accountId: transaction.account_id,
+    type: transaction.type,
+    amountRupees: (transaction.amount_paise / 100).toFixed(2),
+    occurredAt: transaction.occurred_at,
+    categoryId: transaction.category_id ?? '',
+    toAccountId: transaction.to_account_id ?? '',
+    merchant: transaction.merchant ?? '',
+    note: transaction.note ?? '',
+  };
+}
 
 export function TransactionsPage() {
   const dispatch = useAppDispatch();
   const [logout] = useLogoutMutation();
   const { data: transactions } = useListTransactionsQuery();
   const [isAddTransactionSheetOpen, setIsAddTransactionSheetOpen] = useState(false);
+  const [transactionBeingEdited, setTransactionBeingEdited] = useState<Transaction | null>(null);
+
+  const editInitialValues = useMemo(
+    () => (transactionBeingEdited ? mapTransactionToFormValues(transactionBeingEdited) : undefined),
+    [transactionBeingEdited],
+  );
 
   const summary = useMemo(() => {
     let expensePaise = 0;
@@ -53,13 +74,21 @@ export function TransactionsPage() {
     }
   };
 
+  const handleOpenEditSheet = (transaction: Transaction) => {
+    setTransactionBeingEdited(transaction);
+  };
+
+  const handleCloseEditSheet = () => {
+    setTransactionBeingEdited(null);
+  };
+
   return (
     <div className='mx-auto w-full max-w-[1200px] px-4 py-4 md:px-6 md:py-6'>
       <header className='sticky top-[env(safe-area-inset-top)] z-10 -mx-4 mb-4 border-b border-[var(--bg-border)] bg-[color:rgba(9,9,11,0.9)] px-4 py-4 backdrop-blur-xl md:static md:mx-0 md:border-none md:bg-transparent md:px-0 md:py-0'>
         <div className='flex items-start justify-between gap-3'>
           <div>
             <h1 className='text-xl font-bold text-[var(--text-primary)]'>Transactions</h1>
-            <p className='text-xs text-[var(--text-secondary)]'>Review spending, income, and transfers in one place.</p>
+            <p className='text-xs text-[var(--text-secondary)]'>Review spending, income, and transfers in one place. Click any transaction to edit.</p>
           </div>
 
           <div className='flex gap-2'>
@@ -97,7 +126,7 @@ export function TransactionsPage() {
       <div className='grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_380px] lg:items-start'>
         <section>
           <Card className='p-4 md:p-5'>
-            <TransactionList />
+            <TransactionList onTransactionSelect={handleOpenEditSheet} />
           </Card>
         </section>
 
@@ -118,6 +147,23 @@ export function TransactionsPage() {
           showHeading={false}
           onSuccess={() => setIsAddTransactionSheetOpen(false)}
         />
+      </BottomSheet>
+
+      <BottomSheet
+        isOpen={Boolean(transactionBeingEdited)}
+        onClose={handleCloseEditSheet}
+        title={SHEET_TITLES.editTransaction}
+      >
+        {transactionBeingEdited ? (
+          <CreateTransactionForm
+            mode='sheet'
+            showHeading={false}
+            transactionId={transactionBeingEdited.id}
+            initialValues={editInitialValues}
+            submitLabel='Save changes'
+            onSuccess={handleCloseEditSheet}
+          />
+        ) : null}
       </BottomSheet>
     </div>
   );

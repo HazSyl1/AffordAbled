@@ -1,13 +1,15 @@
 import { ImagePlus, Mic } from 'lucide-react';
-import { useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 
 import { BottomSheet } from '../../components/molecules/BottomSheet';
+import { AssistantReplyIndicator } from '../../components/molecules/AssistantReplyIndicator';
+import { VoiceCaptureModal } from '../../components/molecules/VoiceCaptureModal';
 import { CreateTransactionForm } from '../../components/organisms/CreateTransactionForm';
 import { Card } from '../../components/atoms/Card';
 import { CollapseToggle } from '../../components/atoms/CollapseToggle';
 import { Input } from '../../components/atoms/Input';
-import { DASHBOARD_CHAT_UI_TEXT, SHEET_TITLES } from '../../constants';
+import { DASHBOARD_CHAT_UI_TEXT, SHEET_TITLES, VOICE_CAPTURE_EVENT_NAME } from '../../constants';
 import {
   useAnalyzeImageMutation,
   type ChatTransactionProposal,
@@ -25,6 +27,7 @@ import {
   type ChatDraftLifecycle,
   type ChatDraftMessage,
 } from '../../features/chat/chatDrafts';
+import { useVoiceCapture } from '../../features/chat/useVoiceCapture';
 
 type ChatListFilter = 'finance' | 'drafts';
 
@@ -62,6 +65,7 @@ function formatDraftDeadline(draft: ChatDraft): string | null {
 
 export function ChatPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const [sendChatMessage, { isLoading: isSendingChatMessage }] = useSendChatMessageMutation();
   const [transcribeVoice, { isLoading: isTranscribingVoice }] = useTranscribeVoiceMutation();
   const [analyzeImage, { isLoading: isAnalyzingImage }] = useAnalyzeImageMutation();
@@ -74,7 +78,6 @@ export function ChatPage() {
   const [showProposalSheet, setShowProposalSheet] = useState(false);
   const [proposalForSheet, setProposalForSheet] = useState<ChatTransactionProposal | null>(null);
   const [proposalSheetMode, setProposalSheetMode] = useState<'standard' | 'manual_low_confidence'>('standard');
-  const voiceFileInputRef = useRef<HTMLInputElement | null>(null);
   const imageFileInputRef = useRef<HTMLInputElement | null>(null);
   const [openingGreeting] = useState(() => {
     const options = DASHBOARD_CHAT_UI_TEXT.rotatingGreetings;
@@ -97,6 +100,7 @@ export function ChatPage() {
 
   const filteredItems = activeFilter === 'finance' ? groupedDrafts.financeChats : groupedDrafts.draftChats;
   const messageList = selectedDraft?.messages ?? [];
+  const isAssistantResponding = isSendingChatMessage;
   const proposalInitialValues = useMemo(
     () => (proposalForSheet ? mapProposalToCreateTransactionValues(proposalForSheet) : undefined),
     [proposalForSheet],
@@ -199,6 +203,11 @@ export function ChatPage() {
         role: 'assistant',
         content: response.message,
       };
+      const insightMessages: ChatDraftMessage[] = (response.insights ?? []).map((insight) => ({
+        id: createLocalMessageId(),
+        role: 'assistant',
+        content: `Insight: ${insight.title} - ${insight.detail}`,
+      }));
 
       if (optimisticDraft.lifecycle === 'draft' && response.transaction_logged) {
         deleteChatDraft(optimisticDraft.id);
@@ -217,7 +226,7 @@ export function ChatPage() {
 
       persistDraftMessages(
         optimisticDraft,
-        [...optimisticMessages, assistantMessage],
+        [...optimisticMessages, assistantMessage, ...insightMessages],
         response.thread_id,
         nextLifecycle,
       );
@@ -230,10 +239,7 @@ export function ChatPage() {
     }
   };
 
-  const handleVoiceFileSelected = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const voiceFile = event.target.files?.[0];
-    event.target.value = '';
-
+  const handleRecordedVoice = async (voiceFile: File) => {
     if (!voiceFile) {
       return;
     }
@@ -253,6 +259,67 @@ export function ChatPage() {
       setChatError(DASHBOARD_CHAT_UI_TEXT.voiceError);
     }
   };
+
+  const {
+    cancelCapture,
+    elapsedSeconds,
+    isOpen: isVoiceCaptureOpen,
+    isProcessing: isVoiceCaptureProcessing,
+    startCapture,
+    stopCapture,
+  } = useVoiceCapture({
+    maxDurationSeconds: DASHBOARD_CHAT_UI_TEXT.voiceRecordingMaxDurationSeconds,
+    onRecorded: handleRecordedVoice,
+    onError: (reason) => {
+      if (reason === 'permission_denied') {
+        setChatError(DASHBOARD_CHAT_UI_TEXT.voicePermissionError);
+        return;
+      }
+      if (reason === 'unsupported') {
+        setChatError(DASHBOARD_CHAT_UI_TEXT.voiceUnsupportedError);
+        return;
+      }
+      setChatError(DASHBOARD_CHAT_UI_TEXT.voiceError);
+    },
+  });
+
+  useEffect(() => {
+    const handleVoiceCaptureRequest = (event: Event) => {
+      const customEvent = event as CustomEvent<{ handled?: boolean }>;
+      if (customEvent.detail) {
+        customEvent.detail.handled = true;
+      }
+
+      setChatError(null);
+      void startCapture();
+    };
+
+    window.addEventListener(VOICE_CAPTURE_EVENT_NAME, handleVoiceCaptureRequest as EventListener);
+    return () => {
+      window.removeEventListener(VOICE_CAPTURE_EVENT_NAME, handleVoiceCaptureRequest as EventListener);
+    };
+  }, [startCapture]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    if (params.get('voice') !== '1') {
+      return;
+    }
+
+    if (!isVoiceCaptureOpen && !isVoiceCaptureProcessing) {
+      void startCapture();
+    }
+
+    params.delete('voice');
+    const nextSearch = params.toString();
+    navigate(
+      {
+        pathname: '/chat',
+        search: nextSearch ? '?' + nextSearch : '',
+      },
+      { replace: true },
+    );
+  }, [isVoiceCaptureOpen, isVoiceCaptureProcessing, location.search, navigate, startCapture]);
 
   const handleImageFileSelected = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const imageFile = event.target.files?.[0];
@@ -472,6 +539,8 @@ export function ChatPage() {
                 </div>
               ))
             )}
+
+            {isAssistantResponding ? <AssistantReplyIndicator label={DASHBOARD_CHAT_UI_TEXT.assistantReplyingLabel} /> : null}
           </div>
 
           {chatError ? (
@@ -485,8 +554,10 @@ export function ChatPage() {
               type='button'
               className='inline-flex h-12 w-12 items-center justify-center rounded-xl border border-[var(--bg-border)] bg-[var(--bg-elevated)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-card)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)] disabled:cursor-not-allowed disabled:opacity-60'
               aria-label='Transcribe and send voice note'
-              disabled={isTranscribingVoice || isSendingChatMessage}
-              onClick={() => voiceFileInputRef.current?.click()}
+              disabled={isVoiceCaptureOpen || isTranscribingVoice}
+              onClick={() => {
+                void startCapture();
+              }}
             >
               <Mic className='h-4 w-4' strokeWidth={2.2} aria-hidden='true' />
             </button>
@@ -523,15 +594,6 @@ export function ChatPage() {
           </div>
 
           <input
-            ref={voiceFileInputRef}
-            type='file'
-            accept='audio/*'
-            className='hidden'
-            onChange={(event) => {
-              void handleVoiceFileSelected(event);
-            }}
-          />
-          <input
             ref={imageFileInputRef}
             type='file'
             accept='image/*'
@@ -542,6 +604,19 @@ export function ChatPage() {
           />
         </Card>
       </div>
+
+      <VoiceCaptureModal
+        cancelLabel={DASHBOARD_CHAT_UI_TEXT.voiceRecordingCancelButton}
+        isOpen={isVoiceCaptureOpen}
+        isProcessing={isVoiceCaptureProcessing}
+        elapsedSeconds={elapsedSeconds}
+        onCancel={cancelCapture}
+        onStop={stopCapture}
+        title={DASHBOARD_CHAT_UI_TEXT.voiceRecordingTitle}
+        recordingLabel={DASHBOARD_CHAT_UI_TEXT.voiceRecordingActiveLabel}
+        processingLabel={DASHBOARD_CHAT_UI_TEXT.voiceRecordingProcessingLabel}
+        stopLabel={DASHBOARD_CHAT_UI_TEXT.voiceRecordingStopButton}
+      />
 
       <BottomSheet
         isOpen={showProposalSheet}

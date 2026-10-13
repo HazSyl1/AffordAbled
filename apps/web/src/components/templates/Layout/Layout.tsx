@@ -12,6 +12,7 @@ import {
   APP_TAGLINE,
   LAYOUT_UI_TEXT,
   NAV_ITEMS,
+  VOICE_CAPTURE_EVENT_NAME,
 } from '../../../constants';
 
 interface LayoutProps {
@@ -226,6 +227,14 @@ export function Layout({ children }: LayoutProps) {
           type='button'
           className='fixed bottom-[152px] right-4 z-40 flex h-11 w-11 items-center justify-center rounded-full border border-[var(--bg-border)] bg-[var(--bg-elevated)] text-[var(--text-secondary)] active:scale-[0.98]'
           aria-label={LAYOUT_UI_TEXT.startVoiceAriaLabel}
+          onClick={() => {
+            const detail = { handled: false };
+            window.dispatchEvent(new CustomEvent(VOICE_CAPTURE_EVENT_NAME, { detail }));
+
+            if (!detail.handled) {
+              navigate('/chat?voice=1');
+            }
+          }}
         >
           <Mic className='h-5 w-5' strokeWidth={2.2} aria-hidden='true' />
         </button>

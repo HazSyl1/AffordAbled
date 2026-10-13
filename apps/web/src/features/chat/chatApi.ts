@@ -19,12 +19,18 @@ export interface ChatTransactionProposal {
   note: string | null;
 }
 
+export interface ChatInsight {
+  title: string;
+  detail: string;
+}
+
 export interface ChatResponse {
   thread_id: string;
   message: string;
   pending_transaction_proposal?: ChatTransactionProposal | null;
   transaction_logged?: boolean;
   manual_transaction_input_required?: boolean;
+  insights?: ChatInsight[] | null;
 }
 
 export interface VoiceTranscriptionRequest {

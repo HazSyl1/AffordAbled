@@ -13,6 +13,7 @@ import {
 
 export const APP_NAME = 'AFFORDABLED';
 export const APP_TAGLINE = 'Personal AI Wallet';
+export const VOICE_CAPTURE_EVENT_NAME = 'affordabled:start-voice-capture';
 
 export const LAYOUT_UI_TEXT = {
   signedInLabel: 'Signed in',
@@ -104,13 +105,28 @@ export const DASHBOARD_CHAT_UI_TEXT = {
     'Need a quick check on your budget or recent expenses?',
   ],
   voiceHint: 'Use the Voice quick action to transcribe and send audio.',
+  voiceRecordingTitle: 'Voice Input',
+  voiceRecordingActiveLabel: 'Recording started',
+  voiceRecordingStopButton: 'Stop Recording',
+  voiceRecordingCancelButton: 'Cancel',
+  voiceRecordingMaxDurationSeconds: 90,
+  voiceRecordingProcessingLabel: 'Processing your recording...',
   imageError: 'Image analysis failed. Please upload a clear JPG, PNG, or WEBP image.',
   transactionDetailHint: 'Transaction-specific chats can be continued from the transaction detail screen.',
   assistantError: 'Could not reach the assistant right now. Please try again.',
-  voiceError: 'Voice transcription failed. Please upload a clear WAV or OGG clip.',
+  voicePermissionError: 'Microphone permission is blocked. Please allow microphone access and try again.',
+  voiceUnsupportedError: 'Voice recording is not supported in this browser/context. Use Chrome/Edge on localhost or HTTPS.',
+  voiceError: 'Voice transcription failed. Please try again with a clear recording.',
+  assistantReplyingLabel: 'Assistant is replying...',
+} as const;
+
+export const TRANSACTION_UI_TEXT = {
+  chatAboutLabel: 'Chat about this transaction',
+  editHintLabel: 'Click to edit',
 } as const;
 
 export const SHEET_TITLES = {
   addTransaction: 'Add Transaction',
+  editTransaction: 'Edit Transaction',
   addAccount: 'Add Account',
 } as const;

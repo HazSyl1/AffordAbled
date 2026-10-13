@@ -13,7 +13,10 @@ import {
   useCreateCategoryMutation,
   useListCategoriesQuery,
 } from '../../../features/categories/categoriesApi';
-import { useCreateTransactionMutation } from '../../../features/transactions/transactionsApi';
+import {
+  useCreateTransactionMutation,
+  useUpdateTransactionMutation,
+} from '../../../features/transactions/transactionsApi';
 import type { TransactionType } from '../../../features/transactions/transactionsApi';
 import { DASHBOARD_CHAT_UI_TEXT } from '../../../constants';
 import { Badge } from '../../atoms/Badge';
@@ -28,6 +31,7 @@ export interface CreateTransactionFormProps {
   showHeading?: boolean;
   mode?: 'page' | 'sheet';
   initialValues?: Partial<CreateTransactionFormValues>;
+  transactionId?: string;
   submitLabel?: string;
   prefillMode?: 'standard' | 'manual_low_confidence';
 }
@@ -212,11 +216,14 @@ export function CreateTransactionForm({
   showHeading = true,
   mode = 'page',
   initialValues,
+  transactionId,
   submitLabel = 'Add transaction',
   prefillMode = 'standard',
 }: CreateTransactionFormProps) {
   const isSheetMode = mode === 'sheet';
+  const isEditing = Boolean(transactionId);
   const [createTransaction] = useCreateTransactionMutation();
+  const [updateTransaction] = useUpdateTransactionMutation();
   const [createAccount, { isLoading: isCreatingAccount }] = useCreateAccountMutation();
   const [createCategory, { isLoading: isCreatingCategory }] = useCreateCategoryMutation();
   const { data: accounts } = useListAccountsQuery();
@@ -248,6 +255,10 @@ export function CreateTransactionForm({
   const sourceAccountId = useWatch({ control, name: 'accountId' });
   const destinationAccountId = useWatch({ control, name: 'toAccountId' });
   const categoryId = useWatch({ control, name: 'categoryId' });
+
+  useEffect(() => {
+    reset(resolveInitialValues(initialValues));
+  }, [initialValues, reset, transactionId]);
 
   const filteredCategories = useMemo(() => {
     if (!categories) {
@@ -290,17 +301,26 @@ export function CreateTransactionForm({
   const onSubmit = handleSubmit(async (values) => {
     setFormError(null);
 
+    const payload = {
+      account_id: values.accountId,
+      type: values.type,
+      amount_paise: Math.round(Number(values.amountRupees) * 100),
+      occurred_at: new Date(values.occurredAt).toISOString(),
+      category_id: values.type === 'transfer' ? undefined : values.categoryId || undefined,
+      to_account_id: values.type === 'transfer' ? values.toAccountId || undefined : undefined,
+      merchant: values.merchant?.trim() || undefined,
+      note: values.note?.trim() || undefined,
+    };
+
     try {
-      await createTransaction({
-        account_id: values.accountId,
-        type: values.type,
-        amount_paise: Math.round(Number(values.amountRupees) * 100),
-        occurred_at: new Date(values.occurredAt).toISOString(),
-        category_id: values.type === 'transfer' ? undefined : values.categoryId || undefined,
-        to_account_id: values.type === 'transfer' ? values.toAccountId || undefined : undefined,
-        merchant: values.merchant?.trim() || undefined,
-        note: values.note?.trim() || undefined,
-      }).unwrap();
+      if (transactionId) {
+        await updateTransaction({
+          transactionId,
+          body: payload,
+        }).unwrap();
+      } else {
+        await createTransaction(payload).unwrap();
+      }
 
       setShowQuickCategory(false);
       setQuickCategoryName('');
@@ -310,10 +330,10 @@ export function CreateTransactionForm({
       setQuickAccountType('wallet');
       setQuickAccountError(null);
       setQuickAccountTarget('source');
-      reset(resolveInitialValues(initialValues));
+      reset(resolveInitialValues(isEditing ? values : initialValues));
       onSuccess?.();
     } catch {
-      setFormError('Could not create the transaction.');
+      setFormError(isEditing ? 'Could not update the transaction.' : 'Could not create the transaction.');
     }
   });
 
@@ -377,8 +397,12 @@ export function CreateTransactionForm({
     <form className='w-full' onSubmit={onSubmit} noValidate>
       {showHeading ? (
         <>
-          <h2 className='text-base font-semibold text-[var(--text-primary)]'>Add a transaction</h2>
-          <p className='mb-4 text-sm text-[var(--text-secondary)]'>Use this form for new and backdated entries.</p>
+          <h2 className='text-base font-semibold text-[var(--text-primary)]'>
+            {isEditing ? 'Edit transaction' : 'Add a transaction'}
+          </h2>
+          <p className='mb-4 text-sm text-[var(--text-secondary)]'>
+            {isEditing ? 'Update details for this transaction.' : 'Use this form for new and backdated entries.'}
+          </p>
         </>
       ) : null}
 

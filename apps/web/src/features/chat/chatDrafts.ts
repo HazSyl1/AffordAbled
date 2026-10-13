@@ -41,7 +41,6 @@ const MAX_SAVED_MESSAGES = 80;
 const DRAFT_DEFAULT_TTL_HOURS = 72;
 const TITLE_MAX_WORDS = 8;
 const TITLE_MAX_CHARS = 54;
-const titleWorkersByDraftId = new Map<string, Worker>();
 
 function createId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -432,7 +431,7 @@ export function queueChatDraftTitleGeneration(draftId: string): void {
     return;
   }
 
-  if (draft.title.trim().length > 0 || titleWorkersByDraftId.has(draftId)) {
+  if (draft.title.trim().length > 0) {
     return;
   }
 
@@ -441,61 +440,24 @@ export function queueChatDraftTitleGeneration(draftId: string): void {
     return;
   }
 
-  if (typeof Worker === 'undefined') {
-    const fallbackTitle = summarizeGeneralTitle(firstUserMessage).trim();
-    if (!fallbackTitle) {
-      return;
-    }
-
-    saveChatDraft({
-      draftId: draft.id,
-      kind: draft.kind,
-      lifecycle: draft.lifecycle,
-      transactionId: draft.transaction_id,
-      threadId: draft.thread_id,
-      messages: draft.messages,
-      expiresAt: draft.expires_at,
-      title: fallbackTitle,
-    });
+  const generatedTitle = summarizeGeneralTitle(firstUserMessage).trim();
+  if (!generatedTitle) {
     return;
   }
 
-  const worker = new Worker(new URL('./chatTitle.worker.ts', import.meta.url), { type: 'module' });
-  titleWorkersByDraftId.set(draftId, worker);
+  const latestDraft = getChatDraftById(draftId);
+  if (!latestDraft || latestDraft.kind !== 'general' || latestDraft.title.trim().length > 0) {
+    return;
+  }
 
-  const cleanup = () => {
-    worker.terminate();
-    titleWorkersByDraftId.delete(draftId);
-  };
-
-  worker.onmessage = (event: MessageEvent<{ title?: string }>) => {
-    cleanup();
-
-    const generatedTitle = event.data?.title?.trim();
-    if (!generatedTitle) {
-      return;
-    }
-
-    const latestDraft = getChatDraftById(draftId);
-    if (!latestDraft || latestDraft.kind !== 'general' || latestDraft.title.trim().length > 0) {
-      return;
-    }
-
-    saveChatDraft({
-      draftId: latestDraft.id,
-      kind: latestDraft.kind,
-      lifecycle: latestDraft.lifecycle,
-      transactionId: latestDraft.transaction_id,
-      threadId: latestDraft.thread_id,
-      messages: latestDraft.messages,
-      expiresAt: latestDraft.expires_at,
-      title: generatedTitle,
-    });
-  };
-
-  worker.onerror = () => {
-    cleanup();
-  };
-
-  worker.postMessage({ firstUserMessage });
+  saveChatDraft({
+    draftId: latestDraft.id,
+    kind: latestDraft.kind,
+    lifecycle: latestDraft.lifecycle,
+    transactionId: latestDraft.transaction_id,
+    threadId: latestDraft.thread_id,
+    messages: latestDraft.messages,
+    expiresAt: latestDraft.expires_at,
+    title: generatedTitle,
+  });
 }
