@@ -124,7 +124,7 @@ The exact PR merge ancestry is available in Git; the table records the verified 
 - Make duplicate requests idempotent: return the existing matching category or clearly report it already exists, without a duplicate row.
 - Do not expose arbitrary account, transaction, or SQL tools through this workflow.
 
-**Implementation evidence so far:** category-management is in the supervisor registry and graph, deterministic intent takes precedence over the supervisor model’s conflicting choice, category type clarification resumes from checkpoint state, duplicate same-type categories are handled idempotently, and explicit new category requests replace stale pending category names. Targeted tests and Ruff checks pass. The full acceptance list below is not yet complete; in particular, API-level ownership isolation and a live authenticated analytics → create-category flow still need verification.
+**Implementation evidence so far:** category-management is in the supervisor registry and graph, deterministic intent takes precedence over the supervisor model’s conflicting choice, category type clarification resumes from checkpoint state, duplicate same-type categories are handled idempotently, and explicit new category requests replace stale pending category names. An authenticated HTTP regression confirms category persistence, ownership isolation, duplicate safety, and no transaction side effect. Targeted tests, the complete backend suite, and Ruff pass. The same-thread analytics → create-category flow with a real result/checkpointer and configured live model remains an opt-in integration check.
 
 #### Acceptance tests
 

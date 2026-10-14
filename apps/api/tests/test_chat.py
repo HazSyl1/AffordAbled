@@ -503,6 +503,53 @@ async def test_chat_router_restores_prior_messages_for_same_user_thread(
         app.dependency_overrides.pop(get_transaction_extraction_llm, None)
 
 
+async def test_chat_category_creation_is_idempotent_user_scoped_and_does_not_log_transaction(
+    client: AsyncClient,
+    app: FastAPI,
+) -> None:
+    token = await register_and_get_token(client, 'chat-category-management@example.com')
+    other_user_token = await register_and_get_token(client, 'chat-category-management-other@example.com')
+    app.dependency_overrides[get_semantic_guardrail] = lambda: AllowGuardrail()
+    app.dependency_overrides[get_intent_classifier] = lambda: QueryIntentClassifier()
+    app.dependency_overrides[get_transaction_extraction_llm] = lambda: None
+
+    try:
+        create_response = await client.post(
+            '/api/v1/chat',
+            json={'message': 'Create a category named Office Expense'},
+            headers=auth_headers(token),
+        )
+
+        assert create_response.status_code == 200
+        payload = create_response.json()
+        assert payload['message'] == "Created the expense category 'Office Expense'."
+        assert payload['pending_transaction_proposal'] is None
+
+        own_categories_response = await client.get('/api/v1/categories', headers=auth_headers(token))
+        other_categories_response = await client.get('/api/v1/categories', headers=auth_headers(other_user_token))
+        transactions_response = await client.get('/api/v1/transactions', headers=auth_headers(token))
+        assert own_categories_response.status_code == 200
+        assert other_categories_response.status_code == 200
+        assert transactions_response.status_code == 200
+        assert [category['name'] for category in own_categories_response.json()] == ['Office Expense']
+        assert other_categories_response.json() == []
+        assert transactions_response.json() == []
+
+        duplicate_response = await client.post(
+            '/api/v1/chat',
+            json={'message': 'Create a category named Office Expense', 'thread_id': payload['thread_id']},
+            headers=auth_headers(token),
+        )
+        assert duplicate_response.status_code == 200
+        assert duplicate_response.json()['message'] == "The expense category 'Office Expense' already exists."
+        refreshed_categories = await client.get('/api/v1/categories', headers=auth_headers(token))
+        assert len(refreshed_categories.json()) == 1
+    finally:
+        app.dependency_overrides.pop(get_semantic_guardrail, None)
+        app.dependency_overrides.pop(get_intent_classifier, None)
+        app.dependency_overrides.pop(get_transaction_extraction_llm, None)
+
+
 async def test_chat_router_blocks_off_topic_prompt(client: AsyncClient) -> None:
     token = await register_and_get_token(client, 'chat-guardrail-block@example.com')
 
