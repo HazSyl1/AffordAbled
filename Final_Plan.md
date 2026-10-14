@@ -8,9 +8,9 @@ This plan is the execution source of truth for the next product iteration. It di
 
 - Repository: `AffordAbled`
 - Baseline branch: `main`
-- Baseline commit: `850f995` — merge of PR #7, including `4639a83` (`feat: improve finance chat and account defaults`).
-- Verified at planning time: implementation branch `feature/chat-result-followups` was created from `main` at `850f995`. This branch now contains uncommitted Phase 0 implementation changes; the plan edit that preceded implementation is also in the worktree.
-- The feature branch `feature/advanced-guardrail` has been merged. Do not continue feature work on `main`.
+- Baseline commit: `616821f` — merge of PR #8 (`feature/chat-result-followups`) into `main`.
+- Current implementation branch: `feature/langgraph-supervisor`, created from `616821f`; it contains uncommitted supervisor work, tests, generated graph assets, and the LangGraph guide.
+- The feature branches `feature/advanced-guardrail` and `feature/chat-result-followups` have been merged. Do not continue feature work directly on `main`.
 - Before each task: fetch/update `main`, verify clean status and current HEAD, then branch from the latest `origin/main`.
 - Branch naming: `feature/<short-scope>`; use a separate branch for each independently reviewable phase.
 - Commit in small, coherent slices using Conventional Commit summaries (`feat:`, `fix:`, `test:`, `docs:`, `chore:`). Do not push or open a PR until the user requests it.
@@ -20,6 +20,8 @@ This plan is the execution source of truth for the next product iteration. It di
 
 | Commit | Change |
 |---|---|
+| `616821f` | Merge PR #8: structured analytics result follow-ups and table formatting |
+| `6fb6f7c` | Preserve and format finance query results |
 | `850f995` | Merge PR #7: advanced guardrails, persistence, account defaults, intent/query improvements |
 | `4639a83` | LLM intent classifier, finance query improvements, contextual analytics follow-up work, default account support |
 | `205b624` | Handoff and validation documentation |
@@ -47,7 +49,8 @@ The exact PR merge ancestry is available in Git; the table records the verified 
 - Transaction proposals, confidence-gated clarification, confirm/cancel flow, and manual fallback.
 - LLM intent classification with keyword fallback; configurable deterministic transaction routing.
 - Spending summaries and transaction queries with calendar periods, user timezone, category filtering, and multi-category fan-out/aggregation.
-- Recent conversation context supplied to routing/query planning; previous finance-query plan can be reused for a spending-to-transaction drill-down.
+- Recent conversation context supplied to routing/query planning; previous finance-query plan/result can be reused for drill-down and table formatting.
+- A bounded top-level supervisor is implemented on the current feature branch; it is not yet merged to `main`.
 - Response validation against database-produced finance facts.
 - LangGraph checkpointing, chat thread/message persistence, ownership checks, guardrail decision logging, and agent correction records.
 - Voice transcription path and basic image-to-text ingestion.
@@ -57,7 +60,7 @@ The exact PR merge ancestry is available in Git; the table records the verified 
 
 ### Partially implemented / still needs end-to-end work
 
-- **Conversation continuity:** thread history is checkpointed and a limited context window is passed to classifiers/planners, but previous tool rows are not yet represented as a reusable structured result. Follow-up requests that transform prior results (for example “sort these by date and show me in a table”) can still fall through to generic chat.
+- **Workflow coverage:** the current supervisor has no standalone category-management workflow. Category creation exists only inside transaction category resolution; a direct “create a category” request after an analytics result can be misrouted by stale-result context.
 - **Analytics:** summary/list paths are present. Comparison-to-period, user baselines/patterns, account balance query tools, robust table formatting, and large-result exports are not implemented as a complete analytics graph.
 - **Receipt AI:** basic image-to-text exists; the staged Document Intelligence/layout → light LLM normalization → conditional vision fallback pipeline is not complete.
 - **Exports:** re-download lookup is present; creating PDF/XLSX, blob upload, artifact creation, and chat handoff are absent.
@@ -76,9 +79,9 @@ The exact PR merge ancestry is available in Git; the table records the verified 
 
 ## 4. Prioritized implementation sequence
 
-### Phase 0 — Conversation result continuity and formatting (in progress)
+### Phase 0 — Conversation result continuity and formatting (merged)
 
-**Branch:** `feature/chat-result-followups`
+**Branch:** `feature/chat-result-followups` — merged in PR #8 at `616821f`.
 
 **Goal:** make results reusable as structured state and handle follow-up requests without guessing from prose.
 
@@ -88,30 +91,139 @@ The exact PR merge ancestry is available in Git; the table records the verified 
 4. [x] Deterministically sort stored rows and render a Markdown table without a second DB query; escape cell pipes and preserve values.
 5. [x] Render Markdown table blocks as accessible, horizontally scrollable HTML tables in both chat surfaces.
 6. [x] Add regression tests for format action routing, stored result, scope reuse, sort order, and fact preservation.
-7. [ ] Add/confirm an end-to-end acceptance test for: summary → “where?” → “sort these by date and show me in a table”, including exact row count and unchanged facts.
-8. [ ] Review checkpoint retention/storage policy for persisted transaction rows, test deployed PostgreSQL checkpointer behavior, and document data minimization expectations.
+7. [x] Add a deterministic graph-sequence regression test for summary → “where?” → “sort these by date and show me in a table”, including unchanged facts and formatting without a new query.
+8. [ ] Run the complete authenticated HTTP sequence using the configured model and PostgreSQL checkpointer; verify state survives API restart.
+9. [ ] Review checkpoint retention/storage policy for persisted transaction rows and document data minimization expectations.
 
 **Acceptance / E2E:** same thread: “How much did I spend this month?” → “where?” → “sort these by date and show me in a table”. Expect same-period expense rows, no refusal/category prompt, date order explicitly defined (default newest first, unless user specifies otherwise), all amounts unchanged, table columns for date/merchant/amount/category, and no fabricated location/address claims.
 
 **Current test evidence:** deterministic graph-node sequence test now covers summary facts → expense drill-down plan → stored transaction facts → sorted table without a second query. The full authenticated HTTP conversation with the configured live model remains a manual/opt-in integration check.
 
-**Commit slices (not committed yet):**
-- `feat(api): preserve structured analytics results for chat follow-ups`
-- `feat(api): route contextual result formatting and drill-down actions`
-- `feat(web): render structured chat tables`
-- `test(chat): cover summary drill-down and result formatting`
+**Merged implementation:** `6fb6f7c feat: preserve and format finance query results` (merge commit `616821f`).
 
-### Phase 1 — Bounded top-level supervisor and workflow registry
+### Phase 1 — New-request arbitration and category-management workflow (current)
 
-**Branch:** `feature/langgraph-supervisor`
+**Branch:** continue `feature/langgraph-supervisor`, based on `616821f`.
 
-Continue after Phase 0 acceptance tests pass. The current work already gives the analytics planner typed actions and a registered formatter node; this is not yet a universal top-level supervisor. Next introduce a bounded supervisor over only workflows that exist: transaction proposal, analytics, clarification, prior-result formatting, and safe response. Register new workflows only when implemented. Allow bounded multi-step handoffs with a small maximum iteration count and explicit state transitions. Preserve guardrails, user scoping, transaction confirmation, DB-derived facts, and per-workflow error recovery. Do not give the LLM arbitrary graph access or unrestricted write tools.
+**Problem to solve:** after an analytics conversation, “Create a category 'Office Expense'” can be misread as another query or as a request to format the previous result. The current supervisor schema has no standalone category-management workflow. A category-creation mini-graph/tool exists, but it is called only inside transaction category resolution.
 
-**Acceptance:** mocked decisions route correctly; unknown handoffs are rejected; supervisor loops are bounded; cross-user tool scope cannot be overridden; writes still require HITL; existing chat/transaction/thread tests remain green.
+#### 1A. Make current-request intent outrank stale analytics context
 
-**Commit slices:** `feat(api): add bounded supervisor decision model`; `feat(api): register analytics and transaction specialist workflows`; `test(ai): cover supervisor routing, limits, and safety`.
+- Have the supervisor distinguish a **new request** from a **referential follow-up** to the previous result.
+- Use `last_finance_query_result` only when the current request contains a reference/formatting intent such as “where?”, “those transactions”, “sort these”, or “show them in a table”. Do not route every non-transaction message to analytics merely because an earlier result exists.
+- Preserve priority for a clearly new transaction (current turn has transaction evidence) and for explicit create/edit/delete-style actions.
+- Keep guardrail hard-block precedence. Add tests for a new category action after analytics, a formatting follow-up after analytics, a new transaction after analytics, and off-topic content after analytics.
 
-### Phase 2 — Complete Analytics specialist
+#### 1B. Register category management as a supervisor capability
+
+- Add `category_management` to the structured supervisor workflow registry and map it to a dedicated graph node/subgraph route. Do not implement category creation as a fake transaction or as a query.
+- Reuse the existing authenticated-user-scoped category mini-graph/tool/service. Do not duplicate repository logic or accept a model-supplied `user_id`.
+- Parse the requested operation, name, and category type (`expense` or `income`). If type is unclear, ask a follow-up instead of silently assigning one; a name like “Office Expense” may be evidence but must follow a documented confidence/validation rule.
+- Explicit “create category …” is user authorization to create that category; validate the name/type, create for the current user, and return a success response. It must not create or alter a transaction.
+- Make duplicate requests idempotent: return the existing matching category or clearly report it already exists, without a duplicate row.
+- Do not expose arbitrary account, transaction, or SQL tools through this workflow.
+
+#### Acceptance tests
+
+1. Same thread: spending summary → transaction list → “Create a category Office Expense”. Expected: category workflow, not old transaction rows.
+2. Confirm category exists through the category API for the same user, with the selected/inferred type.
+3. Repeat creation: no duplicate category.
+4. Missing/ambiguous category type: ask a focused clarification and create only after resolved.
+5. Another user cannot see or use the created category.
+6. Existing follow-up flow still works: summary → “where?” → “sort these by date and show me in a table”.
+7. New transaction after analytics still enters proposal/HITL and is not swallowed by prior-result context.
+8. A hard-block guardrail decision cannot be overridden by supervisor/category workflow selection.
+
+**Commit slices:**
+- `fix(ai): distinguish new requests from prior-result follow-ups`
+- `feat(ai): add standalone category-management workflow`
+- `test(ai): cover category routing, duplicate safety, and user isolation`
+- `docs: update supervisor and category workflow guidance`
+
+**Phase exit gate:** all acceptance tests and full backend/Ruff validation pass; verify category creation is scoped and idempotent; run the live HTTP flow if model/PostgreSQL config is available; update the graph artifact; then PR-review and merge.
+
+### Phase 2 — Bounded multi-step supervisor (after Phase 1)
+
+**Branch:** create `feature/langgraph-multi-step-supervisor` from updated `main` after Phase 1 merges.
+
+**Recommendation: yes, implement this architecture, but incrementally—not as a broad graph rewrite.** The user’s target is an LLM that sees the available capabilities, chooses one, receives its result/questions, and continues when needed. The current top-level supervisor is one-shot. Complete Phase 1 first because category creation and stale-result arbitration are the smallest real example of this capability model. Then add the loop behind registered workflow contracts.
+
+#### Target turn loop
+
+```text
+current message + bounded conversation/result context
+	 → safety/preflight gates
+	 → supervisor chooses: run registered workflow / ask user / finish / refuse
+	 → workflow returns a typed result, clarification request, or safe error
+	 → validate result and side effects
+	 → supervisor sees a compact result summary and chooses next step
+	 → repeat only within the per-turn budget
+	 → final answer from verified results
+```
+
+The supervisor should not receive arbitrary node names or raw function access. Give it a capability registry containing only stable workflow IDs, descriptions, and argument schemas. Python resolves each ID to the implementation. Initially register only capabilities that actually exist: transaction proposal, analytics query/drill-down, prior-result formatting, and category management after Phase 1. Unsupported capabilities remain unavailable rather than being hallucinated.
+
+#### Implementation design
+
+1. **Define structured contracts**
+	- `SupervisorAction`: `run_workflow`, `ask_user`, `finish`, or `refuse`.
+	- For `run_workflow`, require a registered `workflow_id` and schema-validated arguments.
+	- `WorkflowResult`: workflow ID, status (`success`, `needs_input`, `failed`), bounded user-safe summary, structured data reference/payload, and whether a side effect was proposed or committed.
+	- Avoid copying entire histories/tool outputs into the supervisor prompt; provide a bounded conversation window and compact, typed result summaries. Keep full transaction facts in trusted state.
+
+2. **Make the graph loop explicit**
+	- Add a supervisor node that emits one structured action per iteration.
+	- Add a deterministic dispatcher that checks the workflow ID against the registry and validates arguments before invoking a specialist node/subgraph/tool.
+	- Each specialist returns a `WorkflowResult`; it does not decide the next unrelated capability.
+	- Add an observation/validation step that checks result shape, user scope, errors, and side-effect rules, then returns to the supervisor.
+	- The supervisor may call another registered capability, ask the user, finish, or refuse. A user question pauses with LangGraph `interrupt()` and resumes from the checkpoint on the next message.
+
+3. **Add hard bounds and loop protection**
+	- Start with a low configurable maximum (for example, 3 workflow handoffs per user turn).
+	- Track handoff count and previously executed `(workflow_id, normalized_arguments)` pairs in graph state; reject repeated no-progress calls.
+	- Bound per-call timeout, tool-result size, and total model/tool budget. On exhaustion, return a concise partial-result/clarification response; never spin.
+	- Any action not in the registry, invalid arguments, or invalid workflow result is rejected by code.
+
+4. **Preserve irreversible-action safeguards**
+	- Read tools remain authenticated-user-scoped, with user ID injected from server/graph configuration.
+	- Transaction workflows may build/update a proposal but cannot commit until the existing explicit HITL confirmation succeeds.
+	- The supervisor cannot override guardrail hard blocks, ownership checks, tool authorization, transaction validation, or database fact validation.
+	- Multi-step read operations may continue automatically within limits; ambiguous requests and all writes pause for user input/confirmation.
+
+5. **Avoid duplicate reasoning layers**
+	- Keep the top-level supervisor responsible for capability selection and multi-step coordination.
+	- Keep deterministic validation/execution inside specialist workflows.
+	- Keep the analytics planner only for analytics-specific interpretation if tests show it adds value; otherwise migrate its query-plan fields into the analytics workflow contract and retire the redundant LLM call. Do not have two LLM nodes independently re-decide the same top-level intent.
+	- Keep guardrail and deterministic pending-HITL/transaction preflight before the supervisor; these are safety gates, not competing general-purpose planners.
+
+#### Suggested work slices and commits
+
+- `feat(ai): define registered workflow and result contracts`
+- `feat(ai): add bounded supervisor dispatch and observation loop`
+- `feat(ai): resume supervisor after workflow clarification`
+- `test(ai): cover multi-step routing limits and safety invariants`
+- `docs: explain registered supervisor loop and capability status`
+
+Keep this feature branch focused on the supervisor engine. Register standalone category management in Phase 1 first; do not pull split, memory, export, or notification implementations into this phase just to make the registry look complete.
+
+#### Acceptance tests
+
+1. `create category` after an analytics conversation routes to category management—not the previous analytics result—and creates only for the authenticated user.
+2. A supported composition can execute two read workflows (for example analytics followed by table formatting) and the supervisor receives the first workflow’s structured result before choosing the second.
+3. A workflow can return `needs_input`; the graph asks the user, checkpoints, resumes, and continues with the same plan/context.
+4. Transaction workflow proposes a write; no database write occurs before explicit confirmation. After confirmation exactly one write occurs.
+5. Off-topic/hard-blocked requests cannot be routed to tools, even if the LLM supervisor requests it.
+6. Unknown workflow ID, invalid arguments, invalid result, repeated no-progress call, timeout, and max-handoff exhaustion produce safe bounded exits.
+7. Cross-user tests prove tools cannot change user scope using model arguments or checkpoint IDs.
+8. Existing analytics, category, transaction HITL, prior-result table formatting, thread persistence, and ownership tests remain green.
+
+Use stubbed supervisor decisions in normal CI. Keep real-model workflow evaluations opt-in/nightly and evaluate routing accuracy, clarification rate, tool selection, grounded responses, latency, and token/tool budgets.
+
+**Phase exit gate:** full backend suite and Ruff pass; frontend lint/build pass if any UI changes occur; graph artifact is regenerated and reviewed; manual/opt-in same-thread test passes where PostgreSQL/model credentials are available; checkpoint storage/retention implications are documented; PR is reviewed and merged before starting the next product feature.
+
+**Commit slices:** `feat(ai): add bounded supervisor plan state`; `feat(ai): execute registered multi-step workflows`; `test(ai): cover supervisor limits and safety`.
+
+### Phase 3 — Complete Analytics specialist
 
 **Branch:** `feature/analytics-workflows`
 
@@ -119,7 +231,7 @@ Add only after reviewing product scope: period comparisons, category/account bre
 
 **Acceptance:** deterministic tool tests for math/filtering/timezones/ownership; planner tests for structured plans; response fact-preservation tests; live-model evaluation is a separate opt-in/nightly job.
 
-### Phase 3 — Splits (if product priority confirmed)
+### Phase 4 — Splits (if product priority confirmed)
 
 **Branch:** `feature/splits-mvp`
 
@@ -127,7 +239,7 @@ Build split schema/domain/service/repositories/routes, contacts, equal/custom ca
 
 **Acceptance:** exact paise arithmetic including remainder allocation; owner isolation; transaction/split atomicity; confirm/cancel; settlement state; browser journey.
 
-### Phase 4 — Exports and receipt pipeline
+### Phase 5 — Exports and receipt pipeline
 
 Separate branches: `feature/report-exports` and `feature/receipt-extraction`.
 
@@ -136,19 +248,19 @@ Separate branches: `feature/report-exports` and `feature/receipt-extraction`.
 
 External-service work must document provisioning, env vars/secrets, and a concrete verification checklist before implementation is considered complete.
 
-### Phase 5 — Memory and intelligence
+### Phase 6 — Memory and intelligence
 
 Branches: `feature/finance-memory`, then `feature/proactive-insights-eval`.
 
 Implement memory types only with explicit user controls, retention/deletion, ownership tests, and data minimization. Add anomaly/recurring/budget insights only when baseline data and a Budget domain are defined. Evaluation telemetry must avoid secrets/PII and include a documented opt-out/retention policy.
 
-### Phase 6 — Notifications, rate limits, reliability
+### Phase 7 — Notifications, rate limits, reliability
 
 Branch: `feature/notifications-rate-limits`.
 
 Implement notification preferences/outbox, Celery worker and Beat, email/push provider adapters, idempotency keys/deduplication, retries/dead-letter handling, and Redis-backed rate limits. Keep notifications disabled until provider setup and delivery checks are complete.
 
-### Phase 7 — Release hardening
+### Phase 8 — Release hardening
 
 Branch: `chore/release-hardening` or final release branch selected by maintainer.
 

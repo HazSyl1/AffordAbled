@@ -6,12 +6,15 @@ config:
 graph TD;
 	__start__([<p>__start__</p>]):::first
 	analyze_turn(analyze_turn)
+	supervisor(supervisor)
 	populate_user_context(populate_user_context)
 	extract_transaction_candidate(extract_transaction_candidate)
 	evaluate_transaction_candidate(evaluate_transaction_candidate)
 	hitl_clarification(hitl_clarification)
 	transaction_flow(transaction_flow)
-	query_tool_agent(query_tool_agent)
+	query_planner(query_planner)
+	format_previous_result(format_previous_result)
+	query_orchestrator(query_orchestrator)
 	query_tool_executor(query_tool_executor)
 	query_tool_finalize(query_tool_finalize)
 	assistant_default(assistant_default)
@@ -21,7 +24,8 @@ graph TD;
 	analyze_turn -.-> assistant_default;
 	analyze_turn -.-> assistant_refusal;
 	analyze_turn -.-> populate_user_context;
-	analyze_turn -.-> query_tool_agent;
+	analyze_turn -. &nbsp;query_tool_agent&nbsp; .-> query_planner;
+	analyze_turn -.-> supervisor;
 	analyze_turn -.-> transaction_flow;
 	evaluate_transaction_candidate -.-> assistant_default;
 	evaluate_transaction_candidate -.-> hitl_clarification;
@@ -30,11 +34,20 @@ graph TD;
 	hitl_clarification -.-> extract_transaction_candidate;
 	hitl_clarification -.-> transaction_flow;
 	populate_user_context --> extract_transaction_candidate;
-	query_tool_agent -. &nbsp;tools&nbsp; .-> query_tool_executor;
-	query_tool_agent -. &nbsp;__end__&nbsp; .-> query_tool_finalize;
+	query_orchestrator -. &nbsp;tools&nbsp; .-> query_tool_executor;
+	query_orchestrator -. &nbsp;__end__&nbsp; .-> query_tool_finalize;
+	query_planner -.-> assistant_default;
+	query_planner -.-> format_previous_result;
+	query_planner -.-> query_orchestrator;
 	query_tool_executor --> query_tool_finalize;
+	supervisor -.-> assistant_default;
+	supervisor -.-> assistant_refusal;
+	supervisor -.-> format_previous_result;
+	supervisor -.-> populate_user_context;
+	supervisor -. &nbsp;query_tool_agent&nbsp; .-> query_planner;
 	assistant_default --> __end__;
 	assistant_refusal --> __end__;
+	format_previous_result --> __end__;
 	query_tool_finalize --> __end__;
 	transaction_flow --> __end__;
 	classDef default fill:#f2f0ff,line-height:1.2

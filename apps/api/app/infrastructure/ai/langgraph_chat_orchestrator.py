@@ -294,6 +294,25 @@ class FinanceQueryReply(BaseModel):
     )
 
 
+class SupervisorDecision(BaseModel):
+    workflow: Literal['transaction', 'analytics', 'format_previous', 'respond', 'refuse'] = Field(
+        description=(
+            'Select exactly one registered workflow for the current user request. Do not select unavailable split, '
+            'memory, account, or file workflows.'
+        )
+    )
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    rationale: str = Field(default='', max_length=240)
+    response: str | None = Field(
+        default=None,
+        max_length=600,
+        description=(
+            'Short user-facing clarification or capability notice for respond; '
+            'do not include unverified facts.'
+        ),
+    )
+
+
 class ChatGraphState(TypedDict, total=False):
     messages: Annotated[list[BaseMessage], add_messages]
     workflow_action: str
@@ -306,6 +325,10 @@ class ChatGraphState(TypedDict, total=False):
     query_plan: dict[str, Any] | None
     last_finance_query_plan: dict[str, Any] | None
     last_finance_query_result: dict[str, Any] | None
+    supervisor_workflow: str | None
+    supervisor_confidence: float
+    supervisor_rationale: str
+    supervisor_response: str | None
     query_tool_call_ids: list[str]
     transaction_logged: bool
     manual_transaction_input_required: bool
@@ -404,6 +427,7 @@ class LangGraphChatOrchestrator:
 
         self._llm_extraction_chain = None
         self._llm_hitl_category_resolution_chain = None
+        self._supervisor_workflow_chain = None
         self._llm_query_plan_chain = None
         self._llm_query_reply_chain = None
         if extraction_llm is not None:
@@ -469,6 +493,42 @@ class LangGraphChatOrchestrator:
                 hitl_category_prompt | extraction_llm.with_structured_output(HitlCategoryResolutionOutput)
             )
 
+            supervisor_prompt = ChatPromptTemplate.from_messages(
+                [
+                    (
+                        'system',
+                        (
+                            'You are the central workflow supervisor for a personal finance assistant. '
+                            'Choose exactly one registered workflow: transaction (propose a user-reported transaction; '
+                            'writes still require explicit confirmation), analytics (answer a new financial question '
+                            'with database tools), format_previous (sort or present an existing structured analytics '
+                            'result without re-querying), respond (safe conversational reply or ask clarification), or '
+                            'refuse (clearly off-topic request). Choose only workflows in this registry. '
+                            'Split, memory, '
+                            'account-balance specialist, and file-export workflows are not registered yet; do not '
+                            'pretend they are available. Use recent conversation and the prior query result to resolve '
+                            'follow-ups. If prior results exist and the user asks to format them, '
+                            'choose format_previous. '
+                            'If the user reports a new transaction with an amount, choose transaction even if earlier '
+                            'messages discussed spending. If uncertain, choose respond rather than '
+                            'inventing an action. '
+                            'Your decision only routes to a specialist; it does not execute writes, calculate money, '
+                            'override guardrails, or change authenticated user scope. For respond, provide a brief '
+                            'clarification or explain which registered capability is missing; never invent results.'
+                        ),
+                    ),
+                    (
+                        'human',
+                        'Current message: {message}\nRecent conversation: {conversation_context}\n'
+                        'Classified intent hint: {intent}\nGuardrail: {guardrail_decision}\n'
+                        'Previous query plan: {previous_plan}\nPrevious structured result: {previous_result}',
+                    ),
+                ]
+            )
+            self._supervisor_workflow_chain = (
+                supervisor_prompt | extraction_llm.with_structured_output(SupervisorDecision)
+            )
+
             query_plan_prompt = ChatPromptTemplate.from_messages(
                 [
                     (
@@ -530,6 +590,7 @@ class LangGraphChatOrchestrator:
 
         builder = StateGraph(ChatGraphState)
         builder.add_node('analyze_turn', self._analyze_turn)
+        builder.add_node('supervisor', self._supervisor_node)
         builder.add_node('populate_user_context', self._populate_user_context)
         builder.add_node('extract_transaction_candidate', self._extract_transaction_candidate_node)
         builder.add_node('evaluate_transaction_candidate', self._evaluate_transaction_candidate)
@@ -551,6 +612,18 @@ class LangGraphChatOrchestrator:
                 'populate_user_context': 'populate_user_context',
                 'transaction_flow': 'transaction_flow',
                 'query_tool_agent': 'query_planner',
+                'supervisor': 'supervisor',
+                'assistant_default': 'assistant_default',
+                'assistant_refusal': 'assistant_refusal',
+            },
+        )
+        builder.add_conditional_edges(
+            'supervisor',
+            self._route_after_supervisor,
+            {
+                'populate_user_context': 'populate_user_context',
+                'query_tool_agent': 'query_planner',
+                'format_previous_result': 'format_previous_result',
                 'assistant_default': 'assistant_default',
                 'assistant_refusal': 'assistant_refusal',
             },
@@ -798,39 +871,21 @@ class LangGraphChatOrchestrator:
         }
 
         if guardrail_assessment.decision == GuardrailDecision.BLOCK:
-            if self._should_route_to_transaction_flow(
-                latest_user_message=latest_user_message,
-                detected_intent=detected_intent,
+            if (
+                detected_intent == DetectedIntent.LOG_TRANSACTION
+                and self._is_deterministic_transaction_candidate(latest_user_message)
             ):
                 return {'workflow_action': 'build_proposal', **metadata}
             return {'workflow_action': 'refusal', **metadata}
 
-        if (
-            guardrail_assessment.decision == GuardrailDecision.NEEDS_CLASSIFICATION
-            and detected_intent == DetectedIntent.OFF_TOPIC
-        ):
-            return {'workflow_action': 'refusal', **metadata}
+        if guardrail_assessment.decision == GuardrailDecision.NEEDS_CLASSIFICATION:
+            if (
+                detected_intent == DetectedIntent.OFF_TOPIC
+                and not state.get('last_finance_query_result')
+            ):
+                return {'workflow_action': 'refusal', **metadata}
 
-        if (
-            state.get('last_finance_query_result')
-            and detected_intent != DetectedIntent.OFF_TOPIC
-            and not self._is_deterministic_transaction_candidate(latest_user_message)
-        ):
-            return {'workflow_action': 'query_transactions', **metadata}
-
-        if self._should_route_to_transaction_flow(
-            latest_user_message=latest_user_message,
-            detected_intent=detected_intent,
-        ):
-            return {'workflow_action': 'build_proposal', **metadata}
-
-        if self._should_route_to_query_transactions(
-            latest_user_message=latest_user_message,
-            detected_intent=detected_intent,
-        ):
-            return {'workflow_action': 'query_transactions', **metadata}
-
-        return {'workflow_action': 'default', **metadata}
+        return {'workflow_action': 'supervisor', **metadata}
 
     @staticmethod
     def _route_after_analysis(state: ChatGraphState) -> str:
@@ -845,6 +900,134 @@ class LangGraphChatOrchestrator:
             'cancel_hitl',
         }:
             return 'transaction_flow'
+        if action == 'query_transactions':
+            return 'query_tool_agent'
+        if action == 'supervisor':
+            return 'supervisor'
+        if action == 'refusal':
+            return 'assistant_refusal'
+        return 'assistant_default'
+
+    async def _supervisor_node(self, state: ChatGraphState) -> dict[str, Any]:
+        latest_user_message = self._latest_user_message(state.get('messages', []))
+        if not latest_user_message:
+            return {'workflow_action': 'default', 'supervisor_workflow': 'respond'}
+
+        detected_intent = self._as_detected_intent(state.get('intent'))
+        if getattr(self, '_supervisor_workflow_chain', None) is not None:
+            try:
+                decision = await self._supervisor_workflow_chain.ainvoke(
+                    {
+                        'message': latest_user_message,
+                        'conversation_context': self._conversation_context(state.get('messages', []))
+                        or 'No earlier conversation.',
+                        'intent': detected_intent.value,
+                        'guardrail_decision': state.get('guardrail_decision', GuardrailDecision.ALLOW.value),
+                        'previous_plan': json.dumps(
+                            state.get('last_finance_query_plan') or state.get('query_plan'),
+                            ensure_ascii=False,
+                        ),
+                        'previous_result': json.dumps(
+                            state.get('last_finance_query_result'),
+                            ensure_ascii=False,
+                        ),
+                    }
+                )
+                if decision.confidence >= 0.55:
+                    return self._supervisor_decision_update(decision, state)
+            except Exception:
+                logger.exception('Workflow supervisor failed; falling back to safe registered intent routing.')
+
+        return self._supervisor_fallback_update(latest_user_message, detected_intent, state)
+
+    def _supervisor_decision_update(
+        self,
+        decision: SupervisorDecision,
+        state: ChatGraphState,
+    ) -> dict[str, Any]:
+        has_previous_result = bool(state.get('last_finance_query_result'))
+        workflow = decision.workflow
+        latest_user_message = self._latest_user_message(state.get('messages', []))
+        detected_intent = self._as_detected_intent(state.get('intent'))
+        if (
+            workflow in {'respond', 'refuse'}
+            and state.get('guardrail_decision') != GuardrailDecision.BLOCK.value
+            and self._should_route_to_query_transactions(
+                latest_user_message=latest_user_message,
+                detected_intent=detected_intent,
+            )
+        ):
+            workflow = 'analytics'
+        if workflow == 'format_previous' and not has_previous_result:
+            workflow = 'analytics' if self._should_route_to_query_transactions(
+                latest_user_message=latest_user_message,
+                detected_intent=detected_intent,
+            ) else 'respond'
+
+        workflow_action = {
+            'transaction': 'build_proposal',
+            'analytics': 'query_transactions',
+            'format_previous': 'query_transactions',
+            'respond': 'default',
+            'refuse': 'refusal',
+        }[workflow]
+        return {
+            'workflow_action': workflow_action,
+            'supervisor_workflow': workflow,
+            'supervisor_confidence': decision.confidence,
+            'supervisor_rationale': decision.rationale,
+            'supervisor_response': decision.response,
+        }
+
+    def _supervisor_fallback_update(
+        self,
+        latest_user_message: str,
+        detected_intent: DetectedIntent,
+        state: ChatGraphState,
+    ) -> dict[str, Any]:
+        latest_is_transaction = self._is_deterministic_transaction_candidate(latest_user_message)
+        if detected_intent == DetectedIntent.OFF_TOPIC:
+            workflow = 'refuse'
+        elif (
+            state.get('last_finance_query_result')
+            and not latest_is_transaction
+            and self._is_result_format_followup(' '.join(latest_user_message.lower().split()))
+        ):
+            workflow = 'format_previous'
+        elif state.get('last_finance_query_result') and not latest_is_transaction:
+            workflow = 'analytics'
+        elif detected_intent == DetectedIntent.LOG_TRANSACTION:
+            workflow = 'transaction'
+        elif detected_intent == DetectedIntent.QUERY_SPENDING:
+            workflow = 'analytics'
+        else:
+            workflow = 'respond'
+
+        unsupported_responses = {
+            DetectedIntent.SPLIT_REQUEST: 'Split workflows are not available in chat yet.',
+            DetectedIntent.GENERATE_REPORT: 'Report generation is not available in chat yet.',
+            DetectedIntent.ACCOUNT_QUERY: 'Account-balance questions are not available in chat yet.',
+            DetectedIntent.MEMORY_RELATED: 'Long-term memory workflows are not available in chat yet.',
+        }
+        return {
+            'workflow_action': {
+                'transaction': 'build_proposal',
+                'analytics': 'query_transactions',
+                'format_previous': 'query_transactions',
+                'respond': 'default',
+                'refuse': 'refusal',
+            }[workflow],
+            'supervisor_workflow': workflow,
+            'supervisor_confidence': 0.0,
+            'supervisor_rationale': 'Registered intent fallback',
+            'supervisor_response': unsupported_responses.get(detected_intent),
+        }
+
+    @staticmethod
+    def _route_after_supervisor(state: ChatGraphState) -> str:
+        action = state.get('workflow_action')
+        if action == 'build_proposal':
+            return 'populate_user_context'
         if action == 'query_transactions':
             return 'query_tool_agent'
         if action == 'refusal':
@@ -2046,6 +2229,10 @@ class LangGraphChatOrchestrator:
         return {}
 
     async def _assistant_default(self, state: ChatGraphState) -> dict[str, list[AIMessage]]:
+        supervisor_response = str(state.get('supervisor_response') or '').strip()
+        if supervisor_response:
+            return {'messages': [AIMessage(content=supervisor_response)]}
+
         latest_user_message = self._latest_user_message(state.get('messages', []))
         if not latest_user_message:
             return {'messages': [AIMessage(content=_REFUSAL_MESSAGE)]}
