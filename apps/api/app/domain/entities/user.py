@@ -14,3 +14,4 @@ class User:
     hashed_password: str | None
     google_sub: str | None
     created_at: datetime
+    conversation_storage_enabled: bool = True

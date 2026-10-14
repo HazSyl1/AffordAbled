@@ -4,6 +4,7 @@ import { apiClient } from '../../lib/apiClient';
 export interface ChatRequest {
   message: string;
   thread_id?: string;
+  timezone?: string;
 }
 
 export interface ChatTransactionProposal {
@@ -19,12 +20,18 @@ export interface ChatTransactionProposal {
   note: string | null;
 }
 
+export interface ChatInsight {
+  title: string;
+  detail: string;
+}
+
 export interface ChatResponse {
   thread_id: string;
   message: string;
   pending_transaction_proposal?: ChatTransactionProposal | null;
   transaction_logged?: boolean;
   manual_transaction_input_required?: boolean;
+  insights?: ChatInsight[] | null;
 }
 
 export interface VoiceTranscriptionRequest {
@@ -54,6 +61,7 @@ const chatApi = apiClient.injectEndpoints({
         method: 'POST',
         body,
       }),
+      invalidatesTags: (result) => (result?.pending_transaction_proposal ? ['Category'] : []),
     }),
     transcribeVoice: builder.mutation<VoiceTranscriptionResponse, VoiceTranscriptionRequest>({
       query: ({ audio, locale = 'en-IN' }) => {

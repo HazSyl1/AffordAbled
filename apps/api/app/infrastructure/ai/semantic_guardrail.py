@@ -2,9 +2,11 @@
 
 import re
 
-from app.domain.ports import GuardrailDecision
+from app.domain.ports import GuardrailAssessment, GuardrailDecision
 
 _FINANCE_KEYWORDS = (
+    'spend',
+    'spent',
     'expense',
     'income',
     'transaction',
@@ -50,21 +52,25 @@ _AMOUNT_PATTERN = re.compile(r'(₹|rs\.?|inr|\$|usd|rupees?)\s*\d+|\b\d+\s*(pai
 
 
 class KeywordSemanticGuardrail:
-    async def assess(self, message: str) -> GuardrailDecision:
+    async def assess(self, message: str) -> GuardrailAssessment:
         normalized_message = ' '.join(message.lower().split())
 
         if any(phrase in normalized_message for phrase in _HARD_OFF_TOPIC_PHRASES):
-            return GuardrailDecision.BLOCK
+            return GuardrailAssessment(decision=GuardrailDecision.BLOCK, confidence=0.95, layer='semantic')
 
         if any(cue in normalized_message for cue in _CONTEXTUAL_CUES):
-            return GuardrailDecision.NEEDS_CLASSIFICATION
+            return GuardrailAssessment(
+                decision=GuardrailDecision.NEEDS_CLASSIFICATION,
+                confidence=0.55,
+                layer='semantic',
+            )
 
         finance_hits = sum(1 for keyword in _FINANCE_KEYWORDS if keyword in normalized_message)
         if _AMOUNT_PATTERN.search(normalized_message):
             finance_hits += 2
 
         if finance_hits >= 2:
-            return GuardrailDecision.ALLOW
+            return GuardrailAssessment(decision=GuardrailDecision.ALLOW, confidence=0.9, layer='semantic')
         if finance_hits == 0:
-            return GuardrailDecision.BLOCK
-        return GuardrailDecision.NEEDS_CLASSIFICATION
+            return GuardrailAssessment(decision=GuardrailDecision.BLOCK, confidence=0.8, layer='semantic')
+        return GuardrailAssessment(decision=GuardrailDecision.NEEDS_CLASSIFICATION, confidence=0.6, layer='semantic')

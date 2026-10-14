@@ -4,6 +4,7 @@
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=2000)
     thread_id: str | None = Field(default=None, min_length=1, max_length=120)
+    timezone: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class PendingTransactionProposalResponse(BaseModel):
@@ -19,12 +20,18 @@ class PendingTransactionProposalResponse(BaseModel):
     note: str | None = None
 
 
+class ChatInsightResponse(BaseModel):
+    title: str
+    detail: str
+
+
 class ChatResponse(BaseModel):
     thread_id: str
     message: str
     pending_transaction_proposal: PendingTransactionProposalResponse | None = None
     transaction_logged: bool = False
     manual_transaction_input_required: bool = False
+    insights: list[ChatInsightResponse] | None = None
 
 
 class VoiceTranscriptionResponse(BaseModel):

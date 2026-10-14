@@ -1,0 +1,47 @@
+define user ask finance wallet
+  'I spent 500 on lunch'
+  'Log transaction of 1000'
+  'Show my spending summary'
+  'How much did I spend this week?'
+  'What is my account balance?'
+
+define user ask investment advice
+  'Should I buy Tesla stock right now?'
+  'Give me an investment portfolio recommendation.'
+  'Is Bitcoin a good investment today?'
+  'Tell me what stock to invest my savings in.'
+
+define user ask off topic
+  'Tell me a joke'
+  'Write a poem'
+  'Explain machine learning'
+  'Recommend a movie'
+
+define user ask ambiguous finance
+  'How should I optimize money habits?'
+  'Can you guide me better with finance decisions?'
+
+define bot allow finance
+  '__ALLOW__'
+
+define bot block response
+  '__BLOCK__'
+
+define bot needs classification
+  '__NEEDS_CLASSIFICATION__'
+
+define flow finance allow
+  user ask finance wallet
+  bot allow finance
+
+define flow investment restriction
+  user ask investment advice
+  bot block response
+
+define flow off topic restriction
+  user ask off topic
+  bot block response
+
+define flow ambiguous finance classification
+  user ask ambiguous finance
+  bot needs classification

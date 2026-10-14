@@ -19,6 +19,36 @@ class _FailingAsyncContext:
         return False
 
 
+@pytest.mark.asyncio
+async def test_probe_ffmpeg_health_reports_available(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(main_module.shutil, 'which', lambda _: '/usr/bin/ffmpeg')
+
+    async def _fake_to_thread(*_args, **_kwargs):
+        return SimpleNamespace(returncode=0, stdout='ffmpeg version 7.1.0\n', stderr='')
+
+    monkeypatch.setattr(main_module.asyncio, 'to_thread', _fake_to_thread)
+
+    settings = SimpleNamespace(ffmpeg_binary='ffmpeg')
+    health = await main_module._probe_ffmpeg_health(settings)
+
+    assert health['available'] is True
+    assert health['resolved_binary'] == '/usr/bin/ffmpeg'
+    assert health['version'] == 'ffmpeg version 7.1.0'
+    assert health['reason'] is None
+
+
+@pytest.mark.asyncio
+async def test_probe_ffmpeg_health_reports_missing_binary(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(main_module.shutil, 'which', lambda _: None)
+
+    settings = SimpleNamespace(ffmpeg_binary='ffmpeg')
+    health = await main_module._probe_ffmpeg_health(settings)
+
+    assert health['available'] is False
+    assert health['resolved_binary'] is None
+    assert health['reason'] == 'binary_not_found'
+
+
 def test_normalize_langgraph_postgres_conn_string() -> None:
     assert (
         main_module._normalize_langgraph_postgres_conn_string('postgresql+asyncpg://user:pass@localhost:5432/db')

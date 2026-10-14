@@ -38,6 +38,22 @@ class InvalidChatInputError(DomainError):
     'Raised when chat input is missing or invalid.'
 
 
+class ChatThreadNotFoundError(DomainError):
+    'Raised when a chat thread does not exist or is not owned by the requesting user.'
+
+
+class ChatThreadAlreadyExistsError(DomainError):
+    'Raised when creating a thread with a user-scoped thread_id that already exists.'
+
+
+class ExportNotFoundError(DomainError):
+    'Raised when an export does not exist or is not owned by the requesting user.'
+
+
+class ExportLinkExpiredError(DomainError):
+    'Raised when an export exists but its download link has expired.'
+
+
 class SpeechServiceNotConfiguredError(DomainError):
     'Raised when speech service credentials/region are missing.'
 

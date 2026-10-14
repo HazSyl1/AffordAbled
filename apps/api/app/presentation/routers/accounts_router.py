@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.application.dto import CreateAccountInput, UpdateAccountInput
 from app.application.services.account_service import AccountService
@@ -62,4 +62,17 @@ async def update_account(
         account_id,
         UpdateAccountInput(name=payload.name, is_active=payload.is_active),
     )
+    return AccountResponse.from_entity(account)
+
+
+@router.patch('/{account_id}/default', response_model=AccountResponse)
+async def set_default_account(
+    account_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    account_service: AccountService = Depends(get_account_service),
+) -> AccountResponse:
+    try:
+        account = await account_service.set_default_account(current_user.id, account_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     return AccountResponse.from_entity(account)

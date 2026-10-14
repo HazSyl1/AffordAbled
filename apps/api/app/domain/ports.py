@@ -8,7 +8,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Protocol
+from typing import Any, Protocol
 
 
 class PasswordHasher(Protocol):
@@ -38,6 +38,10 @@ class SpeechToTextClient(Protocol):
     async def transcribe(self, audio_bytes: bytes, *, content_type: str, locale: str) -> str: ...
 
 
+class AudioTranscoder(Protocol):
+    async def to_wav(self, audio_bytes: bytes, *, source_content_type: str) -> bytes: ...
+
+
 class ImageToTextClient(Protocol):
     async def analyze(self, image_bytes: bytes, *, content_type: str) -> str: ...
 
@@ -46,6 +50,13 @@ class GuardrailDecision(str, Enum):
     ALLOW = 'allow'
     BLOCK = 'block'
     NEEDS_CLASSIFICATION = 'needs_classification'
+
+
+@dataclass
+class GuardrailAssessment:
+    decision: GuardrailDecision
+    confidence: float = 0.0
+    layer: str = 'semantic'
 
 
 class DetectedIntent(str, Enum):
@@ -59,7 +70,7 @@ class DetectedIntent(str, Enum):
 
 
 class SemanticGuardrail(Protocol):
-    async def assess(self, message: str) -> GuardrailDecision: ...
+    async def assess(self, message: str) -> GuardrailAssessment: ...
 
 
 class IntentClassifier(Protocol):
@@ -86,7 +97,20 @@ class ChatTurnResult:
     pending_transaction_proposal: PendingTransactionProposal | None = None
     transaction_logged: bool = False
     manual_transaction_input_required: bool = False
+    intent: str | None = None
+    guardrail_decision: str = GuardrailDecision.ALLOW.value
+    guardrail_confidence: float = 1.0
+    guardrail_layer: str = 'semantic'
+    insights: list[dict[str, str]] | None = None
+    agent_correction: dict[str, Any] | None = None
 
 
 class ChatOrchestrator(Protocol):
-    async def run_turn(self, *, user_id: uuid.UUID, thread_id: str, message: str) -> ChatTurnResult: ...
+    async def run_turn(
+        self,
+        *,
+        user_id: uuid.UUID,
+        thread_id: str,
+        message: str,
+        timezone: str | None = None,
+    ) -> ChatTurnResult: ...

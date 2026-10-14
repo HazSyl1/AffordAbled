@@ -16,6 +16,8 @@ class AccountService:
 
     async def create_account(self, data: CreateAccountInput) -> Account:
         now = datetime.now(UTC)
+        existing_accounts = await self.account_repository.list_for_user(data.user_id)
+        is_default = not any(account.is_default for account in existing_accounts)
         account = Account(
             id=uuid.uuid4(),
             user_id=data.user_id,
@@ -24,6 +26,7 @@ class AccountService:
             balance_paise=data.balance_paise,
             currency=data.currency,
             is_active=True,
+            is_default=is_default,
             created_at=now,
             updated_at=now,
         )
@@ -40,9 +43,36 @@ class AccountService:
 
     async def update_account(self, user_id: uuid.UUID, account_id: uuid.UUID, data: UpdateAccountInput) -> Account:
         account = await self.get_account(user_id, account_id)
+        was_default = account.is_default
         if data.name is not None:
             account.name = data.name
         if data.is_active is not None:
             account.is_active = data.is_active
+            if not data.is_active and was_default:
+                account.is_default = False
         account.updated_at = datetime.now(UTC)
-        return await self.account_repository.update(account)
+        updated_account = await self.account_repository.update(account)
+
+        if was_default and not updated_account.is_active:
+            replacement = next(
+                (
+                    candidate
+                    for candidate in await self.account_repository.list_for_user(user_id)
+                    if candidate.is_active
+                ),
+                None,
+            )
+            if replacement is not None:
+                await self.account_repository.set_default_for_user(user_id, replacement.id)
+        elif updated_account.is_active and not any(
+            candidate.is_default for candidate in await self.account_repository.list_for_user(user_id)
+        ):
+            updated_account = await self.account_repository.set_default_for_user(user_id, account_id)
+
+        return updated_account
+
+    async def set_default_account(self, user_id: uuid.UUID, account_id: uuid.UUID) -> Account:
+        account = await self.get_account(user_id, account_id)
+        if not account.is_active:
+            raise ValueError('An inactive account cannot be the default account.')
+        return await self.account_repository.set_default_for_user(user_id, account_id)

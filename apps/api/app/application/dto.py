@@ -83,3 +83,10 @@ class UpdateTransactionInput:
     to_account_id: uuid.UUID | None = None
     merchant: str | None = None
     note: str | None = None
+
+
+@dataclass
+class CreateChatThreadInput:
+    user_id: uuid.UUID
+    thread_id: str | None = None
+    title: str | None = None

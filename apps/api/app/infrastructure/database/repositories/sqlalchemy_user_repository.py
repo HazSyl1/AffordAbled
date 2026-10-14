@@ -35,6 +35,7 @@ class SqlAlchemyUserRepository:
             date_of_birth=user.date_of_birth,
             hashed_password=user.hashed_password,
             google_sub=user.google_sub,
+            conversation_storage_enabled=user.conversation_storage_enabled,
         )
         self._session.add(model)
         await self._session.commit()
@@ -51,4 +52,5 @@ class SqlAlchemyUserRepository:
             hashed_password=model.hashed_password,
             google_sub=model.google_sub,
             created_at=model.created_at,
+            conversation_storage_enabled=model.conversation_storage_enabled,
         )

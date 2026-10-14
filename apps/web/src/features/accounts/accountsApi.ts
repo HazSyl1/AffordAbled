@@ -9,6 +9,7 @@ export interface Account {
   balance_paise: number;
   currency: string;
   is_active: boolean;
+  is_default: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -30,7 +31,11 @@ const accountsApi = apiClient.injectEndpoints({
       query: (body) => ({ url: '/accounts', method: 'POST', body }),
       invalidatesTags: ['Account'],
     }),
+    setDefaultAccount: builder.mutation<Account, string>({
+      query: (accountId) => ({ url: `/accounts/${accountId}/default`, method: 'PATCH' }),
+      invalidatesTags: ['Account'],
+    }),
   }),
 });
 
-export const { useListAccountsQuery, useCreateAccountMutation } = accountsApi;
+export const { useListAccountsQuery, useCreateAccountMutation, useSetDefaultAccountMutation } = accountsApi;

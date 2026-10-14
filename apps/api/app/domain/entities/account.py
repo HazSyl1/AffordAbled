@@ -22,5 +22,6 @@ class Account:
     balance_paise: int
     currency: str
     is_active: bool
+    is_default: bool
     created_at: datetime
     updated_at: datetime

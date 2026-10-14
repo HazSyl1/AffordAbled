@@ -3,7 +3,9 @@
 import asyncio
 import logging
 import os
-from contextlib import asynccontextmanager
+import shutil
+import subprocess
+from contextlib import asynccontextmanager, suppress
 from typing import Any
 
 from fastapi import FastAPI
@@ -11,10 +13,118 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from app.core.config import Settings, get_settings
+from app.core.logging import configure_logging
 from app.core.middleware import register_exception_handlers, register_middleware
+from app.infrastructure.database.session import SessionLocal
+from app.infrastructure.jobs import run_retention_cleanup_once
 from app.presentation.router import api_router
 
 logger = logging.getLogger(__name__)
+
+
+async def _probe_ffmpeg_health(settings: Settings) -> dict[str, Any]:
+    configured_binary = (settings.ffmpeg_binary or 'ffmpeg').strip() or 'ffmpeg'
+    resolved_binary = shutil.which(configured_binary)
+    if resolved_binary is None:
+        logger.warning(
+            'audio.ffmpeg.health',
+            extra={
+                'available': False,
+                'ffmpeg_binary': configured_binary,
+                'reason': 'binary_not_found',
+            },
+        )
+        return {
+            'available': False,
+            'configured_binary': configured_binary,
+            'resolved_binary': None,
+            'version': None,
+            'reason': 'binary_not_found',
+        }
+
+    try:
+        completed_process = await asyncio.to_thread(
+            subprocess.run,
+            [resolved_binary, '-version'],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+    except FileNotFoundError:
+        logger.warning(
+            'audio.ffmpeg.health',
+            extra={
+                'available': False,
+                'ffmpeg_binary': configured_binary,
+                'resolved_binary': resolved_binary,
+                'reason': 'binary_not_found',
+            },
+        )
+        return {
+            'available': False,
+            'configured_binary': configured_binary,
+            'resolved_binary': resolved_binary,
+            'version': None,
+            'reason': 'binary_not_found',
+        }
+    except subprocess.TimeoutExpired:
+        logger.warning(
+            'audio.ffmpeg.health',
+            extra={
+                'available': False,
+                'ffmpeg_binary': configured_binary,
+                'resolved_binary': resolved_binary,
+                'reason': 'health_check_timeout',
+            },
+        )
+        return {
+            'available': False,
+            'configured_binary': configured_binary,
+            'resolved_binary': resolved_binary,
+            'version': None,
+            'reason': 'health_check_timeout',
+        }
+
+    version_line = None
+    if completed_process.stdout:
+        version_line = completed_process.stdout.splitlines()[0].strip() or None
+
+    if completed_process.returncode != 0:
+        logger.warning(
+            'audio.ffmpeg.health',
+            extra={
+                'available': False,
+                'ffmpeg_binary': configured_binary,
+                'resolved_binary': resolved_binary,
+                'reason': 'non_zero_exit',
+                'return_code': completed_process.returncode,
+            },
+        )
+        return {
+            'available': False,
+            'configured_binary': configured_binary,
+            'resolved_binary': resolved_binary,
+            'version': version_line,
+            'reason': 'non_zero_exit',
+        }
+
+    logger.info(
+        'audio.ffmpeg.health',
+        extra={
+            'available': True,
+            'ffmpeg_binary': configured_binary,
+            'resolved_binary': resolved_binary,
+            'version': version_line,
+        },
+    )
+    return {
+        'available': True,
+        'configured_binary': configured_binary,
+        'resolved_binary': resolved_binary,
+        'version': version_line,
+        'reason': None,
+    }
 
 
 def _normalize_langgraph_postgres_conn_string(database_url: str) -> str | None:
@@ -71,8 +181,29 @@ async def _build_langgraph_checkpointer(settings: Settings) -> tuple[Any, Any | 
         return InMemorySaver(), None, 'memory'
 
 
+async def _run_retention_cleanup_loop(settings: Settings) -> None:
+    interval_seconds = max(60, int(settings.retention_cleanup_interval_minutes) * 60)
+
+    while True:
+        try:
+            async with SessionLocal() as session:
+                cleanup_stats = await run_retention_cleanup_once(
+                    session,
+                    chat_message_retention_days=settings.chat_message_retention_days,
+                )
+
+            logger.info('retention.cleanup.completed', extra=cleanup_stats)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception('retention.cleanup.failed')
+
+        await asyncio.sleep(interval_seconds)
+
+
 def create_app() -> FastAPI:
     settings = get_settings()
+    configure_logging(settings.log_level)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -81,16 +212,40 @@ def create_app() -> FastAPI:
         os.environ['LANGSMITH_TRACING'] = 'true' if settings.langsmith_tracing else 'false'
         os.environ['LANGSMITH_PROJECT'] = settings.langsmith_project
 
+        ffmpeg_health = await _probe_ffmpeg_health(settings)
+        app.state.ffmpeg_health = ffmpeg_health
+        if settings.audio_transcoder_required and not ffmpeg_health['available']:
+            raise RuntimeError(
+                'FFmpeg is required but unavailable. Set FFMPEG_BINARY correctly and ensure ffmpeg is installed.'
+            )
+
         checkpointer, checkpointer_context, checkpointer_backend = await _build_langgraph_checkpointer(settings)
 
         app.state.langgraph_checkpointer = checkpointer
         app.state.langgraph_checkpointer_context = checkpointer_context
         app.state.langgraph_checkpointer_backend = checkpointer_backend
         app.state.chat_orchestrator = None
+        retention_cleanup_task: asyncio.Task[None] | None = None
+
+        if settings.retention_cleanup_enabled:
+            retention_cleanup_task = asyncio.create_task(_run_retention_cleanup_loop(settings))
+            app.state.retention_cleanup_task = retention_cleanup_task
+            logger.info(
+                'retention.cleanup.scheduler.started',
+                extra={
+                    'interval_minutes': max(1, int(settings.retention_cleanup_interval_minutes)),
+                    'chat_message_retention_days': max(1, int(settings.chat_message_retention_days)),
+                },
+            )
 
         try:
             yield
         finally:
+            if retention_cleanup_task is not None:
+                retention_cleanup_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await retention_cleanup_task
+
             if checkpointer_context is not None:
                 await checkpointer_context.__aexit__(None, None, None)
 
@@ -104,6 +259,14 @@ def create_app() -> FastAPI:
     app.state.langgraph_checkpointer_context = None
     app.state.langgraph_checkpointer_backend = 'memory'
     app.state.chat_orchestrator = None
+    app.state.retention_cleanup_task = None
+    app.state.ffmpeg_health = {
+        'available': False,
+        'configured_binary': settings.ffmpeg_binary,
+        'resolved_binary': None,
+        'version': None,
+        'reason': 'startup_not_completed',
+    }
 
     register_middleware(app, settings)
     register_exception_handlers(app)

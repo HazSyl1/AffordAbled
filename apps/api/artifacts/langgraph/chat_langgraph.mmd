@@ -6,17 +6,22 @@ config:
 graph TD;
 	__start__([<p>__start__</p>]):::first
 	analyze_turn(analyze_turn)
+	populate_user_context(populate_user_context)
 	extract_transaction_candidate(extract_transaction_candidate)
 	evaluate_transaction_candidate(evaluate_transaction_candidate)
 	hitl_clarification(hitl_clarification)
 	transaction_flow(transaction_flow)
+	query_tool_agent(query_tool_agent)
+	query_tool_executor(query_tool_executor)
+	query_tool_finalize(query_tool_finalize)
 	assistant_default(assistant_default)
 	assistant_refusal(assistant_refusal)
 	__end__([<p>__end__</p>]):::last
 	__start__ --> analyze_turn;
 	analyze_turn -.-> assistant_default;
 	analyze_turn -.-> assistant_refusal;
-	analyze_turn -.-> extract_transaction_candidate;
+	analyze_turn -.-> populate_user_context;
+	analyze_turn -.-> query_tool_agent;
 	analyze_turn -.-> transaction_flow;
 	evaluate_transaction_candidate -.-> assistant_default;
 	evaluate_transaction_candidate -.-> hitl_clarification;
@@ -24,8 +29,13 @@ graph TD;
 	extract_transaction_candidate --> evaluate_transaction_candidate;
 	hitl_clarification -.-> extract_transaction_candidate;
 	hitl_clarification -.-> transaction_flow;
+	populate_user_context --> extract_transaction_candidate;
+	query_tool_agent -. &nbsp;tools&nbsp; .-> query_tool_executor;
+	query_tool_agent -. &nbsp;__end__&nbsp; .-> query_tool_finalize;
+	query_tool_executor --> query_tool_finalize;
 	assistant_default --> __end__;
 	assistant_refusal --> __end__;
+	query_tool_finalize --> __end__;
 	transaction_flow --> __end__;
 	classDef default fill:#f2f0ff,line-height:1.2
 	classDef first fill-opacity:0

@@ -1,3 +1,4 @@
+import { MessageCircle } from 'lucide-react';
 import { useMemo } from 'react';
 import { Link } from 'react-router-dom';
 
@@ -5,6 +6,7 @@ import { useListAccountsQuery } from '../../../features/accounts/accountsApi';
 import { useListCategoriesQuery } from '../../../features/categories/categoriesApi';
 import { useListTransactionsQuery } from '../../../features/transactions/transactionsApi';
 import type { Transaction, TransactionType } from '../../../features/transactions/transactionsApi';
+import { TRANSACTION_UI_TEXT } from '../../../constants';
 import { formatPaiseAsInr } from '../../../lib/money';
 import { Badge } from '../../atoms/Badge';
 import { Card } from '../../atoms/Card';
@@ -98,7 +100,11 @@ function groupTransactionsByDate(transactions: Transaction[]): Array<{ label: st
   return Array.from(groups.entries()).map(([label, items]) => ({ label, items }));
 }
 
-export function TransactionList() {
+export interface TransactionListProps {
+  onTransactionSelect?: (transaction: Transaction) => void;
+}
+
+export function TransactionList({ onTransactionSelect }: TransactionListProps) {
   const { data: transactions, isLoading, isError } = useListTransactionsQuery();
   const { data: accounts } = useListAccountsQuery();
   const { data: categories } = useListCategoriesQuery();
@@ -153,7 +159,27 @@ export function TransactionList() {
 
               return (
                 <li key={transaction.id}>
-                  <Card className='p-4 active:scale-[0.98]'>
+                  <Card
+                    className={[
+                      'p-4 active:scale-[0.98]',
+                      onTransactionSelect
+                        ? 'cursor-pointer transition-colors hover:border-[color:rgba(168,85,247,0.5)] hover:bg-[color:rgba(168,85,247,0.08)]'
+                        : '',
+                    ].join(' ')}
+                    role={onTransactionSelect ? 'button' : undefined}
+                    tabIndex={onTransactionSelect ? 0 : undefined}
+                    onClick={onTransactionSelect ? () => onTransactionSelect(transaction) : undefined}
+                    onKeyDown={
+                      onTransactionSelect
+                        ? (event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault();
+                              onTransactionSelect(transaction);
+                            }
+                          }
+                        : undefined
+                    }
+                  >
                     <div className='flex items-center gap-3'>
                       <div className='flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-full bg-[var(--bg-elevated)] text-xl'>
                         {TYPE_ICON[transaction.type]}
@@ -176,12 +202,22 @@ export function TransactionList() {
                           <span className='text-xs text-[var(--text-muted)]'>{formatTime(transaction.occurred_at)}</span>
                           <Badge tone={getBadgeTone(transaction.type)}>{TYPE_LABEL[transaction.type]}</Badge>
                         </div>
-                        <div className='mt-1'>
+                        <div className='mt-2 flex items-center justify-end gap-2'>
+                          {onTransactionSelect ? (
+                            <span className='text-[11px] font-medium text-[var(--text-muted)]'>{TRANSACTION_UI_TEXT.editHintLabel}</span>
+                          ) : null}
                           <Link
                             to={`/chat?transaction_id=${transaction.id}`}
-                            className='text-xs font-semibold text-[var(--brand-primary)] hover:underline'
+                            className='inline-flex items-center gap-1 rounded-full border border-[color:rgba(168,85,247,0.55)] bg-[color:rgba(168,85,247,0.16)] px-2.5 py-1 text-xs font-semibold text-[var(--brand-primary)] shadow-[0_6px_14px_rgba(168,85,247,0.2)] transition-colors hover:bg-[color:rgba(168,85,247,0.24)]'
+                            onClick={(event) => {
+                              event.stopPropagation();
+                            }}
+                            onKeyDown={(event) => {
+                              event.stopPropagation();
+                            }}
                           >
-                            Chat about this
+                            <MessageCircle className='h-3.5 w-3.5' aria-hidden='true' />
+                            {TRANSACTION_UI_TEXT.chatAboutLabel}
                           </Link>
                         </div>
                       </div>
