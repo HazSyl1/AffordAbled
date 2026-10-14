@@ -8,9 +8,9 @@ This plan is the execution source of truth for the next product iteration. It di
 
 - Repository: `AffordAbled`
 - Baseline branch: `main`
-- Baseline commit: `616821f` — merge of PR #8 (`feature/chat-result-followups`) into `main`.
-- Current implementation branch: `feature/langgraph-supervisor`, created from `616821f`; supervisor and standalone category-management work is in progress and uncommitted.
-- The feature branches `feature/advanced-guardrail` and `feature/chat-result-followups` have been merged. Do not continue feature work directly on `main`.
+- Baseline commit: `e88fae8` — merge of PR #9 (`feature/langgraph-supervisor`) into `main`.
+- Current implementation branch: `feature/langgraph-multi-step-supervisor`, created from clean `main` at `e88fae8`.
+- The feature branches `feature/advanced-guardrail`, `feature/chat-result-followups`, and `feature/langgraph-supervisor` have been merged. Do not continue feature work directly on `main`.
 - Before each task: fetch/update `main`, verify clean status and current HEAD, then branch from the latest `origin/main`.
 - Branch naming: `feature/<short-scope>`; use a separate branch for each independently reviewable phase.
 - Commit in small, coherent slices using Conventional Commit summaries (`feat:`, `fix:`, `test:`, `docs:`, `chore:`). Do not push or open a PR until the user requests it.
@@ -50,8 +50,8 @@ The exact PR merge ancestry is available in Git; the table records the verified 
 - LLM intent classification with keyword fallback; configurable deterministic transaction routing.
 - Spending summaries and transaction queries with calendar periods, user timezone, category filtering, and multi-category fan-out/aggregation.
 - Recent conversation context supplied to routing/query planning; previous finance-query plan/result can be reused for drill-down and table formatting.
-- A bounded top-level supervisor is implemented on the current feature branch; it is not yet merged to `main`.
-- A standalone category-management workflow is registered on the current feature branch. Explicit category requests outrank stale analytics context; the workflow clarifies missing type, uses authenticated-user scope, and avoids duplicate categories.
+- A bounded single-dispatch supervisor and standalone category-management workflow are merged to `main` in PR #9.
+- The current Phase 2 branch is adding an action-oriented supervisor contract, a maximum of three workflow handoffs per turn, typed bounded workflow observations, deterministic dispatch, and resumable clarification.
 - Response validation against database-produced finance facts.
 - LangGraph checkpointing, chat thread/message persistence, ownership checks, guardrail decision logging, and agent correction records.
 - Voice transcription path and basic image-to-text ingestion.
@@ -61,7 +61,7 @@ The exact PR merge ancestry is available in Git; the table records the verified 
 
 ### Partially implemented / still needs end-to-end work
 
-- **Workflow coverage:** standalone category creation is implemented on the current feature branch but is not yet merged. Live/API verification of category ownership and the analytics → create-category sequence remains outstanding.
+- **Workflow coverage:** standalone category creation is merged. The new multi-step supervisor is in progress on its feature branch; live-model/PostgreSQL analytics → category integration remains optional.
 - **Analytics:** summary/list paths are present. Comparison-to-period, user baselines/patterns, account balance query tools, robust table formatting, and large-result exports are not implemented as a complete analytics graph.
 - **Receipt AI:** basic image-to-text exists; the staged Document Intelligence/layout → light LLM normalization → conditional vision fallback pipeline is not complete.
 - **Exports:** re-download lookup is present; creating PDF/XLSX, blob upload, artifact creation, and chat handoff are absent.
@@ -102,11 +102,11 @@ The exact PR merge ancestry is available in Git; the table records the verified 
 
 **Merged implementation:** `6fb6f7c feat: preserve and format finance query results` (merge commit `616821f`).
 
-### Phase 1 — New-request arbitration and category-management workflow (implementation in progress; acceptance checks remain)
+### Phase 1 — New-request arbitration and category-management workflow (merged)
 
-**Branch:** continue `feature/langgraph-supervisor`, based on `616821f`.
+**Branch:** `feature/langgraph-supervisor`; merged to `main` by PR #9 at `e88fae8`.
 
-**Problem addressed by current uncommitted work:** after an analytics conversation, “Create a category 'Office Expense'” must not be mistaken for another query or a request to format the previous result. A standalone category-management route now exists alongside the existing transaction category-resolution workflow.
+**Outcome:** after an analytics conversation, “Create a category 'Office Expense'” is routed as a new category-management request, not as a repeat query or formatting follow-up. Standalone category creation is registered beside transaction category-resolution.
 
 #### 1A. Make current-request intent outrank stale analytics context
 
@@ -124,7 +124,7 @@ The exact PR merge ancestry is available in Git; the table records the verified 
 - Make duplicate requests idempotent: return the existing matching category or clearly report it already exists, without a duplicate row.
 - Do not expose arbitrary account, transaction, or SQL tools through this workflow.
 
-**Implementation evidence so far:** category-management is in the supervisor registry and graph, deterministic intent takes precedence over the supervisor model’s conflicting choice, category type clarification resumes from checkpoint state, duplicate same-type categories are handled idempotently, and explicit new category requests replace stale pending category names. An authenticated HTTP regression confirms category persistence, ownership isolation, duplicate safety, and no transaction side effect. Targeted tests, the complete backend suite, and Ruff pass. The same-thread analytics → create-category flow with a real result/checkpointer and configured live model remains an opt-in integration check.
+**Verification:** category-management is registered in the graph and supervisor; explicit category requests take precedence over stale analytics context; type clarification resumes; duplicate same-type requests are idempotent. Authenticated HTTP coverage verifies category persistence, user isolation, duplicate safety, and no transaction side effect. The full backend suite and Ruff passed before merge. A live-model/PostgreSQL same-thread analytics → category flow remains an opt-in integration check.
 
 #### Acceptance tests
 
@@ -145,11 +145,11 @@ The exact PR merge ancestry is available in Git; the table records the verified 
 
 **Phase exit gate:** all acceptance tests and full backend/Ruff validation pass; verify category creation is scoped and idempotent; run the live HTTP flow if model/PostgreSQL config is available; update the graph artifact; then PR-review and merge.
 
-### Phase 2 — Bounded multi-step supervisor (after Phase 1)
+### Phase 2 — Bounded multi-step supervisor (in progress)
 
-**Branch:** create `feature/langgraph-multi-step-supervisor` from updated `main` after Phase 1 merges.
+**Branch:** `feature/langgraph-multi-step-supervisor`, based on merged `main` at `e88fae8`.
 
-**Recommendation: yes, implement this architecture, but incrementally—not as a broad graph rewrite.** The user’s target is an LLM that sees the available capabilities, chooses one, receives its result/questions, and continues when needed. The current top-level supervisor is one-shot. Complete Phase 1 first because category creation and stale-result arbitration are the smallest real example of this capability model. Then add the loop behind registered workflow contracts.
+**Recommendation:** implement incrementally—not as a broad graph rewrite. Phase 1 is merged. Phase 2 replaces one-shot routing with a bounded loop behind registered workflow contracts.
 
 #### Target turn loop
 
@@ -225,6 +225,8 @@ Use stubbed supervisor decisions in normal CI. Keep real-model workflow evaluati
 **Phase exit gate:** full backend suite and Ruff pass; frontend lint/build pass if any UI changes occur; graph artifact is regenerated and reviewed; manual/opt-in same-thread test passes where PostgreSQL/model credentials are available; checkpoint storage/retention implications are documented; PR is reviewed and merged before starting the next product feature.
 
 **Commit slices:** `feat(ai): add bounded supervisor plan state`; `feat(ai): execute registered multi-step workflows`; `test(ai): cover supervisor limits and safety`.
+
+**Current implementation evidence:** the action/result Pydantic contracts, fixed workflow registry, dispatcher, observer, 3-handoff cap, duplicate workflow guard, supervisor decision timeout, and same-thread ask-user interrupt/resume are implemented locally. Tests cover analytics → format_previous in one turn, bounded summaries that do not expose transaction rows to the supervisor, unknown/repeated/over-budget/hard-blocked dispatch, transaction proposal stop behavior, structured contract validation, timeout fallback, and HTTP interrupt/resume. The regenerated graph asset is reviewed. Focused validation passes (16 targeted tests and Ruff); a full backend run was interrupted before completion, so full-suite validation remains outstanding.
 
 ### Phase 3 — Complete Analytics specialist
 

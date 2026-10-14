@@ -2,10 +2,12 @@
 import uuid
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from fastapi import FastAPI
 from httpx import AsyncClient
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableLambda
+from pydantic import ValidationError
 
 from app.core.dependencies import (
     get_image_service,
@@ -17,8 +19,10 @@ from app.core.dependencies import (
 from app.domain.ports import DetectedIntent, GuardrailAssessment, GuardrailDecision
 from app.infrastructure.ai.langgraph_chat_orchestrator import (
     FinanceQueryPlan,
+    FinanceQueryReply,
     LangGraphChatOrchestrator,
-    SupervisorDecision,
+    SupervisorAction,
+    WorkflowResult,
 )
 from tests.helpers import auth_headers, register_and_get_token
 
@@ -67,18 +71,21 @@ class StubStructuredOutputLLM:
     def __init__(self) -> None:
         self.supervisor_prompts: list[str] = []
 
-    def with_structured_output(self, schema):
+    def with_structured_output(self, schema, **kwargs):
+        if schema is SupervisorAction:
+            assert kwargs.get('method') == 'function_calling'
+
         def respond(prompt):
             prompt_text = '\n'.join(str(message.content) for message in prompt.to_messages())
-            if schema is SupervisorDecision:
+            if schema is SupervisorAction:
                 self.supervisor_prompts.append(prompt_text)
                 response = (
                     'I remember the secret phrase from earlier.'
                     if 'Remember this secret phrase' in prompt_text
                     else 'I do not have an earlier phrase in this conversation.'
                 )
-                return SupervisorDecision(
-                    workflow='respond',
+                return SupervisorAction(
+                    action='finish',
                     confidence=0.99,
                     rationale='Conversation continuity test',
                     response=response,
@@ -98,9 +105,47 @@ class StubAsyncChain:
         return self.result
 
 
+class SequencedAsyncChain:
+    def __init__(self, results):
+        self.results = list(results)
+        self.inputs = []
+
+    async def ainvoke(self, value):
+        self.inputs.append(value)
+        return self.results.pop(0)
+
+
+class TimeoutAsyncChain:
+    async def ainvoke(self, _value):
+        raise TimeoutError('supervisor decision timed out')
+
+
+class SequencedSupervisorOutputLLM:
+    def __init__(self, decisions):
+        self.decisions = list(decisions)
+        self.supervisor_prompts: list[str] = []
+
+    def with_structured_output(self, schema, **_kwargs):
+        def respond(prompt):
+            if schema is SupervisorAction:
+                self.supervisor_prompts.append('\n'.join(str(message.content) for message in prompt.to_messages()))
+                return self.decisions.pop(0)
+            if schema is FinanceQueryPlan:
+                return FinanceQueryPlan(
+                    query_kind='summary', date_period='this_month', category_scope='all', confidence=0.95
+                )
+            if schema is FinanceQueryReply:
+                return FinanceQueryReply(reply='No transactions found for this period.')
+            return schema.model_construct()
+
+        return RunnableLambda(respond)
+
+
 async def test_supervisor_dispatches_only_a_registered_analytics_workflow() -> None:
     orchestrator = object.__new__(LangGraphChatOrchestrator)
-    decision = SupervisorDecision(workflow='analytics', confidence=0.96, rationale='User asks for a total.')
+    decision = SupervisorAction(
+        action='run_workflow', workflow_id='analytics', confidence=0.96, rationale='User asks for a total.'
+    )
     planner_chain = StubAsyncChain(decision)
     orchestrator._supervisor_workflow_chain = planner_chain
     state = {
@@ -111,16 +156,187 @@ async def test_supervisor_dispatches_only_a_registered_analytics_workflow() -> N
 
     result = await orchestrator._supervisor_node(state)
 
-    assert result['workflow_action'] == 'query_transactions'
+    assert result['supervisor_action'] == 'run_workflow'
+    assert result['supervisor_workflow_id'] == 'analytics'
     assert result['supervisor_workflow'] == 'analytics'
     assert result['supervisor_confidence'] == 0.96
     assert planner_chain.last_input['message'] == 'How much did I spend this month?'
-    assert LangGraphChatOrchestrator._route_after_supervisor(result) == 'query_tool_agent'
+    assert LangGraphChatOrchestrator._route_after_supervisor_action(result) == 'workflow_dispatch'
+    dispatched = await orchestrator._workflow_dispatch_node(
+        {**result, 'supervisor_handoff_count': 0, 'supervisor_executed_workflows': []}
+    )
+    assert dispatched['workflow_action'] == 'query_transactions'
+    assert dispatched['supervisor_handoff_count'] == 1
+    assert LangGraphChatOrchestrator._route_after_workflow_dispatch(dispatched) == 'query_tool_agent'
+
+
+async def test_supervisor_action_contract_requires_workflow_only_for_run_action() -> None:
+    with pytest.raises(ValidationError):
+        SupervisorAction(action='run_workflow', confidence=0.9)
+
+    with pytest.raises(ValidationError):
+        SupervisorAction(action='finish', workflow_id='analytics', confidence=0.9)
+
+    with pytest.raises(ValidationError):
+        WorkflowResult(workflow_id='unknown', status='success', summary='Invalid registered workflow')
+
+    with pytest.raises(ValidationError):
+        WorkflowResult(workflow_id='analytics', status='unknown', summary='Invalid status')
+
+
+async def test_supervisor_timeout_uses_safe_fallback() -> None:
+    orchestrator = object.__new__(LangGraphChatOrchestrator)
+    orchestrator._supervisor_workflow_chain = TimeoutAsyncChain()
+    result = await orchestrator._supervisor_node(
+        {
+            'messages': [HumanMessage(content='Tell me a joke')],
+            'intent': DetectedIntent.OFF_TOPIC.value,
+        }
+    )
+
+    assert result['supervisor_action'] == 'refuse'
+    assert result['supervisor_workflow_id'] is None
+
+
+async def test_transaction_proposal_observation_stops_supervisor_chain() -> None:
+    orchestrator = object.__new__(LangGraphChatOrchestrator)
+    observed = await orchestrator._workflow_observer_node(
+        {
+            'active_workflow_id': 'transaction',
+            'supervisor_handoff_count': 1,
+            'messages': [
+                HumanMessage(content='I spent 20 dollars'),
+                AIMessage(content='Reply confirm to log this transaction.'),
+            ],
+            'pending_proposal': {'amount_paise': 2000},
+        }
+    )
+
+    assert observed['workflow_result']['status'] == 'needs_input'
+    assert observed['workflow_result']['side_effect'] == 'proposed'
+    assert LangGraphChatOrchestrator._route_after_workflow_observation(
+        {**observed, 'active_workflow_id': 'transaction', 'supervisor_handoff_count': 1}
+    ) == 'supervisor_finish'
+
+
+async def test_supervisor_composes_analytics_then_formatting_from_bounded_result() -> None:
+    orchestrator = object.__new__(LangGraphChatOrchestrator)
+    supervisor_chain = SequencedAsyncChain(
+        [
+            SupervisorAction(action='run_workflow', workflow_id='analytics', confidence=0.99),
+            SupervisorAction(action='run_workflow', workflow_id='format_previous', confidence=0.99),
+            SupervisorAction(action='finish', confidence=0.99),
+        ]
+    )
+    orchestrator._supervisor_workflow_chain = supervisor_chain
+    orchestrator._llm_query_plan_chain = None
+    user_message = 'Show transactions from the last two weeks and put them in a table'
+    state = {
+        'messages': [HumanMessage(content=user_message)],
+        'intent': DetectedIntent.QUERY_SPENDING.value,
+        'guardrail_decision': GuardrailDecision.ALLOW.value,
+        'supervisor_handoff_count': 0,
+        'supervisor_executed_workflows': [],
+        'last_finance_query_result': None,
+    }
+
+    first_action = await orchestrator._supervisor_node(state)
+    first_dispatch = await orchestrator._workflow_dispatch_node({**state, **first_action})
+    assert first_dispatch['active_workflow_id'] == 'analytics'
+    assert first_dispatch['supervisor_handoff_count'] == 1
+
+    row = {
+        'id': 'tx-private',
+        'occurred_at': '2026-10-13T10:00:00+00:00',
+        'date': '2026-10-13',
+        'merchant': 'Private Merchant',
+        'amount': 'INR 99.00',
+        'category': 'Food',
+        'type': 'expense',
+    }
+    finance_plan = FinanceQueryPlan(query_kind='transaction_list', date_period='last_n_weeks', period_count=2)
+    analytics_result_state = {
+        **state,
+        **first_dispatch,
+        'messages': [HumanMessage(content=user_message), AIMessage(content='I found 1 matching transaction.')],
+        'last_finance_query_plan': finance_plan.model_dump(),
+        'last_finance_query_result': {
+            'query_kind': 'transaction_list',
+            'transaction_count': 1,
+            'date_from': '2026-10-01',
+            'date_to': '2026-10-14',
+            'transactions': [row],
+        },
+        'finance_query_generation': 1,
+    }
+    observed = await orchestrator._workflow_observer_node(analytics_result_state)
+    assert observed['workflow_result']['status'] == 'success'
+    assert 'Private Merchant' not in observed['workflow_result']['summary']
+
+    after_observation = {**analytics_result_state, **observed}
+    assert LangGraphChatOrchestrator._route_after_workflow_observation(after_observation) == 'supervisor'
+    second_action = await orchestrator._supervisor_node(after_observation)
+    assert second_action['supervisor_workflow_id'] == 'format_previous'
+    assert 'Private Merchant' not in supervisor_chain.inputs[1]['workflow_result']
+
+    second_dispatch = await orchestrator._workflow_dispatch_node({**after_observation, **second_action})
+    assert second_dispatch['supervisor_handoff_count'] == 2
+    plan_update = await orchestrator._query_planner_node({**after_observation, **second_dispatch})
+    assert plan_update['query_plan']['action'] == 'format_previous'
+    format_result = await orchestrator._format_previous_result_node(
+        {**after_observation, **second_dispatch, **plan_update}
+    )
+    assert '| Private Merchant |' in format_result['messages'][0].content
+    assert '| INR 99.00 |' in format_result['messages'][0].content
+
+    formatted_state = {
+        **after_observation,
+        **second_dispatch,
+        **plan_update,
+        'messages': [*after_observation['messages'], *format_result['messages']],
+    }
+    formatted_observation = await orchestrator._workflow_observer_node(formatted_state)
+    finished_action = await orchestrator._supervisor_node({**formatted_state, **formatted_observation})
+    assert finished_action['supervisor_action'] == 'finish'
+    assert LangGraphChatOrchestrator._route_after_supervisor_action(finished_action) == 'supervisor_finish'
+
+
+async def test_workflow_dispatch_fails_closed_for_unknown_repeated_limited_or_blocked_actions() -> None:
+    orchestrator = object.__new__(LangGraphChatOrchestrator)
+    base = {
+        'supervisor_action': 'run_workflow',
+        'supervisor_workflow_id': 'analytics',
+        'supervisor_arguments': {},
+        'guardrail_decision': GuardrailDecision.ALLOW.value,
+        'supervisor_handoff_count': 0,
+        'supervisor_executed_workflows': [],
+    }
+
+    unknown = await orchestrator._workflow_dispatch_node({**base, 'supervisor_workflow_id': 'unregistered'})
+    assert unknown['supervisor_action'] == 'finish'
+    assert LangGraphChatOrchestrator._route_after_workflow_dispatch(unknown) == 'supervisor_finish'
+
+    workflow_key = '["analytics",{}]'
+    repeated = await orchestrator._workflow_dispatch_node(
+        {**base, 'supervisor_executed_workflows': [workflow_key]}
+    )
+    assert repeated['supervisor_action'] == 'finish'
+
+    exhausted = await orchestrator._workflow_dispatch_node(
+        {**base, 'supervisor_handoff_count': 3}
+    )
+    assert exhausted['supervisor_action'] == 'finish'
+
+    blocked = await orchestrator._workflow_dispatch_node(
+        {**base, 'guardrail_decision': GuardrailDecision.BLOCK.value}
+    )
+    assert blocked['supervisor_action'] == 'refuse'
+    assert LangGraphChatOrchestrator._route_after_workflow_dispatch(blocked) == 'assistant_refusal'
 
 
 async def test_supervisor_routes_supported_transaction_history_query_to_analytics() -> None:
     orchestrator = object.__new__(LangGraphChatOrchestrator)
-    decision = SupervisorDecision(workflow='respond', confidence=0.99, rationale='No action needed.')
+    decision = SupervisorAction(action='finish', confidence=0.99, rationale='No action needed.')
     orchestrator._supervisor_workflow_chain = StubAsyncChain(decision)
     state = {
         'messages': [HumanMessage(content='Show my transactions from the last two weeks.')],
@@ -130,7 +346,8 @@ async def test_supervisor_routes_supported_transaction_history_query_to_analytic
 
     result = await orchestrator._supervisor_node(state)
 
-    assert result['workflow_action'] == 'query_transactions'
+    assert result['supervisor_action'] == 'run_workflow'
+    assert result['supervisor_workflow_id'] == 'analytics'
     assert result['supervisor_workflow'] == 'analytics'
 
 
@@ -142,7 +359,7 @@ async def test_supervisor_fallback_explains_unregistered_split_capability() -> N
         {},
     )
 
-    assert result['workflow_action'] == 'default'
+    assert result['supervisor_action'] == 'finish'
     assert 'not available' in result['supervisor_response'].lower()
 
 
@@ -154,15 +371,18 @@ async def test_category_request_outranks_previous_analytics_result() -> None:
         {'last_finance_query_result': {'query_kind': 'summary', 'total': 100}},
     )
 
-    assert result['workflow_action'] == 'category_management'
+    assert result['supervisor_action'] == 'run_workflow'
+    assert result['supervisor_workflow_id'] == 'category_management'
     assert result['supervisor_workflow'] == 'category_management'
-    assert LangGraphChatOrchestrator._route_after_supervisor(result) == 'category_management'
+    assert LangGraphChatOrchestrator._route_after_supervisor_action(result) == 'workflow_dispatch'
 
 
 async def test_category_intent_overrides_incorrect_supervisor_choice() -> None:
     orchestrator = object.__new__(LangGraphChatOrchestrator)
     orchestrator._supervisor_workflow_chain = StubAsyncChain(
-        SupervisorDecision(workflow='analytics', confidence=0.99, rationale='Stale query context.')
+        SupervisorAction(
+            action='run_workflow', workflow_id='analytics', confidence=0.99, rationale='Stale query context.'
+        )
     )
     result = await orchestrator._supervisor_node(
         {
@@ -172,7 +392,8 @@ async def test_category_intent_overrides_incorrect_supervisor_choice() -> None:
         }
     )
 
-    assert result['workflow_action'] == 'category_management'
+    assert result['supervisor_action'] == 'run_workflow'
+    assert result['supervisor_workflow_id'] == 'category_management'
     assert result['supervisor_workflow'] == 'category_management'
 
 
@@ -184,7 +405,7 @@ async def test_unrelated_message_does_not_replay_previous_analytics_result() -> 
         {'last_finance_query_result': {'query_kind': 'summary', 'total': 100}},
     )
 
-    assert result['workflow_action'] == 'refusal'
+    assert result['supervisor_action'] == 'refuse'
 
 
 async def test_category_management_clarifies_type_then_creates_for_authenticated_user() -> None:
@@ -544,6 +765,49 @@ async def test_chat_category_creation_is_idempotent_user_scoped_and_does_not_log
         assert duplicate_response.json()['message'] == "The expense category 'Office Expense' already exists."
         refreshed_categories = await client.get('/api/v1/categories', headers=auth_headers(token))
         assert len(refreshed_categories.json()) == 1
+    finally:
+        app.dependency_overrides.pop(get_semantic_guardrail, None)
+        app.dependency_overrides.pop(get_intent_classifier, None)
+        app.dependency_overrides.pop(get_transaction_extraction_llm, None)
+
+
+async def test_supervisor_clarification_resumes_checkpoint_then_runs_registered_workflow(
+    client: AsyncClient,
+    app: FastAPI,
+) -> None:
+    token = await register_and_get_token(client, 'chat-supervisor-resume@example.com')
+    llm = SequencedSupervisorOutputLLM(
+        [
+            SupervisorAction(action='ask_user', response='Which period should I check?', confidence=0.99),
+            SupervisorAction(action='run_workflow', workflow_id='analytics', confidence=0.99),
+            SupervisorAction(action='finish', confidence=0.99),
+        ]
+    )
+    app.dependency_overrides[get_semantic_guardrail] = lambda: AllowGuardrail()
+    app.dependency_overrides[get_intent_classifier] = lambda: OffTopicIntentClassifier()
+    app.dependency_overrides[get_transaction_extraction_llm] = lambda: llm
+
+    try:
+        clarification = await client.post(
+            '/api/v1/chat',
+            json={'message': 'Can you check what I spent?'},
+            headers=auth_headers(token),
+        )
+        assert clarification.status_code == 200
+        thread_id = clarification.json()['thread_id']
+        assert clarification.json()['message'] == 'Which period should I check?'
+
+        resumed = await client.post(
+            '/api/v1/chat',
+            json={'message': 'This month', 'thread_id': thread_id},
+            headers=auth_headers(token),
+        )
+
+        assert resumed.status_code == 200
+        assert '0 transactions' in resumed.json()['message']
+        assert len(llm.supervisor_prompts) == 3
+        assert 'Which period should I check?' in llm.supervisor_prompts[1]
+        assert 'Analytics succeeded' in llm.supervisor_prompts[2]
     finally:
         app.dependency_overrides.pop(get_semantic_guardrail, None)
         app.dependency_overrides.pop(get_intent_classifier, None)
@@ -1246,7 +1510,7 @@ async def test_monthly_summary_where_followup_routes_to_monthly_expense_list() -
 
     assert analysis['workflow_action'] == 'supervisor'
     assert supervisor['supervisor_workflow'] == 'analytics'
-    assert supervisor['workflow_action'] == 'query_transactions'
+    assert supervisor['supervisor_workflow_id'] == 'analytics'
     assert 'You spent INR 19,675.00 this month' in guardrail_chain.last_input['message']
     assert 'You spent INR 19,675.00 this month' in intent_chain.last_input['message']
     assert tool_call['name'] == 'query_transactions'
@@ -1276,7 +1540,7 @@ async def test_report_intent_with_prior_query_result_routes_to_contextual_planne
 
     assert result['workflow_action'] == 'supervisor'
     assert supervisor['supervisor_workflow'] == 'format_previous'
-    assert supervisor['workflow_action'] == 'query_transactions'
+    assert supervisor['supervisor_workflow_id'] == 'format_previous'
 
 
 async def test_monthly_summary_where_then_sort_table_uses_same_structured_transactions() -> None:
