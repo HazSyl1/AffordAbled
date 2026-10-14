@@ -7,6 +7,7 @@ graph TD;
 	__start__([<p>__start__</p>]):::first
 	analyze_turn(analyze_turn)
 	supervisor(supervisor)
+	category_management(category_management)
 	populate_user_context(populate_user_context)
 	extract_transaction_candidate(extract_transaction_candidate)
 	evaluate_transaction_candidate(evaluate_transaction_candidate)
@@ -42,11 +43,13 @@ graph TD;
 	query_tool_executor --> query_tool_finalize;
 	supervisor -.-> assistant_default;
 	supervisor -.-> assistant_refusal;
+	supervisor -.-> category_management;
 	supervisor -.-> format_previous_result;
 	supervisor -.-> populate_user_context;
 	supervisor -. &nbsp;query_tool_agent&nbsp; .-> query_planner;
 	assistant_default --> __end__;
 	assistant_refusal --> __end__;
+	category_management --> __end__;
 	format_previous_result --> __end__;
 	query_tool_finalize --> __end__;
 	transaction_flow --> __end__;

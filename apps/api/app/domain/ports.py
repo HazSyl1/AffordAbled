@@ -62,6 +62,7 @@ class GuardrailAssessment:
 class DetectedIntent(str, Enum):
     LOG_TRANSACTION = 'log_transaction'
     QUERY_SPENDING = 'query_spending'
+    CATEGORY_MANAGEMENT = 'category_management'
     SPLIT_REQUEST = 'split_request'
     GENERATE_REPORT = 'generate_report'
     ACCOUNT_QUERY = 'account_query'

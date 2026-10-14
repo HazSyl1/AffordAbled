@@ -146,6 +146,124 @@ async def test_supervisor_fallback_explains_unregistered_split_capability() -> N
     assert 'not available' in result['supervisor_response'].lower()
 
 
+async def test_category_request_outranks_previous_analytics_result() -> None:
+    orchestrator = object.__new__(LangGraphChatOrchestrator)
+    result = orchestrator._supervisor_fallback_update(
+        'Create a category Office Expense',
+        DetectedIntent.CATEGORY_MANAGEMENT,
+        {'last_finance_query_result': {'query_kind': 'summary', 'total': 100}},
+    )
+
+    assert result['workflow_action'] == 'category_management'
+    assert result['supervisor_workflow'] == 'category_management'
+    assert LangGraphChatOrchestrator._route_after_supervisor(result) == 'category_management'
+
+
+async def test_category_intent_overrides_incorrect_supervisor_choice() -> None:
+    orchestrator = object.__new__(LangGraphChatOrchestrator)
+    orchestrator._supervisor_workflow_chain = StubAsyncChain(
+        SupervisorDecision(workflow='analytics', confidence=0.99, rationale='Stale query context.')
+    )
+    result = await orchestrator._supervisor_node(
+        {
+            'messages': [HumanMessage(content='Create a category Office Expense')],
+            'intent': DetectedIntent.QUERY_SPENDING.value,
+            'last_finance_query_result': {'query_kind': 'summary', 'total': 100},
+        }
+    )
+
+    assert result['workflow_action'] == 'category_management'
+    assert result['supervisor_workflow'] == 'category_management'
+
+
+async def test_unrelated_message_does_not_replay_previous_analytics_result() -> None:
+    orchestrator = object.__new__(LangGraphChatOrchestrator)
+    result = orchestrator._supervisor_fallback_update(
+        'Thanks, that helps',
+        DetectedIntent.OFF_TOPIC,
+        {'last_finance_query_result': {'query_kind': 'summary', 'total': 100}},
+    )
+
+    assert result['workflow_action'] == 'refusal'
+
+
+async def test_category_management_clarifies_type_then_creates_for_authenticated_user() -> None:
+    orchestrator = object.__new__(LangGraphChatOrchestrator)
+    orchestrator._llm_category_management_chain = None
+    user_id = uuid.uuid4()
+    orchestrator._list_user_categories_for_state = lambda _user_id: _empty_categories()
+    created: dict[str, object] = {}
+
+    async def create_category(**kwargs):
+        created.update(kwargs)
+        return {'id': 'category-1', 'name': kwargs['category_name'], 'type': kwargs['category_type'].value}
+
+    orchestrator._create_category_with_tool = create_category
+    first_turn = {
+        'messages': [HumanMessage(content='Create a category Trips')],
+        'runtime_user_id': str(user_id),
+        'user_categories': [],
+    }
+
+    clarification = await orchestrator._category_management_node(first_turn)
+
+    assert clarification['pending_category_request'] == {'operation': 'create', 'name': 'Trips'}
+    assert 'expense or income' in clarification['messages'][0].content
+
+    resumed = await orchestrator._category_management_node(
+        {
+            'messages': [HumanMessage(content='expense')],
+            'runtime_user_id': str(user_id),
+            'user_categories': [],
+            'pending_category_request': clarification['pending_category_request'],
+        }
+    )
+
+    assert resumed['pending_category_request'] is None
+    assert resumed['messages'][0].content == "Created the expense category 'Trips'."
+    assert created['user_id'] == user_id
+    assert created['category_type'].value == 'expense'
+
+
+async def test_category_management_does_not_create_duplicate_category() -> None:
+    orchestrator = object.__new__(LangGraphChatOrchestrator)
+    orchestrator._llm_category_management_chain = None
+    orchestrator._list_user_categories_for_state = lambda _user_id: _empty_categories()
+
+    async def unexpected_create(**_kwargs):
+        raise AssertionError('Existing category should not be created a second time.')
+
+    orchestrator._create_category_with_tool = unexpected_create
+    result = await orchestrator._category_management_node(
+        {
+            'messages': [HumanMessage(content='Create an expense category Trips')],
+            'runtime_user_id': str(uuid.uuid4()),
+            'user_categories': [{'id': 'existing-id', 'name': 'Trips', 'type': 'expense'}],
+        }
+    )
+
+    assert result['messages'][0].content == "The expense category 'Trips' already exists."
+
+
+async def test_new_category_command_replaces_stale_pending_category_name() -> None:
+    orchestrator = object.__new__(LangGraphChatOrchestrator)
+    orchestrator._llm_category_management_chain = None
+
+    result = await orchestrator._category_management_node(
+        {
+            'messages': [HumanMessage(content='Create a category New Trips')],
+            'pending_category_request': {'operation': 'create', 'name': 'Old Trips'},
+        }
+    )
+
+    assert result['pending_category_request'] == {'operation': 'create', 'name': 'New Trips'}
+    assert 'New Trips' in result['messages'][0].content
+
+
+async def _empty_categories():
+    return []
+
+
 async def test_needs_classification_followup_with_prior_finance_result_reaches_supervisor() -> None:
     orchestrator = object.__new__(LangGraphChatOrchestrator)
     orchestrator._deterministic_transaction_first = False
@@ -176,6 +294,23 @@ async def test_blocking_guardrail_still_refuses_with_prior_finance_result() -> N
     }
 
     result = await orchestrator._analyze_turn(state)
+
+    assert result['workflow_action'] == 'refusal'
+
+
+async def test_blocking_guardrail_precedes_pending_category_clarification() -> None:
+    orchestrator = object.__new__(LangGraphChatOrchestrator)
+    orchestrator._deterministic_transaction_first = False
+    orchestrator._guardrail_chain = StubAsyncChain(
+        GuardrailAssessment(decision=GuardrailDecision.BLOCK, confidence=1.0, layer='test')
+    )
+    orchestrator._intent_chain = StubAsyncChain(DetectedIntent.CATEGORY_MANAGEMENT)
+    result = await orchestrator._analyze_turn(
+        {
+            'messages': [HumanMessage(content='expense')],
+            'pending_category_request': {'operation': 'create', 'name': 'Trips'},
+        }
+    )
 
     assert result['workflow_action'] == 'refusal'
 

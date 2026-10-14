@@ -9,7 +9,7 @@ This plan is the execution source of truth for the next product iteration. It di
 - Repository: `AffordAbled`
 - Baseline branch: `main`
 - Baseline commit: `616821f` — merge of PR #8 (`feature/chat-result-followups`) into `main`.
-- Current implementation branch: `feature/langgraph-supervisor`, created from `616821f`; it contains uncommitted supervisor work, tests, generated graph assets, and the LangGraph guide.
+- Current implementation branch: `feature/langgraph-supervisor`, created from `616821f`; supervisor and standalone category-management work is in progress and uncommitted.
 - The feature branches `feature/advanced-guardrail` and `feature/chat-result-followups` have been merged. Do not continue feature work directly on `main`.
 - Before each task: fetch/update `main`, verify clean status and current HEAD, then branch from the latest `origin/main`.
 - Branch naming: `feature/<short-scope>`; use a separate branch for each independently reviewable phase.
@@ -51,6 +51,7 @@ The exact PR merge ancestry is available in Git; the table records the verified 
 - Spending summaries and transaction queries with calendar periods, user timezone, category filtering, and multi-category fan-out/aggregation.
 - Recent conversation context supplied to routing/query planning; previous finance-query plan/result can be reused for drill-down and table formatting.
 - A bounded top-level supervisor is implemented on the current feature branch; it is not yet merged to `main`.
+- A standalone category-management workflow is registered on the current feature branch. Explicit category requests outrank stale analytics context; the workflow clarifies missing type, uses authenticated-user scope, and avoids duplicate categories.
 - Response validation against database-produced finance facts.
 - LangGraph checkpointing, chat thread/message persistence, ownership checks, guardrail decision logging, and agent correction records.
 - Voice transcription path and basic image-to-text ingestion.
@@ -60,7 +61,7 @@ The exact PR merge ancestry is available in Git; the table records the verified 
 
 ### Partially implemented / still needs end-to-end work
 
-- **Workflow coverage:** the current supervisor has no standalone category-management workflow. Category creation exists only inside transaction category resolution; a direct “create a category” request after an analytics result can be misrouted by stale-result context.
+- **Workflow coverage:** standalone category creation is implemented on the current feature branch but is not yet merged. Live/API verification of category ownership and the analytics → create-category sequence remains outstanding.
 - **Analytics:** summary/list paths are present. Comparison-to-period, user baselines/patterns, account balance query tools, robust table formatting, and large-result exports are not implemented as a complete analytics graph.
 - **Receipt AI:** basic image-to-text exists; the staged Document Intelligence/layout → light LLM normalization → conditional vision fallback pipeline is not complete.
 - **Exports:** re-download lookup is present; creating PDF/XLSX, blob upload, artifact creation, and chat handoff are absent.
@@ -101,11 +102,11 @@ The exact PR merge ancestry is available in Git; the table records the verified 
 
 **Merged implementation:** `6fb6f7c feat: preserve and format finance query results` (merge commit `616821f`).
 
-### Phase 1 — New-request arbitration and category-management workflow (current)
+### Phase 1 — New-request arbitration and category-management workflow (implementation in progress; acceptance checks remain)
 
 **Branch:** continue `feature/langgraph-supervisor`, based on `616821f`.
 
-**Problem to solve:** after an analytics conversation, “Create a category 'Office Expense'” can be misread as another query or as a request to format the previous result. The current supervisor schema has no standalone category-management workflow. A category-creation mini-graph/tool exists, but it is called only inside transaction category resolution.
+**Problem addressed by current uncommitted work:** after an analytics conversation, “Create a category 'Office Expense'” must not be mistaken for another query or a request to format the previous result. A standalone category-management route now exists alongside the existing transaction category-resolution workflow.
 
 #### 1A. Make current-request intent outrank stale analytics context
 
@@ -122,6 +123,8 @@ The exact PR merge ancestry is available in Git; the table records the verified 
 - Explicit “create category …” is user authorization to create that category; validate the name/type, create for the current user, and return a success response. It must not create or alter a transaction.
 - Make duplicate requests idempotent: return the existing matching category or clearly report it already exists, without a duplicate row.
 - Do not expose arbitrary account, transaction, or SQL tools through this workflow.
+
+**Implementation evidence so far:** category-management is in the supervisor registry and graph, deterministic intent takes precedence over the supervisor model’s conflicting choice, category type clarification resumes from checkpoint state, duplicate same-type categories are handled idempotently, and explicit new category requests replace stale pending category names. Targeted tests and Ruff checks pass. The full acceptance list below is not yet complete; in particular, API-level ownership isolation and a live authenticated analytics → create-category flow still need verification.
 
 #### Acceptance tests
 
