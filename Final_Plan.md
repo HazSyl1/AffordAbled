@@ -8,9 +8,9 @@ This plan is the execution source of truth for the next product iteration. It di
 
 - Repository: `AffordAbled`
 - Baseline branch: `main`
-- Baseline commit: `e88fae8` — merge of PR #9 (`feature/langgraph-supervisor`) into `main`.
-- Current implementation branch: `feature/langgraph-multi-step-supervisor`, created from clean `main` at `e88fae8`.
-- The feature branches `feature/advanced-guardrail`, `feature/chat-result-followups`, and `feature/langgraph-supervisor` have been merged. Do not continue feature work directly on `main`.
+- Baseline commit: `1948d9e` — merge of PR #10 (`feature/langgraph-multi-step-supervisor`) into `main`.
+- Current branch: clean `main` at `1948d9e`; no feature work is currently in progress.
+- The feature branches `feature/advanced-guardrail`, `feature/chat-result-followups`, `feature/langgraph-supervisor`, and `feature/langgraph-multi-step-supervisor` have been merged. Do not continue feature work directly on `main`.
 - Before each task: fetch/update `main`, verify clean status and current HEAD, then branch from the latest `origin/main`.
 - Branch naming: `feature/<short-scope>`; use a separate branch for each independently reviewable phase.
 - Commit in small, coherent slices using Conventional Commit summaries (`feat:`, `fix:`, `test:`, `docs:`, `chore:`). Do not push or open a PR until the user requests it.
@@ -21,6 +21,8 @@ This plan is the execution source of truth for the next product iteration. It di
 | Commit | Change |
 |---|---|
 | `616821f` | Merge PR #8: structured analytics result follow-ups and table formatting |
+| `e88fae8` | Merge PR #9: bounded single-dispatch supervisor and standalone category management |
+| `1948d9e` | Merge PR #10: bounded multi-step supervisor loop |
 | `6fb6f7c` | Preserve and format finance query results |
 | `850f995` | Merge PR #7: advanced guardrails, persistence, account defaults, intent/query improvements |
 | `4639a83` | LLM intent classifier, finance query improvements, contextual analytics follow-up work, default account support |
@@ -50,8 +52,8 @@ The exact PR merge ancestry is available in Git; the table records the verified 
 - LLM intent classification with keyword fallback; configurable deterministic transaction routing.
 - Spending summaries and transaction queries with calendar periods, user timezone, category filtering, and multi-category fan-out/aggregation.
 - Recent conversation context supplied to routing/query planning; previous finance-query plan/result can be reused for drill-down and table formatting.
-- A bounded single-dispatch supervisor and standalone category-management workflow are merged to `main` in PR #9.
-- The current Phase 2 branch is adding an action-oriented supervisor contract, a maximum of three workflow handoffs per turn, typed bounded workflow observations, deterministic dispatch, and resumable clarification.
+- A bounded multi-step supervisor and standalone category-management workflow are merged to `main` (PRs #9 and #10).
+- Supervisor dispatch uses a registered workflow allowlist, bounded typed observations, a maximum of three handoffs, repeat-call protection, a decision timeout, and checkpointed clarification/resume.
 - Response validation against database-produced finance facts.
 - LangGraph checkpointing, chat thread/message persistence, ownership checks, guardrail decision logging, and agent correction records.
 - Voice transcription path and basic image-to-text ingestion.
@@ -61,7 +63,7 @@ The exact PR merge ancestry is available in Git; the table records the verified 
 
 ### Partially implemented / still needs end-to-end work
 
-- **Workflow coverage:** standalone category creation is merged. The new multi-step supervisor is in progress on its feature branch; live-model/PostgreSQL analytics → category integration remains optional.
+- **Workflow coverage:** standalone category creation and bounded multi-step supervisor are merged. Live-model/PostgreSQL analytics → category integration remains an optional verification.
 - **Analytics:** summary/list paths are present. Comparison-to-period, user baselines/patterns, account balance query tools, robust table formatting, and large-result exports are not implemented as a complete analytics graph.
 - **Receipt AI:** basic image-to-text exists; the staged Document Intelligence/layout → light LLM normalization → conditional vision fallback pipeline is not complete.
 - **Exports:** re-download lookup is present; creating PDF/XLSX, blob upload, artifact creation, and chat handoff are absent.
@@ -145,9 +147,9 @@ The exact PR merge ancestry is available in Git; the table records the verified 
 
 **Phase exit gate:** all acceptance tests and full backend/Ruff validation pass; verify category creation is scoped and idempotent; run the live HTTP flow if model/PostgreSQL config is available; update the graph artifact; then PR-review and merge.
 
-### Phase 2 — Bounded multi-step supervisor (in progress)
+### Phase 2 — Bounded multi-step supervisor (merged)
 
-**Branch:** `feature/langgraph-multi-step-supervisor`, based on merged `main` at `e88fae8`.
+**Branch:** `feature/langgraph-multi-step-supervisor`; merged to `main` by PR #10 at `1948d9e`.
 
 **Recommendation:** implement incrementally—not as a broad graph rewrite. Phase 1 is merged. Phase 2 replaces one-shot routing with a bounded loop behind registered workflow contracts.
 
@@ -226,7 +228,13 @@ Use stubbed supervisor decisions in normal CI. Keep real-model workflow evaluati
 
 **Commit slices:** `feat(ai): add bounded supervisor plan state`; `feat(ai): execute registered multi-step workflows`; `test(ai): cover supervisor limits and safety`.
 
-**Current implementation evidence:** the action/result Pydantic contracts, fixed workflow registry, dispatcher, observer, 3-handoff cap, duplicate workflow guard, supervisor decision timeout, and same-thread ask-user interrupt/resume are implemented locally. Tests cover analytics → format_previous in one turn, bounded summaries that do not expose transaction rows to the supervisor, unknown/repeated/over-budget/hard-blocked dispatch, transaction proposal stop behavior, structured contract validation, timeout fallback, and HTTP interrupt/resume. The regenerated graph asset is reviewed. Focused validation passes (16 targeted tests and Ruff); a full backend run was interrupted before completion, so full-suite validation remains outstanding.
+**Merged implementation:** action/result Pydantic contracts, fixed workflow registry, deterministic dispatcher and observer, three-handoff cap, duplicate workflow guard, supervisor decision timeout, and same-thread ask-user interrupt/resume. Tests cover analytics → `format_previous`, bounded summaries that do not expose transaction rows to the supervisor, unknown/repeated/over-budget/hard-blocked dispatch, transaction proposal stop behavior, contract validation, timeout fallback, and HTTP interrupt/resume. The graph asset is regenerated. Focused validation (16 tests) and Ruff passed. The full backend run was interrupted and not rerun before merge at the user's direction; this is not treated as a remaining task.
+
+### Next: Phase 3 — Complete Analytics specialist
+
+**Branch:** create `feature/analytics-workflows` from the latest clean `origin/main` before implementation.
+
+Implement the approved Phase 3 scope below; do not start on `main`. Confirm and prioritize period comparisons, category/account breakdowns, account balance queries, clear empty/ambiguous responses, and result-size handling. Keep all figures database-authoritative and add a query evaluation set for relative dates, multi-category queries, follow-ups, and ambiguous requests.
 
 ### Phase 3 — Complete Analytics specialist
 
