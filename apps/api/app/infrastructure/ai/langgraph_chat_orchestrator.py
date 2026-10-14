@@ -294,6 +294,36 @@ class FinanceQueryReply(BaseModel):
     )
 
 
+class SupervisorDecision(BaseModel):
+    workflow: Literal[
+        'transaction', 'analytics', 'category_management', 'format_previous', 'respond', 'refuse'
+    ] = Field(
+        description=(
+            'Select exactly one registered workflow for the current user request. Do not select unavailable split, '
+            'memory, account, or file workflows.'
+        )
+    )
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    rationale: str = Field(default='', max_length=240)
+    response: str | None = Field(
+        default=None,
+        max_length=600,
+        description=(
+            'Short user-facing clarification or capability notice for respond; '
+            'do not include unverified facts.'
+        ),
+    )
+
+
+class CategoryManagementRequest(BaseModel):
+    operation: Literal['create', 'unsupported', 'clarify'] = Field(
+        description='Category operation requested by the user. Only create is currently supported in chat.'
+    )
+    category_name: str | None = Field(default=None, max_length=120)
+    category_type: Literal['expense', 'income'] | None = None
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
 class ChatGraphState(TypedDict, total=False):
     messages: Annotated[list[BaseMessage], add_messages]
     workflow_action: str
@@ -306,6 +336,11 @@ class ChatGraphState(TypedDict, total=False):
     query_plan: dict[str, Any] | None
     last_finance_query_plan: dict[str, Any] | None
     last_finance_query_result: dict[str, Any] | None
+    supervisor_workflow: str | None
+    supervisor_confidence: float
+    supervisor_rationale: str
+    supervisor_response: str | None
+    pending_category_request: dict[str, Any] | None
     query_tool_call_ids: list[str]
     transaction_logged: bool
     manual_transaction_input_required: bool
@@ -404,6 +439,8 @@ class LangGraphChatOrchestrator:
 
         self._llm_extraction_chain = None
         self._llm_hitl_category_resolution_chain = None
+        self._llm_category_management_chain = None
+        self._supervisor_workflow_chain = None
         self._llm_query_plan_chain = None
         self._llm_query_reply_chain = None
         if extraction_llm is not None:
@@ -469,6 +506,68 @@ class LangGraphChatOrchestrator:
                 hitl_category_prompt | extraction_llm.with_structured_output(HitlCategoryResolutionOutput)
             )
 
+            category_management_prompt = ChatPromptTemplate.from_messages(
+                [
+                    (
+                        'system',
+                        (
+                            'Interpret a category-management request. Currently only create is supported. Extract '
+                            'the requested category name and whether it is an expense or income category. Use '
+                            'category context only when the user clearly indicates it (for example “expense category” '
+                            'or a reply “expense” to a prior clarification). Do not assume every category is expense. '
+                            'If the user is answering a pending category-type question, preserve the pending name and '
+                            'interpret their short reply as the type. If name or type is unclear, return null for it. '
+                            'Never create a category or invent a name in this parser.'
+                        ),
+                    ),
+                    (
+                        'human',
+                        'Current user message: {message}\nPending category request: {pending_request}',
+                    ),
+                ]
+            )
+            self._llm_category_management_chain = (
+                category_management_prompt | extraction_llm.with_structured_output(CategoryManagementRequest)
+            )
+
+            supervisor_prompt = ChatPromptTemplate.from_messages(
+                [
+                    (
+                        'system',
+                        (
+                            'You are the central workflow supervisor for a personal finance assistant. '
+                            'Choose exactly one registered workflow: transaction (propose a user-reported transaction; '
+                            'writes still require explicit confirmation), analytics (answer a new financial question '
+                            'with database tools), format_previous (sort or present an existing structured analytics '
+                            'result without re-querying), category_management (create a category for the authenticated '
+                            'user after resolving its expense/income type), respond (safe reply or clarification), or '
+                            'refuse (clearly off-topic request). Choose only workflows in this registry. '
+                            'Split, memory, '
+                            'account-balance specialist, and file-export workflows are not registered yet; do not '
+                            'pretend they are available. Use recent conversation and the prior query result to resolve '
+                            'follow-ups. An explicit create-category request is a new action and takes priority over '
+                            'any previous analytics result. If prior results exist and the user asks to format them, '
+                            'choose format_previous. '
+                            'If the user reports a new transaction with an amount, choose transaction even if earlier '
+                            'messages discussed spending. If uncertain, choose respond rather than '
+                            'inventing an action. '
+                            'Your decision only routes to a specialist; it does not execute writes, calculate money, '
+                            'override guardrails, or change authenticated user scope. For respond, provide a brief '
+                            'clarification or explain which registered capability is missing; never invent results.'
+                        ),
+                    ),
+                    (
+                        'human',
+                        'Current message: {message}\nRecent conversation: {conversation_context}\n'
+                        'Classified intent hint: {intent}\nGuardrail: {guardrail_decision}\n'
+                        'Previous query plan: {previous_plan}\nPrevious structured result: {previous_result}',
+                    ),
+                ]
+            )
+            self._supervisor_workflow_chain = (
+                supervisor_prompt | extraction_llm.with_structured_output(SupervisorDecision)
+            )
+
             query_plan_prompt = ChatPromptTemplate.from_messages(
                 [
                     (
@@ -530,6 +629,8 @@ class LangGraphChatOrchestrator:
 
         builder = StateGraph(ChatGraphState)
         builder.add_node('analyze_turn', self._analyze_turn)
+        builder.add_node('supervisor', self._supervisor_node)
+        builder.add_node('category_management', self._category_management_node)
         builder.add_node('populate_user_context', self._populate_user_context)
         builder.add_node('extract_transaction_candidate', self._extract_transaction_candidate_node)
         builder.add_node('evaluate_transaction_candidate', self._evaluate_transaction_candidate)
@@ -551,10 +652,24 @@ class LangGraphChatOrchestrator:
                 'populate_user_context': 'populate_user_context',
                 'transaction_flow': 'transaction_flow',
                 'query_tool_agent': 'query_planner',
+                'supervisor': 'supervisor',
                 'assistant_default': 'assistant_default',
                 'assistant_refusal': 'assistant_refusal',
             },
         )
+        builder.add_conditional_edges(
+            'supervisor',
+            self._route_after_supervisor,
+            {
+                'populate_user_context': 'populate_user_context',
+                'query_tool_agent': 'query_planner',
+                'category_management': 'category_management',
+                'format_previous_result': 'format_previous_result',
+                'assistant_default': 'assistant_default',
+                'assistant_refusal': 'assistant_refusal',
+            },
+        )
+        builder.add_edge('category_management', END)
         builder.add_edge('populate_user_context', 'extract_transaction_candidate')
         builder.add_edge('extract_transaction_candidate', 'evaluate_transaction_candidate')
         builder.add_conditional_edges(
@@ -798,39 +913,24 @@ class LangGraphChatOrchestrator:
         }
 
         if guardrail_assessment.decision == GuardrailDecision.BLOCK:
-            if self._should_route_to_transaction_flow(
-                latest_user_message=latest_user_message,
-                detected_intent=detected_intent,
+            if (
+                detected_intent == DetectedIntent.LOG_TRANSACTION
+                and self._is_deterministic_transaction_candidate(latest_user_message)
             ):
                 return {'workflow_action': 'build_proposal', **metadata}
             return {'workflow_action': 'refusal', **metadata}
 
-        if (
-            guardrail_assessment.decision == GuardrailDecision.NEEDS_CLASSIFICATION
-            and detected_intent == DetectedIntent.OFF_TOPIC
-        ):
-            return {'workflow_action': 'refusal', **metadata}
+        if guardrail_assessment.decision == GuardrailDecision.NEEDS_CLASSIFICATION:
+            if (
+                detected_intent == DetectedIntent.OFF_TOPIC
+                and not state.get('last_finance_query_result')
+            ):
+                return {'workflow_action': 'refusal', **metadata}
 
-        if (
-            state.get('last_finance_query_result')
-            and detected_intent != DetectedIntent.OFF_TOPIC
-            and not self._is_deterministic_transaction_candidate(latest_user_message)
-        ):
-            return {'workflow_action': 'query_transactions', **metadata}
+        if state.get('pending_category_request'):
+            return {'workflow_action': 'category_management', **metadata}
 
-        if self._should_route_to_transaction_flow(
-            latest_user_message=latest_user_message,
-            detected_intent=detected_intent,
-        ):
-            return {'workflow_action': 'build_proposal', **metadata}
-
-        if self._should_route_to_query_transactions(
-            latest_user_message=latest_user_message,
-            detected_intent=detected_intent,
-        ):
-            return {'workflow_action': 'query_transactions', **metadata}
-
-        return {'workflow_action': 'default', **metadata}
+        return {'workflow_action': 'supervisor', **metadata}
 
     @staticmethod
     def _route_after_analysis(state: ChatGraphState) -> str:
@@ -847,9 +947,310 @@ class LangGraphChatOrchestrator:
             return 'transaction_flow'
         if action == 'query_transactions':
             return 'query_tool_agent'
+        if action == 'supervisor':
+            return 'supervisor'
         if action == 'refusal':
             return 'assistant_refusal'
         return 'assistant_default'
+
+    async def _supervisor_node(self, state: ChatGraphState) -> dict[str, Any]:
+        latest_user_message = self._latest_user_message(state.get('messages', []))
+        if not latest_user_message:
+            return {'workflow_action': 'default', 'supervisor_workflow': 'respond'}
+
+        detected_intent = self._as_detected_intent(state.get('intent'))
+        is_explicit_category_create = bool(
+            re.match(r'^\s*(?:please\s+)?(?:create|add|new)\b', latest_user_message, re.IGNORECASE)
+            and self._extract_requested_new_category_name(latest_user_message)
+        )
+        if is_explicit_category_create:
+            return self._supervisor_fallback_update(
+                latest_user_message,
+                DetectedIntent.CATEGORY_MANAGEMENT,
+                state,
+            )
+        if detected_intent == DetectedIntent.CATEGORY_MANAGEMENT:
+            return self._supervisor_fallback_update(latest_user_message, detected_intent, state)
+
+        if getattr(self, '_supervisor_workflow_chain', None) is not None:
+            try:
+                decision = await self._supervisor_workflow_chain.ainvoke(
+                    {
+                        'message': latest_user_message,
+                        'conversation_context': self._conversation_context(state.get('messages', []))
+                        or 'No earlier conversation.',
+                        'intent': detected_intent.value,
+                        'guardrail_decision': state.get('guardrail_decision', GuardrailDecision.ALLOW.value),
+                        'previous_plan': json.dumps(
+                            state.get('last_finance_query_plan') or state.get('query_plan'),
+                            ensure_ascii=False,
+                        ),
+                        'previous_result': json.dumps(
+                            state.get('last_finance_query_result'),
+                            ensure_ascii=False,
+                        ),
+                    }
+                )
+                if decision.confidence >= 0.55:
+                    return self._supervisor_decision_update(decision, state)
+            except Exception:
+                logger.exception('Workflow supervisor failed; falling back to safe registered intent routing.')
+
+        return self._supervisor_fallback_update(latest_user_message, detected_intent, state)
+
+    def _supervisor_decision_update(
+        self,
+        decision: SupervisorDecision,
+        state: ChatGraphState,
+    ) -> dict[str, Any]:
+        has_previous_result = bool(state.get('last_finance_query_result'))
+        workflow = decision.workflow
+        latest_user_message = self._latest_user_message(state.get('messages', []))
+        detected_intent = self._as_detected_intent(state.get('intent'))
+        if (
+            workflow in {'respond', 'refuse'}
+            and state.get('guardrail_decision') != GuardrailDecision.BLOCK.value
+            and self._should_route_to_query_transactions(
+                latest_user_message=latest_user_message,
+                detected_intent=detected_intent,
+            )
+        ):
+            workflow = 'analytics'
+        if detected_intent == DetectedIntent.CATEGORY_MANAGEMENT:
+            workflow = 'category_management'
+        if workflow == 'format_previous' and not has_previous_result:
+            workflow = 'analytics' if self._should_route_to_query_transactions(
+                latest_user_message=latest_user_message,
+                detected_intent=detected_intent,
+            ) else 'respond'
+
+        workflow_action = {
+            'transaction': 'build_proposal',
+            'analytics': 'query_transactions',
+            'category_management': 'category_management',
+            'format_previous': 'query_transactions',
+            'respond': 'default',
+            'refuse': 'refusal',
+        }[workflow]
+        return {
+            'workflow_action': workflow_action,
+            'supervisor_workflow': workflow,
+            'supervisor_confidence': decision.confidence,
+            'supervisor_rationale': decision.rationale,
+            'supervisor_response': decision.response,
+        }
+
+    def _supervisor_fallback_update(
+        self,
+        latest_user_message: str,
+        detected_intent: DetectedIntent,
+        state: ChatGraphState,
+    ) -> dict[str, Any]:
+        latest_is_transaction = self._is_deterministic_transaction_candidate(latest_user_message)
+        if detected_intent == DetectedIntent.OFF_TOPIC:
+            workflow = 'refuse'
+        elif detected_intent == DetectedIntent.CATEGORY_MANAGEMENT:
+            workflow = 'category_management'
+        elif (
+            state.get('last_finance_query_result')
+            and not latest_is_transaction
+            and self._is_result_format_followup(' '.join(latest_user_message.lower().split()))
+        ):
+            workflow = 'format_previous'
+        elif (
+            state.get('last_finance_query_result')
+            and not latest_is_transaction
+            and self._is_transaction_drilldown_followup(' '.join(latest_user_message.lower().split()))
+        ):
+            workflow = 'analytics'
+        elif detected_intent == DetectedIntent.LOG_TRANSACTION:
+            workflow = 'transaction'
+        elif detected_intent == DetectedIntent.QUERY_SPENDING:
+            workflow = 'analytics'
+        else:
+            workflow = 'respond'
+
+        unsupported_responses = {
+            DetectedIntent.SPLIT_REQUEST: 'Split workflows are not available in chat yet.',
+            DetectedIntent.GENERATE_REPORT: 'Report generation is not available in chat yet.',
+            DetectedIntent.ACCOUNT_QUERY: 'Account-balance questions are not available in chat yet.',
+            DetectedIntent.MEMORY_RELATED: 'Long-term memory workflows are not available in chat yet.',
+        }
+        return {
+            'workflow_action': {
+                'transaction': 'build_proposal',
+                'analytics': 'query_transactions',
+                'category_management': 'category_management',
+                'format_previous': 'query_transactions',
+                'respond': 'default',
+                'refuse': 'refusal',
+            }[workflow],
+            'supervisor_workflow': workflow,
+            'supervisor_confidence': 0.0,
+            'supervisor_rationale': 'Registered intent fallback',
+            'supervisor_response': unsupported_responses.get(detected_intent),
+        }
+
+    @staticmethod
+    def _route_after_supervisor(state: ChatGraphState) -> str:
+        action = state.get('workflow_action')
+        if action == 'build_proposal':
+            return 'populate_user_context'
+        if action == 'category_management':
+            return 'category_management'
+        if action == 'query_transactions':
+            return 'query_tool_agent'
+        if action == 'refusal':
+            return 'assistant_refusal'
+        return 'assistant_default'
+
+    async def _category_management_node(self, state: ChatGraphState) -> dict[str, Any]:
+        latest_user_message = self._latest_user_message(state.get('messages', []))
+        if not latest_user_message:
+            return {'messages': [AIMessage(content='What category would you like to create?')]}
+
+        pending_request = state.get('pending_category_request')
+        explicit_new_category_name = self._extract_requested_new_category_name(latest_user_message)
+        if explicit_new_category_name is not None:
+            pending_request = None
+        request: CategoryManagementRequest | None = None
+        category_chain = getattr(self, '_llm_category_management_chain', None)
+        if category_chain is not None:
+            try:
+                request = await category_chain.ainvoke(
+                    {
+                        'message': latest_user_message,
+                        'pending_request': json.dumps(pending_request, ensure_ascii=False)
+                        if pending_request
+                        else 'None',
+                    }
+                )
+            except Exception:
+                logger.exception('Category request parsing failed; using explicit category wording fallback.')
+
+        if (request is not None and request.operation == 'unsupported') or re.search(
+            r'\b(?:rename|delete|remove)\s+(?:a\s+)?categor(?:y|ies)\b', latest_user_message, re.IGNORECASE
+        ):
+            return {
+                'messages': [
+                    AIMessage(
+                        content=(
+                            'I can create categories in chat, but renaming and deleting are not supported yet.'
+                        )
+                    )
+                ],
+                'pending_category_request': None,
+            }
+
+        pending_name = self._sanitize_category(str(pending_request.get('name') or '')) if pending_request else None
+        requested_name = pending_name or self._sanitize_category(
+            getattr(request, 'category_name', None) if request is not None else None
+        )
+        if requested_name is None:
+            requested_name = explicit_new_category_name
+        if requested_name is None and pending_request and not pending_request.get('name'):
+            requested_name = self._sanitize_category(latest_user_message)
+        if requested_name is not None:
+            requested_name = requested_name.strip().strip("'\"`“”‘’")
+            requested_name = self._sanitize_category(requested_name)
+
+        category_type = getattr(request, 'category_type', None) if request is not None else None
+        if category_type is None:
+            category_type = self._infer_category_type(latest_user_message, requested_name)
+        if category_type is None and pending_request:
+            type_reply = self._normalize_lookup_text(latest_user_message)
+            if re.search(r'\b(?:expense|expenses|spending|cost)\b', type_reply):
+                category_type = CategoryType.EXPENSE.value
+            elif re.search(r'\b(?:income|earning|earnings|salary)\b', type_reply):
+                category_type = CategoryType.INCOME.value
+
+        if requested_name is None:
+            return {
+                'messages': [AIMessage(content='What should the new category be called?')],
+                'pending_category_request': {'operation': 'create'},
+            }
+        if category_type is None:
+            return {
+                'messages': [
+                    AIMessage(content=f"Should '{requested_name}' be an expense or income category?")
+                ],
+                'pending_category_request': {'operation': 'create', 'name': requested_name},
+            }
+
+        user_id = self._user_id_from_state(state)
+        categories = self._normalize_state_categories(state.get('user_categories'))
+        if not categories:
+            categories = await self._list_user_categories_for_state(user_id)
+        normalized_name = self._normalize_lookup_text(requested_name)
+        same_name_categories = [
+            category
+            for category in categories
+            if self._normalize_lookup_text(str(category.get('name') or '')) == normalized_name
+        ]
+        existing_match = next(
+            (category for category in same_name_categories if category.get('type') == category_type),
+            None,
+        )
+        if existing_match is not None:
+            return {
+                'messages': [
+                    AIMessage(content=f"The {category_type} category '{existing_match['name']}' already exists.")
+                ],
+                'pending_category_request': None,
+            }
+        if same_name_categories:
+            existing_type = str(same_name_categories[0].get('type') or 'unknown')
+            return {
+                'messages': [
+                    AIMessage(
+                        content=(
+                            f"A category named '{requested_name}' already exists as {existing_type}. "
+                            'Choose a different name or category type.'
+                        )
+                    )
+                ],
+                'pending_category_request': None,
+            }
+
+        created_category = await self._create_category_with_tool(
+            user_id=user_id,
+            category_name=requested_name,
+            category_type=CategoryType(category_type),
+            existing_categories=categories,
+        )
+        if created_category is None:
+            return {
+                'messages': [
+                    AIMessage(
+                        content=(
+                            f"I couldn't create the {category_type} category '{requested_name}'. Please try again."
+                        )
+                    )
+                ],
+                'pending_category_request': None,
+            }
+
+        return {
+            'messages': [
+                AIMessage(content=f"Created the {category_type} category '{created_category['name']}'.")
+            ],
+            'pending_category_request': None,
+            'user_categories': [*categories, created_category],
+        }
+
+    @classmethod
+    def _infer_category_type(cls, message: str, category_name: str | None) -> str | None:
+        normalized_message = cls._normalize_lookup_text(message)
+        normalized_name = cls._normalize_lookup_text(category_name or '')
+        if re.search(r'\b(?:income|earning|earnings|salary)\s+categor(?:y|ies)\b', normalized_message):
+            return CategoryType.INCOME.value
+        if re.search(r'\bexpense\s+categor(?:y|ies)\b', normalized_message):
+            return CategoryType.EXPENSE.value
+        if normalized_name.endswith(' income') or normalized_name == 'income':
+            return CategoryType.INCOME.value
+        if normalized_name.endswith(' expense') or normalized_name == 'expense':
+            return CategoryType.EXPENSE.value
+        return None
 
     async def _populate_user_context(self, state: ChatGraphState) -> dict[str, Any]:
         if state.get('workflow_action') != 'build_proposal':
@@ -2046,6 +2447,10 @@ class LangGraphChatOrchestrator:
         return {}
 
     async def _assistant_default(self, state: ChatGraphState) -> dict[str, list[AIMessage]]:
+        supervisor_response = str(state.get('supervisor_response') or '').strip()
+        if supervisor_response:
+            return {'messages': [AIMessage(content=supervisor_response)]}
+
         latest_user_message = self._latest_user_message(state.get('messages', []))
         if not latest_user_message:
             return {'messages': [AIMessage(content=_REFUSAL_MESSAGE)]}
@@ -2915,7 +3320,8 @@ class LangGraphChatOrchestrator:
     @classmethod
     def _extract_requested_new_category_name(cls, message: str) -> str | None:
         match = re.search(
-            r"\b(?:create|add|new)\s+(?:a\s+)?(?:category\s*)?(?:called\s*)?([A-Za-z][A-Za-z0-9 &'\-.]{1,80})",
+            r"\b(?:create|add|new)\s+(?:(?:a|an)\s+)?(?:(?:expense|income)\s+)?"
+            r"(?:category\s*)?(?:(?:called|named)\s*)?([A-Za-z][A-Za-z0-9 &'\-.]{1,80})",
             message,
             re.IGNORECASE,
         )

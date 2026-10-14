@@ -72,6 +72,15 @@ async def test_llm_intent_classifier_uses_keyword_fallback_when_model_fails() ->
     assert intent == DetectedIntent.LOG_TRANSACTION
 
 
+@pytest.mark.asyncio
+async def test_keyword_classifier_routes_category_creation_before_transaction_keywords() -> None:
+    classifier = KeywordIntentClassifier()
+
+    intent = await classifier.classify('Create a category Office Expense')
+
+    assert intent == DetectedIntent.CATEGORY_MANAGEMENT
+
+
 def test_intent_classifier_dependency_selects_llm_when_configured() -> None:
     model = StubStructuredIntentModel(
         IntentClassificationOutput(intent=DetectedIntent.LOG_TRANSACTION, confidence=0.9)
