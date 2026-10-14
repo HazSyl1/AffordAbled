@@ -1,9 +1,10 @@
-﻿import uuid
+﻿import json
+import uuid
 from datetime import UTC, datetime, timedelta
 
 from fastapi import FastAPI
 from httpx import AsyncClient
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from app.core.dependencies import (
     get_image_service,
@@ -661,7 +662,7 @@ async def test_chat_spend_query_routes_to_deterministic_query_tools_flow(client:
     payload = response.json()
     assert payload['pending_transaction_proposal'] is None
     assert '(1/5)' not in payload['message']
-    assert 'you spent inr' in payload['message'].lower()
+    assert 'you spent' in payload['message'].lower()
     assert '85.00' in payload['message']
     assert '1 transaction' in payload['message'].lower()
 
@@ -830,6 +831,68 @@ def test_where_followup_reuses_previous_summary_period_as_expense_list() -> None
     assert plan.transaction_type == 'expense'
 
 
+def test_fallback_query_plan_selects_prior_result_table_formatting() -> None:
+    previous_plan = FinanceQueryPlan(
+        query_kind='transaction_list',
+        date_period='this_month',
+        confidence=0.9,
+    ).model_dump()
+
+    plan = LangGraphChatOrchestrator._fallback_query_plan(
+        'sort these by date and show me in a table',
+        previous_plan=previous_plan,
+        previous_result={'query_kind': 'transaction_list', 'transactions': [{'id': 'tx-1'}]},
+    )
+
+    assert plan.action == 'format_previous'
+    assert plan.result_format == 'table'
+    assert plan.sort_order == 'newest_first'
+
+
+def test_query_plan_router_sends_prior_result_format_to_formatter() -> None:
+    plan = FinanceQueryPlan(
+        action='format_previous',
+        query_kind='transaction_list',
+        date_period='this_month',
+        result_format='table',
+        confidence=0.99,
+    ).model_dump()
+
+    assert LangGraphChatOrchestrator._route_after_query_plan(
+        {'query_plan': plan, 'last_finance_query_result': {'transactions': []}}
+    ) == 'format_previous_result'
+
+
+async def test_confident_llm_format_action_uses_structured_previous_result() -> None:
+    orchestrator = object.__new__(LangGraphChatOrchestrator)
+    llm_plan = FinanceQueryPlan(
+        action='format_previous',
+        query_kind='transaction_list',
+        date_period='this_month',
+        result_format='table',
+        sort_order='newest_first',
+        confidence=0.98,
+    )
+    planner_chain = StubAsyncChain(llm_plan)
+    orchestrator._llm_query_plan_chain = planner_chain
+    previous_result = {
+        'query_kind': 'transaction_list',
+        'transactions': [{'id': 'tx-1', 'date': '2026-10-14', 'amount': 'INR 100.00'}],
+    }
+
+    plan = await orchestrator._create_query_plan(
+        'sort these by date and show me in a table',
+        timezone_name='Asia/Kolkata',
+        local_now='2026-10-14T12:00:00+05:30',
+        conversation_context='Assistant: I found one transaction.',
+        previous_result=previous_result,
+    )
+
+    assert plan.action == 'format_previous'
+    assert plan.result_format == 'table'
+    assert planner_chain.last_input['previous_query_result'] == json.dumps(previous_result, ensure_ascii=False)
+
+
 def test_contextual_routing_message_includes_prior_finance_turn_and_latest_followup() -> None:
     messages = [
         HumanMessage(content='How much did I spend this month?'),
@@ -883,10 +946,161 @@ async def test_monthly_summary_where_followup_routes_to_monthly_expense_list() -
     assert tool_call['args']['timezone_name'] == 'Asia/Kolkata'
 
 
+async def test_report_intent_with_prior_query_result_routes_to_contextual_planner() -> None:
+    orchestrator = object.__new__(LangGraphChatOrchestrator)
+    orchestrator._deterministic_transaction_first = False
+    orchestrator._guardrail_chain = StubAsyncChain(
+        GuardrailAssessment(decision=GuardrailDecision.ALLOW, confidence=0.9, layer='test')
+    )
+    orchestrator._intent_chain = StubAsyncChain(DetectedIntent.LOG_TRANSACTION)
+    state = {
+        'messages': [
+            HumanMessage(content='Where did I spend this month?'),
+            AIMessage(content='I found 2 transactions.'),
+            HumanMessage(content='Sort these by date and show me in a table.'),
+        ],
+        'last_finance_query_result': {'query_kind': 'transaction_list', 'transactions': [{'id': 'tx-1'}]},
+    }
+
+    result = await orchestrator._analyze_turn(state)
+
+    assert result['workflow_action'] == 'query_transactions'
+
+
+async def test_monthly_summary_where_then_sort_table_uses_same_structured_transactions() -> None:
+    orchestrator = object.__new__(LangGraphChatOrchestrator)
+    orchestrator._deterministic_transaction_first = False
+    orchestrator._llm_query_plan_chain = None
+    orchestrator._llm_query_reply_chain = None
+    orchestrator._guardrail_chain = StubAsyncChain(
+        GuardrailAssessment(decision=GuardrailDecision.ALLOW, confidence=0.9, layer='test')
+    )
+    orchestrator._intent_chain = StubAsyncChain(DetectedIntent.QUERY_SPENDING)
+
+    monthly_plan = FinanceQueryPlan(
+        query_kind='summary',
+        date_period='this_month',
+        category_scope='all',
+        confidence=0.95,
+    ).model_dump()
+    summary_facts = {
+        'query_kind': 'spending_summary',
+        'total_spent_paise': 30000,
+        'total_spent_display': 'INR 300.00',
+        'transaction_count': 2,
+        'date_from': '2026-10-01',
+        'date_to': '2026-10-14',
+    }
+    summary_state = {
+        'messages': [
+            ToolMessage(
+                content=json.dumps({'reply': 'You spent INR 300.00 across 2 transactions.', 'facts': summary_facts}),
+                tool_call_id='summary-call',
+            )
+        ],
+        'query_tool_call_ids': ['summary-call'],
+        'query_plan': monthly_plan,
+    }
+    summary_finalized = await orchestrator._query_tool_finalize(summary_state)
+    assert summary_finalized['last_finance_query_result'] == summary_facts
+
+    transaction_rows = [
+        {
+            'id': 'tx-new',
+            'occurred_at': '2026-10-14T10:00:00+00:00',
+            'date': '2026-10-14',
+            'merchant': 'Shop Two',
+            'amount': 'INR 200.00',
+            'category': 'Food',
+            'type': 'expense',
+        },
+        {
+            'id': 'tx-old',
+            'occurred_at': '2026-10-11T10:00:00+00:00',
+            'date': '2026-10-11',
+            'merchant': 'Cafe One',
+            'amount': 'INR 100.00',
+            'category': 'Food',
+            'type': 'expense',
+        },
+    ]
+    conversation = [
+        HumanMessage(content='How much did I spend this month?'),
+        summary_finalized['messages'][0],
+        HumanMessage(content='where'),
+    ]
+    drilldown_state = {
+        'messages': conversation,
+        'runtime_timezone': 'Asia/Kolkata',
+        'last_finance_query_plan': monthly_plan,
+        'last_finance_query_result': summary_finalized['last_finance_query_result'],
+    }
+    orchestrator._intent_chain = StubAsyncChain(DetectedIntent.QUERY_SPENDING)
+    drilldown_analysis = await orchestrator._analyze_turn(drilldown_state)
+    drilldown_plan = await orchestrator._query_planner_node(drilldown_state)
+    drilldown_tools = await orchestrator._query_orchestrator_node({**drilldown_state, **drilldown_plan})
+    assert drilldown_analysis['workflow_action'] == 'query_transactions'
+    assert drilldown_tools['messages'][0].tool_calls[0]['args']['date_period'] == 'this_month'
+    assert drilldown_tools['messages'][0].tool_calls[0]['args']['transaction_type'] == 'expense'
+
+    list_plan = drilldown_plan['query_plan']
+    list_finalized = await orchestrator._query_tool_finalize(
+        {
+            'messages': [
+                ToolMessage(
+                    content=json.dumps(
+                        {
+                            'reply': 'I found 2 matching transactions.',
+                            'facts': {
+                                'query_kind': 'transaction_list',
+                                'transaction_count': 2,
+                                'date_from': '2026-10-01',
+                                'date_to': '2026-10-14',
+                                'transactions': transaction_rows,
+                            },
+                        }
+                    ),
+                    tool_call_id='list-call',
+                )
+            ],
+            'query_tool_call_ids': ['list-call'],
+            'query_plan': list_plan,
+        }
+    )
+    assert list_finalized['last_finance_query_result']['transactions'] == transaction_rows
+
+    conversation.extend(
+        [list_finalized['messages'][0], HumanMessage(content='sort these by date and show me in a table')]
+    )
+    format_state = {
+        'messages': conversation,
+        'runtime_timezone': 'Asia/Kolkata',
+        'last_finance_query_plan': list_plan,
+        'last_finance_query_result': list_finalized['last_finance_query_result'],
+    }
+    orchestrator._intent_chain = StubAsyncChain(DetectedIntent.LOG_TRANSACTION)
+    format_analysis = await orchestrator._analyze_turn(format_state)
+    format_plan = await orchestrator._query_planner_node(format_state)
+    assert format_analysis['workflow_action'] == 'query_transactions'
+    assert format_plan['query_plan']['action'] == 'format_previous'
+    assert (
+        LangGraphChatOrchestrator._route_after_query_plan({**format_state, **format_plan}) == 'format_previous_result'
+    )
+
+    formatted = await orchestrator._format_previous_result_node({**format_state, **format_plan})
+    table = formatted['messages'][0].content
+    assert table.index('2026-10-14') < table.index('2026-10-11')
+    assert 'Cafe One' in table and 'Shop Two' in table
+    assert 'INR 100.00' in table and 'INR 200.00' in table
+    assert table.count('\n| 20') == 2
+    assert not formatted.get('tool_calls')
+
+
 async def test_confident_llm_drilldown_plan_inherits_previous_query_scope() -> None:
     orchestrator = object.__new__(LangGraphChatOrchestrator)
     orchestrator._llm_query_plan_chain = StubAsyncChain(
         FinanceQueryPlan(
+            action='drill_down',
             query_kind='transaction_list',
             date_period='recent_default',
             category_scope='all',
@@ -914,6 +1128,80 @@ async def test_confident_llm_drilldown_plan_inherits_previous_query_scope() -> N
     assert plan.category_names == ['Food']
     assert plan.category_scope == 'selected'
     assert plan.transaction_type == 'expense'
+
+
+async def test_format_previous_result_node_sorts_and_preserves_rows() -> None:
+    orchestrator = object.__new__(LangGraphChatOrchestrator)
+    state = {
+        'query_plan': FinanceQueryPlan(
+            action='format_previous',
+            query_kind='transaction_list',
+            date_period='this_month',
+            result_format='table',
+            sort_order='oldest_first',
+            confidence=0.99,
+        ).model_dump(),
+        'last_finance_query_result': {
+            'query_kind': 'transaction_list',
+            'transaction_count': 2,
+            'transactions': [
+                {
+                    'id': 'tx-new',
+                    'occurred_at': '2026-10-14T10:00:00+00:00',
+                    'date': '2026-10-14',
+                    'merchant': 'Shop | Two',
+                    'amount': 'INR 200.00',
+                    'category': 'Food',
+                },
+                {
+                    'id': 'tx-old',
+                    'occurred_at': '2026-10-11T10:00:00+00:00',
+                    'date': '2026-10-11',
+                    'merchant': 'Cafe One',
+                    'amount': 'INR 100.00',
+                    'category': 'Food',
+                },
+            ],
+        },
+    }
+
+    result = await orchestrator._format_previous_result_node(state)
+    content = result['messages'][0].content
+
+    assert content.index('2026-10-11') < content.index('2026-10-14')
+    assert r'Shop \| Two' in content
+    assert 'INR 100.00' in content
+    assert 'INR 200.00' in content
+
+
+async def test_query_finalizer_saves_structured_transaction_result_for_followups() -> None:
+    orchestrator = object.__new__(LangGraphChatOrchestrator)
+    orchestrator._llm_query_reply_chain = None
+    facts = {
+        'query_kind': 'transaction_list',
+        'transaction_count': 1,
+        'transactions': [
+            {
+                'id': 'tx-1',
+                'occurred_at': '2026-10-14T10:00:00+00:00',
+                'date': '2026-10-14',
+                'merchant': 'Cafe One',
+                'amount': 'INR 100.00',
+                'category': 'Food',
+            }
+        ],
+    }
+    tool_payload = json.dumps({'reply': 'One transaction.', 'facts': facts})
+    state = {
+        'messages': [ToolMessage(content=tool_payload, tool_call_id='tool-1')],
+        'query_tool_call_ids': ['tool-1'],
+        'query_plan': {'query_kind': 'transaction_list', 'date_period': 'this_month'},
+    }
+
+    result = await orchestrator._query_tool_finalize(state)
+
+    assert result['last_finance_query_result'] == facts
+    assert result['last_finance_query_plan'] == state['query_plan']
 
 
 async def test_query_orchestrator_fans_out_one_tool_call_per_planned_category() -> None:
@@ -1009,6 +1297,14 @@ def test_transaction_list_reply_must_preserve_each_merchant_date_and_amount() ->
 
     assert LangGraphChatOrchestrator._query_reply_preserves_facts(
         '2 transactions: Cafe A on 2026-10-02, INR 150.00; Shop B on 2026-10-08, INR 250.00.',
+        facts,
+    )
+    assert LangGraphChatOrchestrator._query_reply_preserves_facts(
+        '| Date | Merchant | Amount | Category |\n'
+        '| --- | --- | ---: | --- |\n'
+        '| 2026-10-02 | Cafe A | INR 150.00 | Food |\n'
+        '| 2026-10-08 | Shop B | INR 250.00 | Food |\n'
+        'These are 2 transactions.',
         facts,
     )
     assert not LangGraphChatOrchestrator._query_reply_preserves_facts(

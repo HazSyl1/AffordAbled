@@ -225,6 +225,13 @@ class HitlCategoryResolutionOutput(BaseModel):
 
 
 class FinanceQueryPlan(BaseModel):
+    action: Literal['query', 'drill_down', 'format_previous'] = Field(
+        default='query',
+        description=(
+            'Choose query for a new database question, drill_down to fetch records behind a prior summary, '
+            'or format_previous to sort/reformat stored prior results without querying again.'
+        ),
+    )
     query_kind: Literal['summary', 'transaction_list'] = Field(
         description=(
             'summary when the user asks how much, totals, or category spend; transaction_list when asking '
@@ -267,6 +274,14 @@ class FinanceQueryPlan(BaseModel):
         default='all',
         description='Filter transaction-list results by direction; use expense when drilling down into spending.',
     )
+    result_format: Literal['table', 'list'] = Field(
+        default='list',
+        description='Requested presentation for prior transaction rows when action is format_previous.',
+    )
+    sort_order: Literal['newest_first', 'oldest_first'] = Field(
+        default='newest_first',
+        description='Chronological order for transaction rows; newest_first is the default unless user asks ascending.',
+    )
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
@@ -290,6 +305,7 @@ class ChatGraphState(TypedDict, total=False):
     runtime_timezone: str
     query_plan: dict[str, Any] | None
     last_finance_query_plan: dict[str, Any] | None
+    last_finance_query_result: dict[str, Any] | None
     query_tool_call_ids: list[str]
     transaction_logged: bool
     manual_transaction_input_required: bool
@@ -467,8 +483,11 @@ class LangGraphChatOrchestrator:
                             'some categories but does not identify them; never treat unspecified as all spending. '
                             'Resolve short follow-up messages such as “where?” using recent conversation and the '
                             'previous query plan. When the user asks where a prior spending total went, return '
-                            'transaction_list, preserve that plan’s date/category scope, and set '
-                            'transaction_type=expense. '
+                            'action=drill_down, set query_kind=transaction_list, preserve that plan’s date/category '
+                            'scope, and set transaction_type=expense. When the user asks to sort, format, or show '
+                            'previously returned records as a table/list, choose action=format_previous, preserve '
+                            'the prior result and do not request a new query. Choose sort_order=oldest_first for '
+                            'ascending/oldest first and newest_first otherwise. '
                             'Resolve phrases like today, '
                             'yesterday, this week, last week, this month, last month, and the last N days/weeks '
                             'relative to the supplied local date and timezone. Do not calculate money or invent '
@@ -479,6 +498,7 @@ class LangGraphChatOrchestrator:
                         'human',
                         'Recent conversation: {conversation_context}\n'
                         'Previous finance query plan: {previous_query_plan}\n'
+                        'Previous structured result: {previous_query_result}\n'
                         'Local now: {local_now}. Timezone: {timezone}. Current user query: {message}',
                     ),
                 ]
@@ -494,7 +514,13 @@ class LangGraphChatOrchestrator:
                             'The facts were computed by database tools and are authoritative. Do not recalculate, '
                             'round, infer, or invent any amount, count, date, category, merchant, or comparison. '
                             'Mention the requested category and period when provided. Avoid canned insight labels '
-                            'and do not claim a trend unless trend data is present.'
+                            'and do not claim a trend unless trend data is present. When the user asks for details, '
+                            'a breakdown, or multiple records, prefer a compact Markdown table when the facts share '
+                            'consistent fields and a table is readable (for example date, merchant, amount, category). '
+                            'Otherwise use concise labeled sections or bullets. Honor explicit format or sort order. '
+                            'For a single fact, use a short sentence rather than forcing a table. Do not output raw '
+                            'JSON '
+                            'or add fields absent from the computed facts.'
                         ),
                     ),
                     ('human', 'User query: {question}\nComputed facts (JSON): {facts_json}'),
@@ -510,6 +536,7 @@ class LangGraphChatOrchestrator:
         builder.add_node('hitl_clarification', self._hitl_clarification_node)
         builder.add_node('transaction_flow', self._transaction_flow)
         builder.add_node('query_planner', self._query_planner_node)
+        builder.add_node('format_previous_result', self._format_previous_result_node)
         builder.add_node('query_orchestrator', self._query_orchestrator_node)
         builder.add_node('query_tool_executor', self._query_tool_node)
         builder.add_node('query_tool_finalize', self._query_tool_finalize)
@@ -549,8 +576,14 @@ class LangGraphChatOrchestrator:
         )
         builder.add_conditional_edges(
             'query_planner',
-            lambda _state: 'query_orchestrator',
+            self._route_after_query_plan,
+            {
+                'query_orchestrator': 'query_orchestrator',
+                'format_previous_result': 'format_previous_result',
+                'assistant_default': 'assistant_default',
+            },
         )
+        builder.add_edge('format_previous_result', END)
         builder.add_conditional_edges(
             'query_orchestrator',
             tools_condition,
@@ -777,6 +810,13 @@ class LangGraphChatOrchestrator:
             and detected_intent == DetectedIntent.OFF_TOPIC
         ):
             return {'workflow_action': 'refusal', **metadata}
+
+        if (
+            state.get('last_finance_query_result')
+            and detected_intent != DetectedIntent.OFF_TOPIC
+            and not self._is_deterministic_transaction_candidate(latest_user_message)
+        ):
+            return {'workflow_action': 'query_transactions', **metadata}
 
         if self._should_route_to_transaction_flow(
             latest_user_message=latest_user_message,
@@ -1454,6 +1494,7 @@ class LangGraphChatOrchestrator:
             local_now=local_now,
             conversation_context=self._conversation_context(state.get('messages', [])),
             previous_plan=state.get('last_finance_query_plan') or state.get('query_plan'),
+            previous_result=state.get('last_finance_query_result'),
         )
         return {
             'query_plan': plan.model_dump(),
@@ -1509,6 +1550,7 @@ class LangGraphChatOrchestrator:
         local_now: str,
         conversation_context: str = '',
         previous_plan: dict[str, Any] | None = None,
+        previous_result: dict[str, Any] | None = None,
     ) -> FinanceQueryPlan:
         if self._llm_query_plan_chain is not None:
             try:
@@ -1521,21 +1563,29 @@ class LangGraphChatOrchestrator:
                         'previous_query_plan': json.dumps(previous_plan, ensure_ascii=False)
                         if previous_plan
                         else 'None',
+                        'previous_query_result': json.dumps(previous_result, ensure_ascii=False)
+                        if previous_result
+                        else 'None',
                     }
                 )
                 if plan.confidence >= 0.55:
-                    if self._is_transaction_drilldown_followup(message) and previous_plan:
+                    if plan.action == 'drill_down' and previous_plan:
                         return self._inherit_previous_query_scope(plan, previous_plan)
                     return plan
             except Exception:
                 logger.exception('Finance query planning failed; falling back to basic query interpretation.')
-        return self._fallback_query_plan(message, previous_plan=previous_plan)
+        return self._fallback_query_plan(
+            message,
+            previous_plan=previous_plan,
+            previous_result=previous_result,
+        )
 
     @staticmethod
     def _fallback_query_plan(
         message: str,
         *,
         previous_plan: dict[str, Any] | None = None,
+        previous_result: dict[str, Any] | None = None,
     ) -> FinanceQueryPlan:
         normalized = ' '.join(message.lower().split())
         if LangGraphChatOrchestrator._is_transaction_drilldown_followup(normalized) and previous_plan:
@@ -1546,6 +1596,23 @@ class LangGraphChatOrchestrator:
                 )
             except (TypeError, ValueError):
                 logger.warning('Previous finance query plan was invalid; falling back to standalone interpretation.')
+
+        if previous_result and LangGraphChatOrchestrator._is_result_format_followup(normalized):
+            previous = previous_plan or {}
+            return FinanceQueryPlan(
+                action='format_previous',
+                query_kind='transaction_list',
+                date_period=previous.get('date_period', 'recent_default'),
+                period_count=previous.get('period_count'),
+                category_names=previous.get('category_names', []),
+                category_scope=previous.get('category_scope', 'all'),
+                transaction_type=previous.get('transaction_type', 'all'),
+                result_format='table' if 'table' in normalized else 'list',
+                sort_order='oldest_first'
+                if any(term in normalized for term in ('oldest first', 'oldest to newest', 'ascending'))
+                else 'newest_first',
+                confidence=0.5,
+            )
 
         summary_cues = ('how much', 'total', 'spent', 'spend', 'spending', 'summary')
         query_kind: Literal['summary', 'transaction_list'] = (
@@ -1606,6 +1673,69 @@ class LangGraphChatOrchestrator:
         )
 
     @staticmethod
+    def _route_after_query_plan(state: ChatGraphState) -> str:
+        plan = state.get('query_plan')
+        if not isinstance(plan, dict):
+            return 'assistant_default'
+        if plan.get('action') == 'format_previous':
+            return 'format_previous_result'
+        if plan.get('action') in {'query', 'drill_down'}:
+            return 'query_orchestrator'
+        return 'assistant_default'
+
+    async def _format_previous_result_node(self, state: ChatGraphState) -> dict[str, Any]:
+        plan_data = state.get('query_plan') or {}
+        result = state.get('last_finance_query_result') or {}
+        transactions = result.get('transactions')
+        if not isinstance(transactions, list) or not transactions:
+            return {
+                'messages': [AIMessage(content='There are no transaction rows in the previous result to format.')],
+            }
+
+        sorted_transactions = sorted(
+            (item for item in transactions if isinstance(item, dict)),
+            key=lambda item: str(item.get('occurred_at') or item.get('date') or ''),
+            reverse=plan_data.get('sort_order', 'newest_first') != 'oldest_first',
+        )
+        if plan_data.get('result_format', 'list') == 'table':
+            lines = [
+                '| Date | Merchant | Amount | Category |',
+                '| --- | --- | ---: | --- |',
+            ]
+            for item in sorted_transactions:
+                cells = (item.get('date'), item.get('merchant'), item.get('amount'), item.get('category'))
+                lines.append('| ' + ' | '.join(self._markdown_table_cell(value) for value in cells) + ' |')
+            content = '\n'.join(lines)
+        else:
+            content = '\n'.join(
+                f"{item.get('date')}: {item.get('merchant')} — {item.get('amount')} ({item.get('category')})"
+                for item in sorted_transactions
+            )
+
+        return {'messages': [AIMessage(content=content)]}
+
+    @staticmethod
+    def _markdown_table_cell(value: Any) -> str:
+        normalized = str(value if value is not None else '—').strip()
+        return normalized.replace('\\', '\\\\').replace('|', '\\|').replace('\n', ' ')
+
+    @staticmethod
+    def _is_result_format_followup(message: str) -> bool:
+        return any(
+            term in message
+            for term in (
+                'table',
+                'sort these',
+                'sort them',
+                'sort by date',
+                'format these',
+                'format them',
+                'show these',
+                'show them',
+            )
+        )
+
+    @staticmethod
     def _inherit_previous_query_scope(
         plan: FinanceQueryPlan,
         previous_plan_data: dict[str, Any],
@@ -1613,6 +1743,7 @@ class LangGraphChatOrchestrator:
         previous = FinanceQueryPlan.model_validate(previous_plan_data)
         return plan.model_copy(
             update={
+                'action': 'drill_down',
                 'query_kind': 'transaction_list',
                 'date_period': previous.date_period,
                 'period_count': previous.period_count,
@@ -1682,6 +1813,7 @@ class LangGraphChatOrchestrator:
             return {
                 'messages': [AIMessage(content=reply)],
                 'query_tool_call_ids': [],
+                'last_finance_query_result': None,
                 'insights': None,
             }
 
@@ -1711,6 +1843,7 @@ class LangGraphChatOrchestrator:
             'messages': [AIMessage(content=reply)],
             'query_tool_call_ids': [],
             'last_finance_query_plan': state.get('query_plan'),
+            'last_finance_query_result': facts if isinstance(facts, dict) else None,
             'insights': insights,
         }
 
