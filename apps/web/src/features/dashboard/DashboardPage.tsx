@@ -7,6 +7,7 @@ import { Button } from '../../components/atoms/Button';
 import { Card } from '../../components/atoms/Card';
 import { Input } from '../../components/atoms/Input';
 import { AssistantReplyIndicator } from '../../components/molecules/AssistantReplyIndicator';
+import { AssistantMessageContent } from '../../components/molecules/AssistantMessageContent';
 import { BottomSheet } from '../../components/molecules/BottomSheet';
 import { VoiceCaptureModal } from '../../components/molecules/VoiceCaptureModal';
 import { CreateTransactionForm } from '../../components/organisms/CreateTransactionForm';
@@ -416,7 +417,11 @@ export function DashboardPage() {
                   : 'bg-[var(--bg-card)] text-[var(--text-primary)]'
               }`}
             >
-              {message.content}
+              {message.role === 'assistant' ? (
+                <AssistantMessageContent content={message.content} />
+              ) : (
+                message.content
+              )}
             </div>
           ))
         )}

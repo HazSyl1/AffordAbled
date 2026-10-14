@@ -4,6 +4,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 
 import { BottomSheet } from '../../components/molecules/BottomSheet';
 import { AssistantReplyIndicator } from '../../components/molecules/AssistantReplyIndicator';
+import { AssistantMessageContent } from '../../components/molecules/AssistantMessageContent';
 import { VoiceCaptureModal } from '../../components/molecules/VoiceCaptureModal';
 import { CreateTransactionForm } from '../../components/organisms/CreateTransactionForm';
 import { Card } from '../../components/atoms/Card';
@@ -534,7 +535,11 @@ export function ChatPage() {
                       : 'whitespace-pre-line bg-[var(--bg-card)] text-[var(--text-primary)]'
                   }`}
                 >
-                  {message.content}
+                  {message.role === 'assistant' ? (
+                    <AssistantMessageContent content={message.content} />
+                  ) : (
+                    message.content
+                  )}
                 </div>
               ))
             )}
