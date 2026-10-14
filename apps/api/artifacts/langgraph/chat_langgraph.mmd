@@ -7,6 +7,10 @@ graph TD;
 	__start__([<p>__start__</p>]):::first
 	analyze_turn(analyze_turn)
 	supervisor(supervisor)
+	workflow_dispatch(workflow_dispatch)
+	workflow_observer(workflow_observer)
+	supervisor_ask_user(supervisor_ask_user)
+	supervisor_finish(supervisor_finish)
 	category_management(category_management)
 	populate_user_context(populate_user_context)
 	extract_transaction_candidate(extract_transaction_candidate)
@@ -28,10 +32,16 @@ graph TD;
 	analyze_turn -. &nbsp;query_tool_agent&nbsp; .-> query_planner;
 	analyze_turn -.-> supervisor;
 	analyze_turn -.-> transaction_flow;
+	assistant_default -.-> __end__;
+	assistant_default -.-> workflow_observer;
+	category_management -.-> __end__;
+	category_management -.-> workflow_observer;
 	evaluate_transaction_candidate -.-> assistant_default;
 	evaluate_transaction_candidate -.-> hitl_clarification;
 	evaluate_transaction_candidate -.-> transaction_flow;
 	extract_transaction_candidate --> evaluate_transaction_candidate;
+	format_previous_result -.-> __end__;
+	format_previous_result -.-> workflow_observer;
 	hitl_clarification -.-> extract_transaction_candidate;
 	hitl_clarification -.-> transaction_flow;
 	populate_user_context --> extract_transaction_candidate;
@@ -41,18 +51,26 @@ graph TD;
 	query_planner -.-> format_previous_result;
 	query_planner -.-> query_orchestrator;
 	query_tool_executor --> query_tool_finalize;
-	supervisor -.-> assistant_default;
+	query_tool_finalize -.-> __end__;
+	query_tool_finalize -.-> workflow_observer;
 	supervisor -.-> assistant_refusal;
-	supervisor -.-> category_management;
-	supervisor -.-> format_previous_result;
-	supervisor -.-> populate_user_context;
-	supervisor -. &nbsp;query_tool_agent&nbsp; .-> query_planner;
-	assistant_default --> __end__;
+	supervisor -.-> supervisor_ask_user;
+	supervisor -.-> supervisor_finish;
+	supervisor -.-> workflow_dispatch;
+	supervisor_ask_user --> supervisor;
+	transaction_flow -.-> __end__;
+	transaction_flow -.-> workflow_observer;
+	workflow_dispatch -.-> assistant_default;
+	workflow_dispatch -.-> assistant_refusal;
+	workflow_dispatch -.-> category_management;
+	workflow_dispatch -.-> format_previous_result;
+	workflow_dispatch -.-> populate_user_context;
+	workflow_dispatch -. &nbsp;query_tool_agent&nbsp; .-> query_planner;
+	workflow_dispatch -.-> supervisor_finish;
+	workflow_observer -.-> supervisor;
+	workflow_observer -.-> supervisor_finish;
 	assistant_refusal --> __end__;
-	category_management --> __end__;
-	format_previous_result --> __end__;
-	query_tool_finalize --> __end__;
-	transaction_flow --> __end__;
+	supervisor_finish --> __end__;
 	classDef default fill:#f2f0ff,line-height:1.2
 	classDef first fill-opacity:0
 	classDef last fill:#bfb6fc

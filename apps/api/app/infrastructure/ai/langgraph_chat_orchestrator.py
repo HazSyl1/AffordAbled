@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -18,7 +19,7 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.types import Command, interrupt
 from langsmith import traceable
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.application.dto import CreateTransactionInput
 from app.application.services.transaction_service import TransactionService
@@ -40,6 +41,11 @@ logger = logging.getLogger(__name__)
 _REFUSAL_MESSAGE = (
     "I'm your finance assistant - I can only help with money matters. "
     'Want me to log a transaction, check spending, or split a bill?'
+)
+_MAX_SUPERVISOR_HANDOFFS = 3
+_SUPERVISOR_DECISION_TIMEOUT_SECONDS = 30
+_REGISTERED_SUPERVISOR_WORKFLOWS = frozenset(
+    {'transaction', 'analytics', 'category_management', 'format_previous'}
 )
 
 _CURRENCY_PREFIX_PATTERN = re.compile(
@@ -294,25 +300,41 @@ class FinanceQueryReply(BaseModel):
     )
 
 
-class SupervisorDecision(BaseModel):
-    workflow: Literal[
-        'transaction', 'analytics', 'category_management', 'format_previous', 'respond', 'refuse'
-    ] = Field(
-        description=(
-            'Select exactly one registered workflow for the current user request. Do not select unavailable split, '
-            'memory, account, or file workflows.'
-        )
+class SupervisorAction(BaseModel):
+    action: Literal['run_workflow', 'ask_user', 'finish', 'refuse'] = Field(
+        description='Exactly one next action: run one registered workflow, ask the user, finish, or refuse.'
+    )
+    workflow_id: Literal['transaction', 'analytics', 'category_management', 'format_previous'] | None = Field(
+        default=None,
+        description='Required only for run_workflow; must be a currently registered workflow ID.',
+    )
+    arguments: dict[str, Any] = Field(
+        default_factory=dict,
+        description='Must be empty: registered workflows currently consume the authenticated turn state directly.',
     )
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     rationale: str = Field(default='', max_length=240)
     response: str | None = Field(
         default=None,
         max_length=600,
-        description=(
-            'Short user-facing clarification or capability notice for respond; '
-            'do not include unverified facts.'
-        ),
+        description='Short user-facing clarification or final response; never include unverified facts.',
     )
+
+    @model_validator(mode='after')
+    def validate_workflow_target(self) -> SupervisorAction:
+        if self.action == 'run_workflow' and self.workflow_id is None:
+            raise ValueError('run_workflow requires a registered workflow_id')
+        if self.action != 'run_workflow' and self.workflow_id is not None:
+            raise ValueError('workflow_id is only valid for run_workflow')
+        return self
+
+
+class WorkflowResult(BaseModel):
+    workflow_id: Literal['transaction', 'analytics', 'category_management', 'format_previous']
+    status: Literal['success', 'needs_input', 'failed']
+    summary: str = Field(max_length=600)
+    result_ref: Literal['finance_result', 'category_request', 'transaction_proposal', 'none'] = 'none'
+    side_effect: Literal['none', 'proposed', 'committed', 'category_created'] = 'none'
 
 
 class CategoryManagementRequest(BaseModel):
@@ -340,6 +362,16 @@ class ChatGraphState(TypedDict, total=False):
     supervisor_confidence: float
     supervisor_rationale: str
     supervisor_response: str | None
+    pending_supervisor_question: str | None
+    supervisor_action: str | None
+    supervisor_workflow_id: str | None
+    supervisor_arguments: dict[str, Any]
+    supervisor_handoff_count: int
+    supervisor_executed_workflows: list[str]
+    workflow_result: dict[str, Any] | None
+    active_workflow_id: str | None
+    active_workflow_start_query_generation: int
+    finance_query_generation: int
     pending_category_request: dict[str, Any] | None
     query_tool_call_ids: list[str]
     transaction_logged: bool
@@ -535,37 +567,39 @@ class LangGraphChatOrchestrator:
                     (
                         'system',
                         (
-                            'You are the central workflow supervisor for a personal finance assistant. '
-                            'Choose exactly one registered workflow: transaction (propose a user-reported transaction; '
-                            'writes still require explicit confirmation), analytics (answer a new financial question '
-                            'with database tools), format_previous (sort or present an existing structured analytics '
-                            'result without re-querying), category_management (create a category for the authenticated '
-                            'user after resolving its expense/income type), respond (safe reply or clarification), or '
-                            'refuse (clearly off-topic request). Choose only workflows in this registry. '
-                            'Split, memory, '
-                            'account-balance specialist, and file-export workflows are not registered yet; do not '
-                            'pretend they are available. Use recent conversation and the prior query result to resolve '
-                            'follow-ups. An explicit create-category request is a new action and takes priority over '
-                            'any previous analytics result. If prior results exist and the user asks to format them, '
-                            'choose format_previous. '
-                            'If the user reports a new transaction with an amount, choose transaction even if earlier '
-                            'messages discussed spending. If uncertain, choose respond rather than '
-                            'inventing an action. '
-                            'Your decision only routes to a specialist; it does not execute writes, calculate money, '
-                            'override guardrails, or change authenticated user scope. For respond, provide a brief '
-                            'clarification or explain which registered capability is missing; never invent results.'
+                            'You are a bounded workflow supervisor for a personal finance assistant. Return exactly '
+                            'one action: run_workflow with one registered workflow_id; ask_user with a focused '
+                            'clarification; finish when the current request is complete; or refuse when clearly '
+                            'off-topic. Registered workflow IDs are transaction (proposal only), analytics, '
+                            'format_previous, and category_management. arguments must always be an empty object; '
+                            'workflows interpret the authenticated current turn and trusted graph state themselves. '
+                            'Do not invent unregistered capabilities such as split, memory, or account-balance '
+                            'specialists, or file export. The first action should address the current user request. '
+                            'After a workflow '
+                            'result, use its bounded status/summary to decide whether another distinct registered '
+                            'workflow is necessary to complete the request; otherwise finish. Never repeat a workflow '
+                            'that already ran this turn. Stop when a workflow needs user input, fails, or proposes a '
+                            'transaction. A category create is an explicit user-authorized operation, but do not '
+                            'chain unrelated work after creating it. Keep the per-turn limit in mind. '
+                            'A hard-block guardrail cannot be overridden. You do not execute tools, calculate money, '
+                            'commit transactions, or change authenticated user scope. Use only verified workflow '
+                            'results for final wording; do not invent financial facts.'
                         ),
                     ),
                     (
                         'human',
-                        'Current message: {message}\nRecent conversation: {conversation_context}\n'
-                        'Classified intent hint: {intent}\nGuardrail: {guardrail_decision}\n'
-                        'Previous query plan: {previous_plan}\nPrevious structured result: {previous_result}',
+                            'Current message: {message}\nRecent conversation: {conversation_context}\n'
+                            'Classified intent hint: {intent}\nGuardrail: {guardrail_decision}\n'
+                            'Prior query plan: {previous_plan}\n'
+                            'Last workflow result (bounded summary only): {workflow_result}\n'
+                            'Clarification question awaiting this reply: {pending_question}\n'
+                            'Handoffs used: {handoff_count}. Previously executed workflow keys: {executed_workflows}'
                     ),
                 ]
             )
             self._supervisor_workflow_chain = (
-                supervisor_prompt | extraction_llm.with_structured_output(SupervisorDecision)
+                supervisor_prompt
+                | extraction_llm.with_structured_output(SupervisorAction, method='function_calling')
             )
 
             query_plan_prompt = ChatPromptTemplate.from_messages(
@@ -630,6 +664,10 @@ class LangGraphChatOrchestrator:
         builder = StateGraph(ChatGraphState)
         builder.add_node('analyze_turn', self._analyze_turn)
         builder.add_node('supervisor', self._supervisor_node)
+        builder.add_node('workflow_dispatch', self._workflow_dispatch_node)
+        builder.add_node('workflow_observer', self._workflow_observer_node)
+        builder.add_node('supervisor_ask_user', self._supervisor_ask_user_node)
+        builder.add_node('supervisor_finish', self._supervisor_finish_node)
         builder.add_node('category_management', self._category_management_node)
         builder.add_node('populate_user_context', self._populate_user_context)
         builder.add_node('extract_transaction_candidate', self._extract_transaction_candidate_node)
@@ -659,7 +697,17 @@ class LangGraphChatOrchestrator:
         )
         builder.add_conditional_edges(
             'supervisor',
-            self._route_after_supervisor,
+            self._route_after_supervisor_action,
+            {
+                'workflow_dispatch': 'workflow_dispatch',
+                'supervisor_ask_user': 'supervisor_ask_user',
+                'supervisor_finish': 'supervisor_finish',
+                'assistant_refusal': 'assistant_refusal',
+            },
+        )
+        builder.add_conditional_edges(
+            'workflow_dispatch',
+            self._route_after_workflow_dispatch,
             {
                 'populate_user_context': 'populate_user_context',
                 'query_tool_agent': 'query_planner',
@@ -667,9 +715,28 @@ class LangGraphChatOrchestrator:
                 'format_previous_result': 'format_previous_result',
                 'assistant_default': 'assistant_default',
                 'assistant_refusal': 'assistant_refusal',
+                'supervisor_finish': 'supervisor_finish',
             },
         )
-        builder.add_edge('category_management', END)
+        builder.add_edge('supervisor_ask_user', 'supervisor')
+        builder.add_edge('supervisor_finish', END)
+        specialist_nodes = (
+            'category_management',
+            'transaction_flow',
+            'format_previous_result',
+            'query_tool_finalize',
+        )
+        for specialist_node in specialist_nodes:
+            builder.add_conditional_edges(
+                specialist_node,
+                self._route_after_specialist,
+                {'workflow_observer': 'workflow_observer', END: END},
+            )
+        builder.add_conditional_edges(
+            'workflow_observer',
+            self._route_after_workflow_observation,
+            {'supervisor': 'supervisor', 'supervisor_finish': 'supervisor_finish'},
+        )
         builder.add_edge('populate_user_context', 'extract_transaction_candidate')
         builder.add_edge('extract_transaction_candidate', 'evaluate_transaction_candidate')
         builder.add_conditional_edges(
@@ -698,7 +765,6 @@ class LangGraphChatOrchestrator:
                 'assistant_default': 'assistant_default',
             },
         )
-        builder.add_edge('format_previous_result', END)
         builder.add_conditional_edges(
             'query_orchestrator',
             tools_condition,
@@ -708,9 +774,11 @@ class LangGraphChatOrchestrator:
             },
         )
         builder.add_edge('query_tool_executor', 'query_tool_finalize')
-        builder.add_edge('transaction_flow', END)
-        builder.add_edge('query_tool_finalize', END)
-        builder.add_edge('assistant_default', END)
+        builder.add_conditional_edges(
+            'assistant_default',
+            self._route_after_assistant_default,
+            {'workflow_observer': 'workflow_observer', END: END},
+        )
         builder.add_edge('assistant_refusal', END)
 
         self._graph = builder.compile(checkpointer=checkpointer)
@@ -793,6 +861,13 @@ class LangGraphChatOrchestrator:
                 'insights': None,
                 'agent_correction': None,
                 'runtime_timezone': timezone_name,
+                'supervisor_action': None,
+                'supervisor_workflow_id': None,
+                'supervisor_arguments': {},
+                'supervisor_handoff_count': 0,
+                'supervisor_executed_workflows': [],
+                'workflow_result': None,
+                'active_workflow_id': None,
             }
 
         result = await self._graph.ainvoke(graph_input, config=config)
@@ -947,6 +1022,8 @@ class LangGraphChatOrchestrator:
             return 'transaction_flow'
         if action == 'query_transactions':
             return 'query_tool_agent'
+        if action == 'category_management':
+            return 'category_management'
         if action == 'supervisor':
             return 'supervisor'
         if action == 'refusal':
@@ -956,7 +1033,7 @@ class LangGraphChatOrchestrator:
     async def _supervisor_node(self, state: ChatGraphState) -> dict[str, Any]:
         latest_user_message = self._latest_user_message(state.get('messages', []))
         if not latest_user_message:
-            return {'workflow_action': 'default', 'supervisor_workflow': 'respond'}
+            return {'supervisor_action': 'finish', 'supervisor_response': 'What would you like help with?'}
 
         detected_intent = self._as_detected_intent(state.get('intent'))
         is_explicit_category_create = bool(
@@ -974,22 +1051,27 @@ class LangGraphChatOrchestrator:
 
         if getattr(self, '_supervisor_workflow_chain', None) is not None:
             try:
-                decision = await self._supervisor_workflow_chain.ainvoke(
-                    {
-                        'message': latest_user_message,
-                        'conversation_context': self._conversation_context(state.get('messages', []))
-                        or 'No earlier conversation.',
-                        'intent': detected_intent.value,
-                        'guardrail_decision': state.get('guardrail_decision', GuardrailDecision.ALLOW.value),
-                        'previous_plan': json.dumps(
-                            state.get('last_finance_query_plan') or state.get('query_plan'),
-                            ensure_ascii=False,
-                        ),
-                        'previous_result': json.dumps(
-                            state.get('last_finance_query_result'),
-                            ensure_ascii=False,
-                        ),
-                    }
+                decision = await asyncio.wait_for(
+                    self._supervisor_workflow_chain.ainvoke(
+                        {
+                            'message': latest_user_message,
+                            'conversation_context': self._supervisor_conversation_context(state.get('messages', []))
+                            or 'No earlier conversation.',
+                            'intent': detected_intent.value,
+                            'guardrail_decision': state.get(
+                                'guardrail_decision', GuardrailDecision.ALLOW.value
+                            ),
+                            'previous_plan': json.dumps(
+                                state.get('last_finance_query_plan') or state.get('query_plan'),
+                                ensure_ascii=False,
+                            ),
+                            'workflow_result': json.dumps(state.get('workflow_result'), ensure_ascii=False),
+                            'pending_question': state.get('pending_supervisor_question') or 'None',
+                            'handoff_count': state.get('supervisor_handoff_count', 0),
+                            'executed_workflows': json.dumps(state.get('supervisor_executed_workflows', [])),
+                        }
+                    ),
+                    timeout=_SUPERVISOR_DECISION_TIMEOUT_SECONDS,
                 )
                 if decision.confidence >= 0.55:
                     return self._supervisor_decision_update(decision, state)
@@ -998,46 +1080,86 @@ class LangGraphChatOrchestrator:
 
         return self._supervisor_fallback_update(latest_user_message, detected_intent, state)
 
-    def _supervisor_decision_update(
-        self,
-        decision: SupervisorDecision,
-        state: ChatGraphState,
-    ) -> dict[str, Any]:
+    def _supervisor_decision_update(self, decision: SupervisorAction, state: ChatGraphState) -> dict[str, Any]:
+        if state.get('guardrail_decision') == GuardrailDecision.BLOCK.value:
+            return {'supervisor_action': 'refuse', 'supervisor_response': None}
+
         has_previous_result = bool(state.get('last_finance_query_result'))
-        workflow = decision.workflow
         latest_user_message = self._latest_user_message(state.get('messages', []))
         detected_intent = self._as_detected_intent(state.get('intent'))
         if (
-            workflow in {'respond', 'refuse'}
-            and state.get('guardrail_decision') != GuardrailDecision.BLOCK.value
+            state.get('workflow_result') is None
+            and decision.action in {'finish', 'refuse'}
+            and self._has_explicit_finance_query_cue(latest_user_message)
             and self._should_route_to_query_transactions(
-                latest_user_message=latest_user_message,
-                detected_intent=detected_intent,
+            latest_user_message=latest_user_message,
+            detected_intent=detected_intent,
             )
         ):
-            workflow = 'analytics'
-        if detected_intent == DetectedIntent.CATEGORY_MANAGEMENT:
-            workflow = 'category_management'
-        if workflow == 'format_previous' and not has_previous_result:
-            workflow = 'analytics' if self._should_route_to_query_transactions(
+            decision = decision.model_copy(update={'action': 'run_workflow', 'workflow_id': 'analytics'})
+        if decision.action != 'run_workflow':
+            return {
+                'supervisor_action': decision.action,
+                'supervisor_workflow_id': None,
+                'supervisor_arguments': {},
+                'supervisor_response': decision.response,
+                'pending_supervisor_question': decision.response if decision.action == 'ask_user' else None,
+                'supervisor_confidence': decision.confidence,
+                'supervisor_rationale': decision.rationale,
+            }
+
+        workflow_id = decision.workflow_id
+        is_explicit_category_create = bool(
+            re.match(r'^\s*(?:please\s+)?(?:create|add|new)\b', latest_user_message, re.IGNORECASE)
+            and self._extract_requested_new_category_name(latest_user_message)
+        )
+        if is_explicit_category_create or detected_intent == DetectedIntent.CATEGORY_MANAGEMENT:
+            workflow_id = 'category_management'
+        elif workflow_id in {'finish', 'format_previous'} and not has_previous_result:
+            workflow_id = 'analytics' if self._should_route_to_query_transactions(
                 latest_user_message=latest_user_message,
                 detected_intent=detected_intent,
-            ) else 'respond'
-
-        workflow_action = {
-            'transaction': 'build_proposal',
-            'analytics': 'query_transactions',
-            'category_management': 'category_management',
-            'format_previous': 'query_transactions',
-            'respond': 'default',
-            'refuse': 'refusal',
-        }[workflow]
+            ) else None
+        if workflow_id is None:
+            return {
+                'supervisor_action': 'ask_user',
+                'supervisor_workflow_id': None,
+                'supervisor_arguments': {},
+                'supervisor_response': decision.response
+                or 'I do not have a previous result to format. What finance question should I answer?',
+                'pending_supervisor_question': decision.response
+                or 'I do not have a previous result to format. What finance question should I answer?',
+                'supervisor_confidence': decision.confidence,
+                'supervisor_rationale': decision.rationale,
+            }
+        if workflow_id not in _REGISTERED_SUPERVISOR_WORKFLOWS:
+            return {
+                'supervisor_action': 'finish',
+                'supervisor_workflow_id': None,
+                'supervisor_arguments': {},
+                'supervisor_response': 'That workflow is not available.',
+            }
+        if decision.arguments:
+            return {
+                'supervisor_action': 'finish',
+                'supervisor_workflow_id': None,
+                'supervisor_arguments': {},
+                'supervisor_response': 'I could not safely route that request. Please restate it in plain language.',
+            }
+        if (
+            workflow_id == 'transaction'
+            and state.get('guardrail_decision') == GuardrailDecision.BLOCK.value
+        ):
+            return {'supervisor_action': 'refuse', 'supervisor_workflow_id': None}
         return {
-            'workflow_action': workflow_action,
-            'supervisor_workflow': workflow,
+            'supervisor_action': 'run_workflow',
+            'supervisor_workflow_id': workflow_id,
+            'supervisor_arguments': {},
+            'supervisor_workflow': workflow_id,
+            'supervisor_response': None,
+            'pending_supervisor_question': None,
             'supervisor_confidence': decision.confidence,
             'supervisor_rationale': decision.rationale,
-            'supervisor_response': decision.response,
         }
 
     def _supervisor_fallback_update(
@@ -1046,6 +1168,9 @@ class LangGraphChatOrchestrator:
         detected_intent: DetectedIntent,
         state: ChatGraphState,
     ) -> dict[str, Any]:
+        if state.get('workflow_result') is not None:
+            return {'supervisor_action': 'finish', 'supervisor_response': None}
+
         latest_is_transaction = self._is_deterministic_transaction_candidate(latest_user_message)
         if detected_intent == DetectedIntent.OFF_TOPIC:
             workflow = 'refuse'
@@ -1076,23 +1201,96 @@ class LangGraphChatOrchestrator:
             DetectedIntent.ACCOUNT_QUERY: 'Account-balance questions are not available in chat yet.',
             DetectedIntent.MEMORY_RELATED: 'Long-term memory workflows are not available in chat yet.',
         }
+        response = unsupported_responses.get(detected_intent)
+        if workflow == 'refuse':
+            action = 'refuse'
+        elif workflow == 'respond':
+            action = 'finish'
+        else:
+            action = 'run_workflow'
+        workflow_id = workflow if workflow in _REGISTERED_SUPERVISOR_WORKFLOWS else None
         return {
-            'workflow_action': {
-                'transaction': 'build_proposal',
-                'analytics': 'query_transactions',
-                'category_management': 'category_management',
-                'format_previous': 'query_transactions',
-                'respond': 'default',
-                'refuse': 'refusal',
-            }[workflow],
+            'supervisor_action': action,
+            'supervisor_workflow_id': workflow_id,
+            'supervisor_arguments': {},
             'supervisor_workflow': workflow,
             'supervisor_confidence': 0.0,
             'supervisor_rationale': 'Registered intent fallback',
-            'supervisor_response': unsupported_responses.get(detected_intent),
+            'supervisor_response': response,
+            'pending_supervisor_question': None,
         }
 
     @staticmethod
-    def _route_after_supervisor(state: ChatGraphState) -> str:
+    def _route_after_supervisor_action(state: ChatGraphState) -> str:
+        return {
+            'run_workflow': 'workflow_dispatch',
+            'ask_user': 'supervisor_ask_user',
+            'finish': 'supervisor_finish',
+            'refuse': 'assistant_refusal',
+        }.get(str(state.get('supervisor_action') or ''), 'supervisor_finish')
+
+    async def _workflow_dispatch_node(self, state: ChatGraphState) -> dict[str, Any]:
+        if state.get('guardrail_decision') == GuardrailDecision.BLOCK.value:
+            return {
+                'supervisor_action': 'refuse',
+                'supervisor_response': None,
+                'workflow_action': 'refusal',
+            }
+        workflow_id = state.get('supervisor_workflow_id')
+        arguments = state.get('supervisor_arguments') or {}
+        if workflow_id not in _REGISTERED_SUPERVISOR_WORKFLOWS:
+            return {
+                'supervisor_action': 'finish',
+                'supervisor_response': 'I could not route that to a registered workflow.',
+                'workflow_action': 'default',
+            }
+        if arguments:
+            return {
+                'supervisor_action': 'finish',
+                'supervisor_response': 'That workflow received unsupported arguments and was not run.',
+                'workflow_action': 'default',
+            }
+
+        workflow_key = json.dumps([workflow_id, arguments], sort_keys=True, separators=(',', ':'))
+        executed_workflows = list(state.get('supervisor_executed_workflows') or [])
+        handoff_count = int(state.get('supervisor_handoff_count') or 0)
+        if handoff_count >= _MAX_SUPERVISOR_HANDOFFS:
+            return {
+                'supervisor_action': 'finish',
+                'supervisor_response': (
+                    'I reached the safe workflow limit for this turn. Please tell me what to do next.'
+                ),
+                'workflow_action': 'default',
+            }
+        if workflow_key in executed_workflows:
+            return {
+                'supervisor_action': 'finish',
+                'supervisor_response': 'I stopped to avoid repeating the same workflow without progress.',
+                'workflow_action': 'default',
+            }
+
+        workflow_action = {
+            'transaction': 'build_proposal',
+            'analytics': 'query_transactions',
+            'category_management': 'category_management',
+            'format_previous': 'query_transactions',
+        }[workflow_id]
+        return {
+            'active_workflow_id': workflow_id,
+            'active_workflow_start_query_generation': int(state.get('finance_query_generation') or 0),
+            'workflow_action': workflow_action,
+            'supervisor_handoff_count': handoff_count + 1,
+            'supervisor_executed_workflows': [*executed_workflows, workflow_key],
+            'workflow_result': None,
+            'supervisor_response': None,
+        }
+
+    @staticmethod
+    def _route_after_workflow_dispatch(state: ChatGraphState) -> str:
+        if state.get('supervisor_action') == 'refuse':
+            return 'assistant_refusal'
+        if state.get('supervisor_action') == 'finish':
+            return 'supervisor_finish'
         action = state.get('workflow_action')
         if action == 'build_proposal':
             return 'populate_user_context'
@@ -1103,6 +1301,140 @@ class LangGraphChatOrchestrator:
         if action == 'refusal':
             return 'assistant_refusal'
         return 'assistant_default'
+
+    @staticmethod
+    def _route_after_specialist(state: ChatGraphState) -> str:
+        if state.get('active_workflow_id') and int(state.get('supervisor_handoff_count') or 0) > 0:
+            return 'workflow_observer'
+        return END
+
+    @staticmethod
+    def _route_after_assistant_default(state: ChatGraphState) -> str:
+        if state.get('active_workflow_id') and int(state.get('supervisor_handoff_count') or 0) > 0:
+            return 'workflow_observer'
+        return END
+
+    async def _workflow_observer_node(self, state: ChatGraphState) -> dict[str, Any]:
+        workflow_id = state.get('active_workflow_id')
+        if workflow_id not in _REGISTERED_SUPERVISOR_WORKFLOWS:
+            return {'workflow_result': None}
+
+        messages = state.get('messages', [])
+        latest_user_index = max(
+            (index for index, message in enumerate(messages) if isinstance(message, HumanMessage)),
+            default=-1,
+        )
+        latest_ai_message = next(
+            (
+                str(message.content)
+                for message in reversed(messages[latest_user_index + 1 :])
+                if isinstance(message, AIMessage) and isinstance(message.content, str) and message.content.strip()
+            ),
+            '',
+        )
+        status: Literal['success', 'needs_input', 'failed'] = 'failed'
+        result_ref: Literal['finance_result', 'category_request', 'transaction_proposal', 'none'] = 'none'
+        side_effect: Literal['none', 'proposed', 'committed', 'category_created'] = 'none'
+
+        if workflow_id == 'analytics':
+            query_completed = int(state.get('finance_query_generation') or 0) > int(
+                state.get('active_workflow_start_query_generation') or 0
+            )
+            status = 'success' if query_completed else 'needs_input' if latest_ai_message else 'failed'
+            result_ref = 'finance_result' if query_completed else 'none'
+        elif workflow_id == 'format_previous':
+            has_transactions = bool((state.get('last_finance_query_result') or {}).get('transactions'))
+            status = 'success' if has_transactions else 'needs_input'
+            result_ref = 'finance_result' if has_transactions else 'none'
+        elif workflow_id == 'category_management':
+            pending = state.get('pending_category_request')
+            status = 'needs_input' if pending else 'success' if latest_ai_message else 'failed'
+            result_ref = 'category_request' if pending else 'none'
+            if 'created the ' in latest_ai_message.lower() and ' category ' in latest_ai_message.lower():
+                side_effect = 'category_created'
+        elif workflow_id == 'transaction':
+            if (
+                state.get('pending_proposal')
+                or state.get('hitl_active')
+                or state.get('manual_transaction_input_required')
+            ):
+                status = 'needs_input'
+                result_ref = 'transaction_proposal'
+                side_effect = 'proposed' if state.get('pending_proposal') else 'none'
+            elif state.get('transaction_logged'):
+                status = 'success'
+                side_effect = 'committed'
+
+        summary = latest_ai_message[:600]
+        if workflow_id == 'analytics' and status == 'success':
+            facts = state.get('last_finance_query_result') or {}
+            plan = state.get('last_finance_query_plan') or {}
+            summary = (
+                f"Analytics succeeded: {facts.get('query_kind', 'finance query')}; "
+                f"{facts.get('transaction_count', 0)} matching transactions; "
+                f"date range {facts.get('date_from') or plan.get('date_period') or 'unspecified'} to "
+                f"{facts.get('date_to') or 'unspecified'}."
+            )
+        elif workflow_id == 'format_previous' and status == 'success':
+            summary = 'Formatted the saved transaction rows according to the current request.'
+        elif workflow_id == 'transaction' and status == 'needs_input':
+            summary = 'A transaction proposal is waiting for explicit user confirmation.'
+        result = WorkflowResult(
+            workflow_id=workflow_id,
+            status=status,
+            summary=summary,
+            result_ref=result_ref,
+            side_effect=side_effect,
+        )
+        return {'workflow_result': result.model_dump()}
+
+    @staticmethod
+    def _route_after_workflow_observation(state: ChatGraphState) -> str:
+        result = state.get('workflow_result') or {}
+        active_workflow_id = state.get('active_workflow_id')
+        handoff_count = int(state.get('supervisor_handoff_count') or 0)
+        can_continue = (
+            result.get('status') == 'success'
+            and active_workflow_id in {'analytics', 'format_previous'}
+            and handoff_count < _MAX_SUPERVISOR_HANDOFFS
+        )
+        return 'supervisor' if can_continue else 'supervisor_finish'
+
+    async def _supervisor_ask_user_node(self, state: ChatGraphState) -> dict[str, Any]:
+        question = str(state.get('supervisor_response') or 'Could you clarify what you would like me to do?')
+        interrupt({'question': question})
+        return {'supervisor_response': None, 'supervisor_action': None}
+
+    async def _supervisor_finish_node(self, state: ChatGraphState) -> dict[str, Any]:
+        response = str(state.get('supervisor_response') or '').strip()
+        if response and state.get('workflow_result') is None:
+            return {'messages': [AIMessage(content=response)]}
+        messages = state.get('messages', [])
+        latest_user_index = max(
+            (index for index, message in enumerate(messages) if isinstance(message, HumanMessage)),
+            default=-1,
+        )
+        has_current_reply = any(
+            isinstance(message, AIMessage) and str(message.content or '').strip()
+            for message in messages[latest_user_index + 1 :]
+        )
+        if state.get('workflow_result') is None and not has_current_reply:
+            return await self._assistant_default(state)
+        return {}
+
+    @staticmethod
+    def _supervisor_conversation_context(messages: list[BaseMessage]) -> str:
+        selected: list[str] = []
+        for message in messages:
+            if not isinstance(message, (HumanMessage, AIMessage)) or not isinstance(message.content, str):
+                continue
+            text = ' '.join(message.content.split())
+            if not text:
+                continue
+            if isinstance(message, AIMessage) and ('| ---' in text or '|---' in text):
+                text = '[Prior structured analytics result; see the bounded workflow result.]'
+            selected.append(f"{'User' if isinstance(message, HumanMessage) else 'Assistant'}: {text[:240]}")
+        return '\n'.join(selected[-6:])
 
     async def _category_management_node(self, state: ChatGraphState) -> dict[str, Any]:
         latest_user_message = self._latest_user_message(state.get('messages', []))
@@ -1897,6 +2229,22 @@ class LangGraphChatOrchestrator:
             previous_plan=state.get('last_finance_query_plan') or state.get('query_plan'),
             previous_result=state.get('last_finance_query_result'),
         )
+        if state.get('active_workflow_id') == 'format_previous' and state.get('last_finance_query_result'):
+            previous_plan = state.get('last_finance_query_plan') or state.get('query_plan') or {}
+            try:
+                prior_plan = FinanceQueryPlan.model_validate(previous_plan)
+            except (TypeError, ValueError):
+                prior_plan = FinanceQueryPlan()
+            normalized_message = ' '.join(latest_user_message.lower().split())
+            plan = prior_plan.model_copy(
+                update={
+                    'action': 'format_previous',
+                    'result_format': 'table' if 'table' in normalized_message else 'list',
+                    'sort_order': 'oldest_first'
+                    if any(term in normalized_message for term in ('oldest first', 'ascending', 'oldest to newest'))
+                    else 'newest_first',
+                }
+            )
         return {
             'query_plan': plan.model_dump(),
             'runtime_timezone': timezone_name,
@@ -1970,6 +2318,8 @@ class LangGraphChatOrchestrator:
                     }
                 )
                 if plan.confidence >= 0.55:
+                    if plan.action == 'format_previous' and not previous_result:
+                        plan = plan.model_copy(update={'action': 'query'})
                     if plan.action == 'drill_down' and previous_plan:
                         return self._inherit_previous_query_scope(plan, previous_plan)
                     return plan
@@ -2246,6 +2596,7 @@ class LangGraphChatOrchestrator:
             'last_finance_query_plan': state.get('query_plan'),
             'last_finance_query_result': facts if isinstance(facts, dict) else None,
             'insights': insights,
+            'finance_query_generation': int(state.get('finance_query_generation') or 0) + 1,
         }
 
     @staticmethod
@@ -3385,6 +3736,27 @@ class LangGraphChatOrchestrator:
             return False
 
         return any(hint in normalized_message for hint in _FINANCE_QUERY_HINTS)
+
+    @staticmethod
+    def _has_explicit_finance_query_cue(message: str) -> bool:
+        normalized_message = ' '.join(message.lower().split())
+        if not LangGraphChatOrchestrator._is_non_transaction_query(normalized_message):
+            return False
+        query_starters = (
+            'how much',
+            'what did i',
+            'where did i',
+            'show ',
+            'list ',
+            'get ',
+            'find ',
+            'total ',
+            'summarize ',
+        )
+        return normalized_message.startswith(query_starters) or any(
+            term in normalized_message
+            for term in ('spending', 'spent', 'transactions', 'transaction history', 'budget', 'balance')
+        )
 
     @staticmethod
     def _has_date_hint(message: str) -> bool:

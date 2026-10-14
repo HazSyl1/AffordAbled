@@ -35,6 +35,11 @@ A node reads state and returns only the fields it changes. LangGraph merges that
 | `last_finance_query_plan` | Last successful finance-query plan |
 | `last_finance_query_result` | Last successful structured facts or transaction rows |
 | `query_tool_call_ids` | Tool results the analytics finalizer expects to collect |
+| `supervisor_handoff_count` | Registered workflows invoked this turn; maximum 3 |
+| `supervisor_executed_workflows` | Normalized workflow/argument keys used to prevent repeats |
+| `workflow_result` | Bounded typed summary; raw finance rows stay in trusted graph state |
+| `pending_supervisor_question` | Clarification the next same-thread reply answers |
+| `active_workflow_id` | Registered specialist currently being observed |
 
 State is workflow context, not the transaction database. Totals and transaction rows come from database-backed services/tools. `last_finance_query_result` is checkpointed to support follow-ups; retention and data minimization must account for this stored transaction detail.
 
@@ -52,9 +57,19 @@ flowchart TD
     PRE -->|Clear transaction shortcut enabled| TX
     PRE -->|Otherwise| SAFE[Guardrail and intent classification]
     SAFE -->|Hard block| REF[Safe refusal]
-    SAFE -->|Eligible| SUP[LLM supervisor chooses registered workflow]
+    SAFE -->|Eligible| SUP[LLM supervisor chooses structured action]
 
-    SUP -->|Transaction| CTX[Load user's accounts and categories]
+    SUP -->|run_workflow| DISP[Validate registry, args, budget, repeat guard]
+    DISP -->|Allowed| SPECIALIST[Run one registered specialist]
+    SPECIALIST --> OBS[Validate and summarize typed result]
+    OBS -->|Successful read, budget remains| SUP
+    OBS -->|Needs input, failure, transaction proposal, or budget exhausted| OUT
+    SUP -->|ask_user| ASK[Checkpointed interrupt]
+    ASK -->|Same-thread reply| CK
+    SUP -->|finish| OUT
+    SUP -->|refuse| REF
+
+    SPECIALIST -->|Transaction| CTX[Load user's accounts and categories]
     CTX --> EX[Extract transaction candidate]
     EX --> EVAL[Validate fields and confidence]
     EVAL -->|Need details| HITL[Ask using graph interrupt]
@@ -64,7 +79,7 @@ flowchart TD
     CARD -->|Edit or cancel| TX
     WRITE --> OUT[Workflow result]
 
-    SUP -->|Analytics or format request| PLAN[LLM analytics planner]
+    SPECIALIST -->|Analytics or format request| PLAN[LLM analytics planner]
     PLAN -->|Category unclear| ASK[Ask for clarification]
     PLAN -->|New query or drill-down| ORCH[Analytics query orchestrator]
     ORCH --> TOOLS[Registered user-scoped query tools]
@@ -74,10 +89,8 @@ flowchart TD
     PLAN -->|format_previous| FORMAT[Sort/render saved rows without a DB query]
     FORMAT --> OUT
 
-    SUP -->|Respond| ANSWER[Safe response or clarification]
-    SUP -->|Refuse| REF
+    DISP -->|Invalid, repeated, blocked, or over limit| ANSWER[Safe bounded exit]
     REF --> OUT
-    ASK --> OUT
     ANSWER --> OUT
     OUT --> SAVE[Checkpoint updated messages and state]
     SAVE --> UI[Return response to frontend]
@@ -104,7 +117,10 @@ This separates **which capability handles the request?** (supervisor) from **wha
 | Node | Responsibility |
 |---|---|
 | `analyze_turn` | Pending proposal/HITL preflight, optional transaction shortcut, guardrail, intent hint |
-| `supervisor` | Choose one registered workflow using message, recent context, hint, and prior analytics result |
+| `supervisor` | Choose a registered workflow action using bounded context and the latest typed result |
+| `workflow_dispatch` | Validate the workflow registry, empty arguments, handoff budget, repeat guard, and block state |
+| `workflow_observer` | Validate specialist outcome and build a bounded `WorkflowResult` summary |
+| `supervisor_ask_user` / `supervisor_finish` | Pause for clarification or finish the current turn |
 | `populate_user_context` | Load authenticated user’s active accounts/categories for transaction handling |
 | `extract_transaction_candidate` | Extract a transaction candidate; does not write it |
 | `evaluate_transaction_candidate` | Validate completeness/confidence and choose clarification or proposal flow |
@@ -141,20 +157,22 @@ Intent is an **input hint**, not the final workflow choice.
 
 ### Step 3 — Supervisor decision
 
-The supervisor calls the LLM with a structured `SupervisorDecision`:
+The supervisor calls the LLM with a structured `SupervisorAction`:
 
-- `workflow`: `transaction`, `analytics`, `format_previous`, `respond`, or `refuse`
+- `action`: `run_workflow`, `ask_user`, `finish`, or `refuse`
+- `workflow_id`: required only for `run_workflow`; one registered capability
+- `arguments`: must be empty while workflows consume authenticated turn/checkpoint state
 - `confidence`: confidence in its route
 - `rationale`: short explanation for diagnostics
-- `response`: optional safe clarification/capability message
+- `response`: optional safe clarification/final message
 
-The prompt explicitly says split, memory, account-balance specialist, and file-export workflows are not registered yet. The model cannot create them by naming them.
+Python checks the action, workflow allowlist, empty argument contract, hard guardrail, per-turn handoff budget, and repeat-call key before dispatch. The prompt explicitly says split, memory, account-balance specialist, and file-export workflows are not registered yet. The model cannot create them by naming them.
 
-If the call fails or confidence is below `0.55`, Python uses a restricted fallback. A capability validator can correct a generic respond/refuse choice to analytics if the current request clearly matches available analytics, unless the guardrail blocked it. The enum is mapped to fixed graph routes; the LLM never supplies an executable node name.
+Supervisor calls have a 30-second timeout. If a call fails, times out, or confidence is below `0.55`, Python uses a restricted fallback to a registered workflow or safe finish/refusal. The enum is mapped to fixed graph routes; the LLM never supplies an executable node name.
 
 ### Step 4 — Specialist workflow
 
-The supervisor dispatches **one** workflow for this turn. It does not yet run a general multi-specialist inspect-and-loop cycle.
+The supervisor dispatches one workflow at a time. Each specialist returns to a deterministic observer, which validates a `WorkflowResult` (`workflow_id`, `status`, bounded summary, data reference, and side-effect class). A successful read workflow may return control to the supervisor for a second distinct capability. The loop stops on user input, failure, transaction proposal/commit, or the three-handoff limit.
 
 #### Transaction example
 
@@ -211,8 +229,19 @@ sequenceDiagram
         Graph-->>API: Safe refusal
     else Eligible request
         Graph->>Sup: Current message, recent context, prior result
-        Sup-->>Graph: One registered workflow
-        alt Transaction workflow
+        Sup-->>Graph: run_workflow / ask_user / finish / refuse
+        alt run_workflow
+            Graph->>Graph: Validate allowlist, args, handoff limit, repeat guard
+            Graph->>Graph: Execute one fixed specialist route
+            Graph->>Sup: Bounded typed workflow result
+            opt Successful read and budget remains
+                Sup-->>Graph: Select next distinct registered workflow or finish
+            end
+        else ask_user
+            Graph-->>API: Checkpointed clarification interrupt
+            User->>API: Answer on same thread
+            API->>CP: Resume supervisor checkpoint
+        else Transaction workflow
             Graph->>DB: Load scoped account/category context
             Graph-->>User: Proposal or clarification interrupt
             User->>API: Confirm, edit, or cancel on same thread
@@ -229,8 +258,8 @@ sequenceDiagram
             Graph->>Plan: Select format_previous action
             Plan-->>Graph: Route to deterministic formatter
             Graph-->>Graph: Sort and render saved rows without a DB call
-        else Respond or refuse
-            Graph-->>Graph: Safe response
+        else finish or refuse
+            Graph-->>Graph: Safe final response or refusal
         end
     end
     Graph->>CP: Save messages and updated state
@@ -254,10 +283,10 @@ Language understanding can be probabilistic; financial writes and financial numb
 
 ## 6. Limits of the current supervisor
 
-- It is a **single-dispatch supervisor**, not an iterative agent loop. It makes one workflow choice, then that workflow returns the turn.
+- It is a **bounded coordinator**, not an unrestricted agent. A turn invokes at most three registered workflows, and repeated calls are rejected.
 - It only knows registered workflows. Split, long-term memory, account-balance specialist, and file-export specialist are not available in chat yet.
 - Analytics runs its own query planner/orchestrator after the high-level supervisor choice.
-- There is no generic analytics → file-export handoff in one turn.
+- Only implemented workflows are registered; there is no analytics → file-export handoff because file export is not implemented.
 - A supervisor choice never grants arbitrary function access, user IDs, or direct database writes.
 
 ## 7. Safety and failure behavior
@@ -319,4 +348,4 @@ For a turn, inspect these fields without logging raw sensitive content:
 
 ## 10. Current status and next steps
 
-The supervisor and structured result-follow-up changes are being developed on `feature/langgraph-supervisor`. The supervisor is a bounded single-dispatch coordinator, not a multi-specialist loop. Remaining checks include checkpoint retention/data-minimization review, an opt-in HTTP test using the configured real model and PostgreSQL checkpointer, full validation, and normal feature-branch review/merge.
+The single-dispatch supervisor and category workflow are merged to `main` in PR #9. The bounded multi-step loop is being developed on `feature/langgraph-multi-step-supervisor`. The action/dispatcher/observer loop and same-thread clarification resume have focused test coverage, and Ruff passes. A full backend run was interrupted during execution, so a clean complete-suite result is still outstanding. Remaining checks include a clean full-suite pass, regenerated graph asset review, checkpoint retention/data-minimization documentation, and optionally a live-model/PostgreSQL integration pass before PR review/merge.
