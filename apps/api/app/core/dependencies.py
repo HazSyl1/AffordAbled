@@ -27,7 +27,7 @@ from app.core.config import Settings, get_settings
 from app.domain.entities import User
 from app.domain.exceptions import InvalidTokenError
 from app.domain.ports import ChatOrchestrator, IntentClassifier, SemanticGuardrail
-from app.infrastructure.ai.intent_classifier import KeywordIntentClassifier
+from app.infrastructure.ai.intent_classifier import KeywordIntentClassifier, LlmIntentClassifier
 from app.infrastructure.ai.langgraph_chat_orchestrator import LangGraphChatOrchestrator
 from app.infrastructure.ai.nemo_semantic_guardrail import NemoSemanticGuardrail
 from app.infrastructure.ai.tools import CategoryTools, TransactionQueryTools
@@ -178,13 +178,19 @@ def get_semantic_guardrail(
     )
 
 
-def get_intent_classifier(settings: Settings = Depends(get_settings_dependency)) -> IntentClassifier:
-    if settings.chat_intent_provider != 'keyword':
-        logger.warning(
-            'CHAT_INTENT_PROVIDER=%s is not implemented yet. Falling back to keyword intent classifier.',
-            settings.chat_intent_provider,
-        )
-    return KeywordIntentClassifier()
+def get_intent_classifier(
+    settings: Settings = Depends(get_settings_dependency),
+    intent_llm: Any | None = Depends(get_guardrail_llm),
+) -> IntentClassifier:
+    keyword_classifier = KeywordIntentClassifier()
+    if settings.chat_intent_provider == 'keyword':
+        return keyword_classifier
+
+    if intent_llm is None:
+        logger.warning('LLM intent classification requested but Azure OpenAI is unavailable; using keyword fallback.')
+        return keyword_classifier
+
+    return LlmIntentClassifier(intent_llm, fallback=keyword_classifier)
 
 
 def get_langgraph_checkpointer(request: Request) -> Any:

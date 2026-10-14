@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.entities import Account, AccountType
@@ -25,6 +25,7 @@ class SqlAlchemyAccountRepository:
             balance_paise=account.balance_paise,
             currency=account.currency,
             is_active=account.is_active,
+            is_default=account.is_default,
         )
         self._session.add(model)
         await self._session.commit()
@@ -53,10 +54,34 @@ class SqlAlchemyAccountRepository:
         model.balance_paise = account.balance_paise
         model.currency = account.currency
         model.is_active = account.is_active
+        model.is_default = account.is_default
         model.updated_at = account.updated_at
         await self._session.commit()
         await self._session.refresh(model)
         return self._to_entity(model)
+
+    async def set_default_for_user(self, user_id: uuid.UUID, account_id: uuid.UUID) -> Account:
+        account = await self.get_for_user(account_id, user_id)
+        if account is None:
+            raise LookupError(str(account_id))
+        if not account.is_active:
+            raise ValueError('An inactive account cannot be the default account.')
+
+        await self._session.execute(
+            update(AccountModel)
+            .where(AccountModel.user_id == user_id, AccountModel.is_default.is_(True))
+            .values(is_default=False)
+        )
+        await self._session.execute(
+            update(AccountModel)
+            .where(AccountModel.id == account_id, AccountModel.user_id == user_id)
+            .values(is_default=True)
+        )
+        await self._session.commit()
+        updated_account = await self.get_for_user(account_id, user_id)
+        if updated_account is None:
+            raise LookupError(str(account_id))
+        return updated_account
 
     @staticmethod
     def _to_entity(model: AccountModel) -> Account:
@@ -68,6 +93,7 @@ class SqlAlchemyAccountRepository:
             balance_paise=model.balance_paise,
             currency=model.currency,
             is_active=model.is_active,
+            is_default=model.is_default,
             created_at=model.created_at,
             updated_at=model.updated_at,
         )

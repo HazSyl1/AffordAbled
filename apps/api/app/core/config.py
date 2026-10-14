@@ -45,9 +45,9 @@ class Settings(BaseSettings):
 
     chat_proposal_confidence_threshold: int = 80
     chat_hitl_max_turns: int = 5
-    chat_deterministic_transaction_first: bool = True
+    chat_deterministic_transaction_first: bool = False
     chat_guardrail_provider: Literal['nemo'] = 'nemo'
-    chat_intent_provider: Literal['keyword', 'llm'] = 'keyword'
+    chat_intent_provider: Literal['keyword', 'llm'] = 'llm'
     nemo_guardrails_config_path: str = 'app/infrastructure/ai/nemo_guardrails'
     nemo_guardrails_block_token: str = '__BLOCK__'
     nemo_guardrails_allow_token: str = '__ALLOW__'

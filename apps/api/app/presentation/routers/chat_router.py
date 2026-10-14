@@ -29,6 +29,7 @@ async def send_chat_message(
         user_id=current_user.id,
         message=payload.message,
         thread_id=payload.thread_id,
+        timezone=payload.timezone,
     )
     proposal = response.pending_transaction_proposal
     return ChatResponse(

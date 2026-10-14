@@ -1,12 +1,14 @@
 ﻿from __future__ import annotations
 
 import json
+import logging
 import re
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, Any, Literal, TypedDict
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.prompts import ChatPromptTemplate
@@ -32,6 +34,8 @@ from app.domain.ports import (
 )
 from app.domain.repositories import AccountRepository, CategoryRepository
 from app.infrastructure.ai.tools import CategoryTools, LangGraphFinanceTools, TransactionQueryTools
+
+logger = logging.getLogger(__name__)
 
 _REFUSAL_MESSAGE = (
     "I'm your finance assistant - I can only help with money matters. "
@@ -125,20 +129,154 @@ _FINANCE_QUERY_HINTS = (
 
 
 class TransactionExtractionOutput(BaseModel):
-    is_transaction: bool = Field(default=False)
-    transaction_type: str | None = Field(default=None)
-    amount: float | None = Field(default=None)
-    selected_category: str | None = Field(default=None)
-    category: str | None = Field(default=None)
-    merchant: str | None = Field(default=None)
-    note: str | None = Field(default=None)
-    occurred_at: datetime | None = Field(default=None)
-    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    is_transaction: bool = Field(
+        default=False,
+        description=(
+            'True only when the user is reporting or asking to record an actual financial transaction. '
+            'Questions about spending history or hypothetical examples are not transactions.'
+        ),
+    )
+    transaction_type: str | None = Field(
+        default=None,
+        description=(
+            'Transaction direction/type: expense, income, refund, or transfer. '
+            'Use the meaning of the user message; return null if it cannot be determined.'
+        ),
+    )
+    amount: float | None = Field(
+        default=None,
+        description=(
+            'Positive amount in major currency units (INR rupees, not paise). '
+            'Convert spoken or formatted amounts to a number; return null if no amount is stated or inferable.'
+        ),
+    )
+    selected_account: str | None = Field(
+        default=None,
+        description=(
+            'Exact name of one account from the supplied account catalog when the user explicitly names or '
+            'clearly selects it. Never invent an account or silently substitute another account. Return null '
+            'when no account preference is stated or the match is ambiguous.'
+        ),
+    )
+    account_hint: str | None = Field(
+        default=None,
+        description=(
+            'The account or institution name/description the user explicitly mentions as the payment source, '
+            'even if it does not exactly match one catalog account (for example, "SBI"). Return null when the '
+            'user gives no account preference.'
+        ),
+    )
+    selected_category: str | None = Field(
+        default=None,
+        description=(
+            'Exact name of an existing user category from the supplied category catalog, only when it is an '
+            'appropriate match explicitly stated or strongly supported by the transaction context. '
+            'Never choose a merely closest or default category; otherwise return null.'
+        ),
+    )
+    category: str | None = Field(
+        default=None,
+        description=(
+            'The category concept expressed or strongly implied by the user, including a useful category name '
+            'that could be offered for creation when no existing category matches (for example, Hotel or '
+            'Electronics). Do not copy a merchant or location as a category. Return null when no category '
+            'concept is supported by the message.'
+        ),
+    )
+    merchant: str | None = Field(
+        default=None,
+        description=(
+            'Name of the store, business, person, or other identifiable payee/merchant if stated or reliably '
+            'implied (for example, Amazon). Do not invent a business name from a generic venue type or location; '
+            'put useful context such as "hotel in Delhi" in note instead. Merchant is optional; return null '
+            'rather than asking the user when it cannot be identified.'
+        ),
+    )
+    note: str | None = Field(
+        default=None,
+        description=(
+            'Brief transaction context not represented by type, amount, date, merchant, or category, such as '
+            '"hotel stay in Delhi" or "new phone". Preserve useful purpose/location details without inventing facts.'
+        ),
+    )
+    occurred_at: datetime | None = Field(
+        default=None,
+        description=(
+            'Date and time when the transaction occurred, as an ISO-8601-compatible datetime. Resolve relative '
+            'dates such as today, yesterday, or 2 days ago using the supplied current datetime as the reference. '
+            'If the user gives no date, return null; the application will default it to the current datetime.'
+        ),
+    )
+    confidence: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description=(
+            'Overall confidence from 0.0 to 1.0 that the transaction is real and the extracted type, amount, '
+            'date, merchant, and category are supported by the message. Missing optional merchant/category '
+            'information alone should not make an otherwise clear transaction invalid.'
+        ),
+    )
 
 
 class HitlCategoryResolutionOutput(BaseModel):
     selected_category: str | None = Field(default=None)
     create_category: str | None = Field(default=None)
+
+
+class FinanceQueryPlan(BaseModel):
+    query_kind: Literal['summary', 'transaction_list'] = Field(
+        description=(
+            'summary when the user asks how much, totals, or category spend; transaction_list when asking '
+            'what transactions/items occurred in a time period.'
+        )
+    )
+    date_period: Literal[
+        'today',
+        'yesterday',
+        'this_week',
+        'last_week',
+        'this_month',
+        'last_month',
+        'last_n_days',
+        'last_n_weeks',
+        'recent_default',
+    ] = Field(description='The calendar period requested by the user.')
+    period_count: int | None = Field(
+        default=None,
+        ge=1,
+        le=180,
+        description='Number of days or weeks when date_period is last_n_days or last_n_weeks.',
+    )
+    category_names: list[str] = Field(
+        default_factory=list,
+        max_length=5,
+        description=(
+            'Every expense category explicitly or clearly requested, such as Food and Transport. '
+            'Return an empty list when no category is requested.'
+        ),
+    )
+    category_scope: Literal['all', 'selected', 'unspecified'] = Field(
+        default='all',
+        description=(
+            'Use all when no category filter is requested, selected when one or more category names are supplied, '
+            'and unspecified when the user requests particular categories but does not identify them.'
+        ),
+    )
+    transaction_type: Literal['expense', 'income', 'all'] = Field(
+        default='all',
+        description='Filter transaction-list results by direction; use expense when drilling down into spending.',
+    )
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+class FinanceQueryReply(BaseModel):
+    reply: str = Field(
+        description=(
+            'A concise, natural answer to the user using only the supplied computed facts. Preserve amounts, '
+            'periods, category names, and counts exactly; do not add calculations or unsupported claims.'
+        )
+    )
 
 
 class ChatGraphState(TypedDict, total=False):
@@ -149,6 +287,10 @@ class ChatGraphState(TypedDict, total=False):
     user_accounts: list[dict[str, Any]]
     user_categories: list[dict[str, Any]]
     runtime_user_id: str
+    runtime_timezone: str
+    query_plan: dict[str, Any] | None
+    last_finance_query_plan: dict[str, Any] | None
+    query_tool_call_ids: list[str]
     transaction_logged: bool
     manual_transaction_input_required: bool
     hitl_active: bool
@@ -156,6 +298,7 @@ class ChatGraphState(TypedDict, total=False):
     hitl_context_message: str | None
     hitl_missing_fields: list[str]
     hitl_category_options: list[str]
+    hitl_account_options: list[str]
     hitl_suggested_category: str | None
     manual_prefill_proposal: dict[str, Any] | None
     query_tool_call_id: str | None
@@ -245,6 +388,8 @@ class LangGraphChatOrchestrator:
 
         self._llm_extraction_chain = None
         self._llm_hitl_category_resolution_chain = None
+        self._llm_query_plan_chain = None
+        self._llm_query_reply_chain = None
         if extraction_llm is not None:
             extraction_prompt = ChatPromptTemplate.from_messages(
                 [
@@ -255,20 +400,26 @@ class LangGraphChatOrchestrator:
                             'Mark is_transaction=true only when the user is asking to log a real transaction. '
                             'transaction_type must be one of: expense, income, refund, transfer. '
                             'amount must be positive in major currency units (for example 250.75). '
-                            'Use the available categories list for this user and return selected_category '
-                            'with the closest valid category name when possible. '
-                            'If no category matches, keep selected_category=null. '
-                            'Infer category name when explicit or strongly implied (for example food, transport); '
-                            'otherwise keep category=null. '
-                            'Infer merchant when it is implied in the text; otherwise keep merchant=null. '
-                            'Infer a short note from context when useful; otherwise keep note=null. '
-                            'If occurred_at is missing, return null. '
+                            'Choose selected_account only from the supplied accounts catalog. Capture an explicit '
+                            'but unresolved account/institution name in account_hint; do not replace it with the '
+                            'default account. If the user gives no account preference, leave both fields null. '
+                            'Resolve occurred_at from relative date language using the supplied current datetime; '
+                            'return null only when the user gives no date. '
+                            'For selected_category, choose only an appropriate exact existing category from the '
+                            'catalog; never choose a merely closest or default category. '
+                            'For category, extract the user-supported category concept even if it is not in the '
+                            'catalog, so the application can offer to create it; return null if no category concept '
+                            'is supported. '
+                            'Extract a merchant only when an identifiable merchant is stated or reliably implied; '
+                            'do not invent a business from a venue type or location. Preserve details such as '
+                            '"hotel in Delhi" or "new phone" in note. Merchant is optional. '
                             'Set confidence between 0 and 1 for extraction certainty.'
                         ),
                     ),
                     (
                         'human',
                         'Today is {today_utc}. User message: {message}. '
+                        'Available accounts (JSON): {accounts_catalog}. '
                         'Available categories (JSON): {categories_catalog}',
                     ),
                 ]
@@ -302,6 +453,55 @@ class LangGraphChatOrchestrator:
                 hitl_category_prompt | extraction_llm.with_structured_output(HitlCategoryResolutionOutput)
             )
 
+            query_plan_prompt = ChatPromptTemplate.from_messages(
+                [
+                    (
+                        'system',
+                        (
+                            'Interpret a personal-finance query into a structured plan. Choose summary when the '
+                            'user asks how much they spent, totals, or spending by category. Choose transaction_list '
+                            'when they ask what transactions happened or simply name a period such as yesterday. '
+                            'Extract every category the user asks about, including multiple categories joined by '
+                            'and, or, commas. Set category_scope=all when no category filter is requested, '
+                            'selected when category names are supplied, and unspecified when the user asks about '
+                            'some categories but does not identify them; never treat unspecified as all spending. '
+                            'Resolve short follow-up messages such as “where?” using recent conversation and the '
+                            'previous query plan. When the user asks where a prior spending total went, return '
+                            'transaction_list, preserve that plan’s date/category scope, and set '
+                            'transaction_type=expense. '
+                            'Resolve phrases like today, '
+                            'yesterday, this week, last week, this month, last month, and the last N days/weeks '
+                            'relative to the supplied local date and timezone. Do not calculate money or invent '
+                            'transactions; the database tools do that.'
+                        ),
+                    ),
+                    (
+                        'human',
+                        'Recent conversation: {conversation_context}\n'
+                        'Previous finance query plan: {previous_query_plan}\n'
+                        'Local now: {local_now}. Timezone: {timezone}. Current user query: {message}',
+                    ),
+                ]
+            )
+            self._llm_query_plan_chain = query_plan_prompt | extraction_llm.with_structured_output(FinanceQueryPlan)
+
+            query_reply_prompt = ChatPromptTemplate.from_messages(
+                [
+                    (
+                        'system',
+                        (
+                            'Write one concise, natural answer to the finance query using only the supplied facts. '
+                            'The facts were computed by database tools and are authoritative. Do not recalculate, '
+                            'round, infer, or invent any amount, count, date, category, merchant, or comparison. '
+                            'Mention the requested category and period when provided. Avoid canned insight labels '
+                            'and do not claim a trend unless trend data is present.'
+                        ),
+                    ),
+                    ('human', 'User query: {question}\nComputed facts (JSON): {facts_json}'),
+                ]
+            )
+            self._llm_query_reply_chain = query_reply_prompt | extraction_llm.with_structured_output(FinanceQueryReply)
+
         builder = StateGraph(ChatGraphState)
         builder.add_node('analyze_turn', self._analyze_turn)
         builder.add_node('populate_user_context', self._populate_user_context)
@@ -309,7 +509,8 @@ class LangGraphChatOrchestrator:
         builder.add_node('evaluate_transaction_candidate', self._evaluate_transaction_candidate)
         builder.add_node('hitl_clarification', self._hitl_clarification_node)
         builder.add_node('transaction_flow', self._transaction_flow)
-        builder.add_node('query_tool_agent', self._query_tool_agent)
+        builder.add_node('query_planner', self._query_planner_node)
+        builder.add_node('query_orchestrator', self._query_orchestrator_node)
         builder.add_node('query_tool_executor', self._query_tool_node)
         builder.add_node('query_tool_finalize', self._query_tool_finalize)
         builder.add_node('assistant_default', self._assistant_default)
@@ -322,7 +523,7 @@ class LangGraphChatOrchestrator:
             {
                 'populate_user_context': 'populate_user_context',
                 'transaction_flow': 'transaction_flow',
-                'query_tool_agent': 'query_tool_agent',
+                'query_tool_agent': 'query_planner',
                 'assistant_default': 'assistant_default',
                 'assistant_refusal': 'assistant_refusal',
             },
@@ -347,7 +548,11 @@ class LangGraphChatOrchestrator:
             },
         )
         builder.add_conditional_edges(
-            'query_tool_agent',
+            'query_planner',
+            lambda _state: 'query_orchestrator',
+        )
+        builder.add_conditional_edges(
+            'query_orchestrator',
             tools_condition,
             {
                 'tools': 'query_tool_executor',
@@ -402,17 +607,23 @@ class LangGraphChatOrchestrator:
         return mermaid_path, rendered_png_path
 
     @traceable(name='langgraph_chat_turn', run_type='chain')
-    async def run_turn(self, *, user_id: uuid.UUID, thread_id: str, message: str) -> ChatTurnResult:
+    async def run_turn(
+        self,
+        *,
+        user_id: uuid.UUID,
+        thread_id: str,
+        message: str,
+        timezone: str | None = None,
+    ) -> ChatTurnResult:
         checkpoint_thread_id = f'{user_id}:{thread_id}'
+        timezone_name = self._validated_timezone_name(timezone)
         config = {
             'configurable': {
                 'thread_id': checkpoint_thread_id,
-                'checkpoint_ns': str(user_id),
             }
         }
-        state_config = {'configurable': {'thread_id': checkpoint_thread_id}}
 
-        state_snapshot = await self._graph.aget_state(config=state_config)
+        state_snapshot = await self._graph.aget_state(config=config)
         if state_snapshot.interrupts:
             graph_input: dict[str, Any] | Command = Command(
                 resume=message,
@@ -422,6 +633,7 @@ class LangGraphChatOrchestrator:
                     'manual_transaction_input_required': False,
                     'insights': None,
                     'agent_correction': None,
+                    'runtime_timezone': timezone_name,
                 },
             )
         else:
@@ -432,6 +644,7 @@ class LangGraphChatOrchestrator:
                 'manual_transaction_input_required': False,
                 'insights': None,
                 'agent_correction': None,
+                'runtime_timezone': timezone_name,
             }
 
         result = await self._graph.ainvoke(graph_input, config=config)
@@ -539,10 +752,11 @@ class LangGraphChatOrchestrator:
                 'guardrail_layer': 'classifier',
             }
 
+        routing_message = self._conversation_aware_message(state.get('messages', []))
         guardrail_assessment = self._as_guardrail_assessment(
-            await self._guardrail_chain.ainvoke({'message': latest_user_message})
+            await self._guardrail_chain.ainvoke({'message': routing_message})
         )
-        detected_intent = self._as_detected_intent(await self._intent_chain.ainvoke({'message': latest_user_message}))
+        detected_intent = self._as_detected_intent(await self._intent_chain.ainvoke({'message': routing_message}))
         metadata = {
             'intent': detected_intent.value,
             'guardrail_decision': guardrail_assessment.decision.value,
@@ -621,6 +835,7 @@ class LangGraphChatOrchestrator:
         extraction_message = self._merge_hitl_context(context_message, latest_user_message)
         candidate = await self._extract_candidate(
             extraction_message,
+            accounts=self._normalize_state_accounts(state.get('user_accounts')),
             categories=self._normalize_state_categories(state.get('user_categories')),
         )
 
@@ -651,9 +866,34 @@ class LangGraphChatOrchestrator:
                 current_context=hitl_context_message,
                 current_hitl_attempt_count=hitl_attempt_count,
                 candidate=None,
+                available_accounts=user_accounts,
                 available_categories=user_categories,
             )
             hitl_result['user_categories'] = user_categories
+            hitl_result['user_accounts'] = user_accounts
+            return hitl_result
+
+        resolved_account, account_needs_clarification = self._resolve_candidate_account(
+            candidate=candidate,
+            accounts=user_accounts,
+            latest_user_message=latest_user_message,
+            hitl_active=bool(state.get('hitl_active', False)),
+        )
+        if resolved_account is not None:
+            candidate['resolved_account_id'] = resolved_account['id']
+            candidate['resolved_account_name'] = resolved_account['name']
+        if account_needs_clarification:
+            hitl_result = self._next_hitl_step(
+                latest_user_message=latest_user_message,
+                current_context=hitl_context_message,
+                current_hitl_attempt_count=hitl_attempt_count,
+                candidate=candidate,
+                available_accounts=user_accounts,
+                available_categories=user_categories,
+                forced_missing_fields=['account'],
+            )
+            hitl_result['user_categories'] = user_categories
+            hitl_result['user_accounts'] = user_accounts
             return hitl_result
 
         resolved_category, suggested_category_name, user_categories = await self._resolve_candidate_category(
@@ -686,11 +926,13 @@ class LangGraphChatOrchestrator:
                 current_context=hitl_context_message,
                 current_hitl_attempt_count=hitl_attempt_count,
                 candidate=candidate,
+                available_accounts=user_accounts,
                 available_categories=user_categories,
                 suggested_category_name=suggested_category_name,
                 forced_missing_fields=['category'],
             )
             hitl_result['user_categories'] = user_categories
+            hitl_result['user_accounts'] = user_accounts
             return hitl_result
 
         completeness_message = hitl_context_message or latest_user_message
@@ -705,11 +947,13 @@ class LangGraphChatOrchestrator:
                 current_context=hitl_context_message,
                 current_hitl_attempt_count=hitl_attempt_count,
                 candidate=candidate,
+                available_accounts=user_accounts,
                 available_categories=user_categories,
                 suggested_category_name=suggested_category_name,
                 forced_missing_fields=missing_fields,
             )
             hitl_result['user_categories'] = user_categories
+            hitl_result['user_accounts'] = user_accounts
             return hitl_result
 
         candidate_confidence_score = int(candidate.get('confidence_score', 0))
@@ -719,10 +963,12 @@ class LangGraphChatOrchestrator:
                 current_context=hitl_context_message,
                 current_hitl_attempt_count=hitl_attempt_count,
                 candidate=candidate,
+                available_accounts=user_accounts,
                 available_categories=user_categories,
                 suggested_category_name=suggested_category_name,
             )
             hitl_result['user_categories'] = user_categories
+            hitl_result['user_accounts'] = user_accounts
             return hitl_result
 
         return {
@@ -755,6 +1001,7 @@ class LangGraphChatOrchestrator:
             missing_fields=missing_fields,
             attempt_number=attempt_number,
             category_options=state.get('hitl_category_options', []),
+            account_options=state.get('hitl_account_options', []),
             suggested_category_name=state.get('hitl_suggested_category'),
         )
 
@@ -765,6 +1012,7 @@ class LangGraphChatOrchestrator:
                 'max_turns': self._hitl_max_turns,
                 'missing_fields': missing_fields,
                 'category_options': state.get('hitl_category_options', []),
+                'account_options': state.get('hitl_account_options', []),
                 'suggested_category_name': state.get('hitl_suggested_category'),
             }
         )
@@ -777,6 +1025,7 @@ class LangGraphChatOrchestrator:
                 'hitl_context_message': None,
                 'hitl_missing_fields': [],
                 'hitl_category_options': [],
+                'hitl_account_options': [],
                 'hitl_suggested_category': None,
                 'manual_transaction_input_required': False,
             }
@@ -786,6 +1035,7 @@ class LangGraphChatOrchestrator:
             'hitl_context_message': merged_context,
             'workflow_action': 'build_proposal',
             'hitl_category_options': [],
+            'hitl_account_options': [],
             'hitl_suggested_category': None,
             'manual_transaction_input_required': False,
         }
@@ -1006,6 +1256,7 @@ class LangGraphChatOrchestrator:
         current_context: str | None,
         current_hitl_attempt_count: int,
         candidate: dict[str, Any] | None,
+        available_accounts: list[dict[str, Any]] | None = None,
         available_categories: list[dict[str, Any]] | None = None,
         suggested_category_name: str | None = None,
         forced_missing_fields: list[str] | None = None,
@@ -1026,6 +1277,15 @@ class LangGraphChatOrchestrator:
             if 'category' in missing_fields
             else []
         )
+        account_options = (
+            [
+                str(account.get('name') or '')
+                for account in self._normalize_state_accounts(available_accounts or [])
+                if account.get('is_active')
+            ]
+            if 'account' in missing_fields
+            else []
+        )
         next_attempt_count = current_hitl_attempt_count + 1
 
         if next_attempt_count > self._hitl_max_turns:
@@ -1037,6 +1297,7 @@ class LangGraphChatOrchestrator:
                 'extracted_candidate': candidate,
                 'hitl_missing_fields': missing_fields,
                 'hitl_category_options': category_options,
+                'hitl_account_options': account_options,
                 'hitl_suggested_category': resolved_suggested_category,
                 'manual_transaction_input_required': True,
             }
@@ -1048,6 +1309,7 @@ class LangGraphChatOrchestrator:
             'hitl_context_message': updated_context,
             'hitl_missing_fields': missing_fields,
             'hitl_category_options': category_options,
+            'hitl_account_options': account_options,
             'hitl_suggested_category': resolved_suggested_category,
             'manual_transaction_input_required': False,
         }
@@ -1063,18 +1325,16 @@ class LangGraphChatOrchestrator:
         detected_type = self._detect_transaction_type(normalized_message)
         transaction_type = (candidate or {}).get('type') or (detected_type.value if detected_type is not None else None)
         amount_paise = (candidate or {}).get('amount_paise') or self._extract_amount_paise(message)
-        merchant = (candidate or {}).get('merchant') or self._extract_merchant(message)
 
         has_date_hint = self._has_date_hint(normalized_message)
+        has_candidate_date = self._has_candidate_date(candidate)
 
         missing_fields: list[str] = []
         if transaction_type is None:
             missing_fields.append('type')
         if amount_paise is None:
             missing_fields.append('amount')
-        if merchant is None:
-            missing_fields.append('merchant')
-        if not has_date_hint:
+        if not has_candidate_date and not has_date_hint:
             missing_fields.append('date')
 
         parsed_transaction_type = self._map_transaction_type(str(transaction_type)) if transaction_type else None
@@ -1104,6 +1364,7 @@ class LangGraphChatOrchestrator:
         missing_fields: list[str],
         attempt_number: int,
         category_options: list[str] | None = None,
+        account_options: list[str] | None = None,
         suggested_category_name: str | None = None,
     ) -> str:
         primary_missing = missing_fields[0]
@@ -1113,6 +1374,11 @@ class LangGraphChatOrchestrator:
             return f"To log this correctly {attempts_label}, is this an expense, income, refund, or transfer?"
         if primary_missing == 'amount':
             return f"I need the exact amount {attempts_label}. How much was it in INR?"
+        if primary_missing == 'account':
+            options = ', '.join(account_options or [])
+            if options:
+                return f"Which account should I use {attempts_label}? Choose one of: {options}."
+            return f"Which account should I use {attempts_label}? Please provide the account name."
         if primary_missing == 'merchant':
             return f"I can continue once I know the merchant {attempts_label}. Which store/person was this with?"
         if primary_missing == 'date':
@@ -1167,52 +1433,440 @@ class LangGraphChatOrchestrator:
 
         return f'{normalized_context}\n{normalized_latest_message}'
 
-    async def _query_tool_agent(self, state: ChatGraphState) -> dict[str, Any]:
+    async def _query_planner_node(self, state: ChatGraphState) -> dict[str, Any]:
         latest_user_message = self._latest_user_message(state.get('messages', []))
         if not latest_user_message:
             return {
                 'messages': [AIMessage(content='Please tell me what transaction history you want to see.')],
-                'query_tool_call_id': None,
+                'query_tool_call_ids': [],
             }
 
-        normalized_message = ' '.join(latest_user_message.lower().split())
-        use_summary_tool = any(
-            keyword in normalized_message
-            for keyword in ('summary', 'total', 'spend', 'spent', 'spending', 'how much')
+        timezone_name = self._validated_timezone_name(state.get('runtime_timezone'))
+        try:
+            local_now = datetime.now(ZoneInfo(timezone_name)).isoformat()
+        except (ZoneInfoNotFoundError, ValueError):
+            timezone_name = 'UTC'
+            local_now = datetime.now(UTC).isoformat()
+
+        plan = await self._create_query_plan(
+            latest_user_message,
+            timezone_name=timezone_name,
+            local_now=local_now,
+            conversation_context=self._conversation_context(state.get('messages', [])),
+            previous_plan=state.get('last_finance_query_plan') or state.get('query_plan'),
+        )
+        return {
+            'query_plan': plan.model_dump(),
+            'runtime_timezone': timezone_name,
+        }
+
+    async def _query_orchestrator_node(self, state: ChatGraphState) -> dict[str, Any]:
+        latest_user_message = self._latest_user_message(state.get('messages', []))
+        plan_data = state.get('query_plan')
+        if not latest_user_message or not isinstance(plan_data, dict):
+            return {'query_tool_call_ids': []}
+
+        plan = FinanceQueryPlan.model_validate(plan_data)
+        if plan.category_scope == 'unspecified' and not plan.category_names:
+            return {
+                'messages': [
+                    AIMessage(content='Which expense categories should I include? Please name the categories.')
+                ],
+                'query_tool_call_ids': [],
+            }
+        use_summary_tool = plan.query_kind == 'summary'
+        tool_name = 'query_spending_summary' if use_summary_tool else 'query_transactions'
+        timezone_name = self._validated_timezone_name(state.get('runtime_timezone'))
+        category_names = list(dict.fromkeys(name.strip() for name in plan.category_names if name.strip()))
+        categories: list[str | None] = category_names or [None]
+        tool_calls = []
+        tool_call_ids: list[str] = []
+        for category_name in categories:
+            tool_call_id = f'query-tool-{uuid.uuid4().hex}'
+            tool_call_ids.append(tool_call_id)
+            tool_args: dict[str, Any] = {
+                'message': latest_user_message,
+                'date_period': plan.date_period,
+                'period_count': plan.period_count,
+                'timezone_name': timezone_name,
+                'category_hint': category_name,
+            }
+            if not use_summary_tool:
+                tool_args['limit'] = 10
+                tool_args['transaction_type'] = plan.transaction_type
+            tool_calls.append({'name': tool_name, 'args': tool_args, 'id': tool_call_id, 'type': 'tool_call'})
+
+        return {
+            'messages': [AIMessage(content='', tool_calls=tool_calls)],
+            'query_tool_call_ids': tool_call_ids,
+        }
+
+    async def _create_query_plan(
+        self,
+        message: str,
+        *,
+        timezone_name: str,
+        local_now: str,
+        conversation_context: str = '',
+        previous_plan: dict[str, Any] | None = None,
+    ) -> FinanceQueryPlan:
+        if self._llm_query_plan_chain is not None:
+            try:
+                plan = await self._llm_query_plan_chain.ainvoke(
+                    {
+                        'message': message,
+                        'timezone': timezone_name,
+                        'local_now': local_now,
+                        'conversation_context': conversation_context or 'No earlier conversation.',
+                        'previous_query_plan': json.dumps(previous_plan, ensure_ascii=False)
+                        if previous_plan
+                        else 'None',
+                    }
+                )
+                if plan.confidence >= 0.55:
+                    if self._is_transaction_drilldown_followup(message) and previous_plan:
+                        return self._inherit_previous_query_scope(plan, previous_plan)
+                    return plan
+            except Exception:
+                logger.exception('Finance query planning failed; falling back to basic query interpretation.')
+        return self._fallback_query_plan(message, previous_plan=previous_plan)
+
+    @staticmethod
+    def _fallback_query_plan(
+        message: str,
+        *,
+        previous_plan: dict[str, Any] | None = None,
+    ) -> FinanceQueryPlan:
+        normalized = ' '.join(message.lower().split())
+        if LangGraphChatOrchestrator._is_transaction_drilldown_followup(normalized) and previous_plan:
+            try:
+                previous = FinanceQueryPlan.model_validate(previous_plan)
+                return LangGraphChatOrchestrator._inherit_previous_query_scope(
+                    previous.model_copy(update={'confidence': 0.5}), previous_plan
+                )
+            except (TypeError, ValueError):
+                logger.warning('Previous finance query plan was invalid; falling back to standalone interpretation.')
+
+        summary_cues = ('how much', 'total', 'spent', 'spend', 'spending', 'summary')
+        query_kind: Literal['summary', 'transaction_list'] = (
+            'summary' if any(cue in normalized for cue in summary_cues) else 'transaction_list'
         )
 
-        tool_name = 'query_spending_summary' if use_summary_tool else 'query_transactions'
-        tool_args: dict[str, Any] = {'message': latest_user_message}
-        if not use_summary_tool:
-            tool_args['limit'] = 5
+        period_count: int | None = None
+        if 'yesterday' in normalized:
+            date_period = 'yesterday'
+        elif 'today' in normalized:
+            date_period = 'today'
+        elif 'last week' in normalized:
+            date_period = 'last_week'
+        elif 'this week' in normalized or 'this weeks' in normalized:
+            date_period = 'this_week'
+        elif 'last month' in normalized:
+            date_period = 'last_month'
+        elif 'this month' in normalized or 'this months' in normalized:
+            date_period = 'this_month'
+        else:
+            weeks_match = re.search(r'\b(\d{1,2})\s+weeks?\b', normalized)
+            days_match = re.search(r'\b(\d{1,3})\s+days?\b', normalized)
+            if weeks_match:
+                date_period = 'last_n_weeks'
+                period_count = int(weeks_match.group(1))
+            elif days_match:
+                date_period = 'last_n_days'
+                period_count = int(days_match.group(1))
+            else:
+                date_period = 'recent_default'
+        category_match = re.search(
+            r'\b(?:on|in|for|under|of)\s+([a-z][a-z0-9 &,\-]{1,80}?)'
+            r'(?=\s+(?:this|last|today|yesterday|over|during)\b|[?!.]|$)',
+            normalized,
+        )
+        category_names = (
+            [
+                part.strip()
+                for part in re.split(r'\s*(?:,|&|\band\b)\s*', category_match.group(1))
+                if part.strip()
+            ]
+            if category_match
+            else []
+        )
+        return FinanceQueryPlan(
+            query_kind=query_kind,
+            date_period=date_period,
+            period_count=period_count,
+            category_names=category_names[:5],
+            category_scope=(
+                'selected'
+                if category_names
+                else 'unspecified'
+                if re.search(r'\b(?:category|categories)\b', normalized)
+                else 'all'
+            ),
+            confidence=0.5,
+        )
 
-        tool_call_id = f'query-tool-{uuid.uuid4().hex}'
-        return {
-            'messages': [
-                AIMessage(
-                    content='',
-                    tool_calls=[{'name': tool_name, 'args': tool_args, 'id': tool_call_id, 'type': 'tool_call'}],
-                )
-            ],
-            'query_tool_call_id': tool_call_id,
-        }
+    @staticmethod
+    def _inherit_previous_query_scope(
+        plan: FinanceQueryPlan,
+        previous_plan_data: dict[str, Any],
+    ) -> FinanceQueryPlan:
+        previous = FinanceQueryPlan.model_validate(previous_plan_data)
+        return plan.model_copy(
+            update={
+                'query_kind': 'transaction_list',
+                'date_period': previous.date_period,
+                'period_count': previous.period_count,
+                'category_names': previous.category_names,
+                'category_scope': previous.category_scope,
+                'transaction_type': 'expense'
+                if previous.query_kind == 'summary'
+                else plan.transaction_type,
+            }
+        )
+
+    @staticmethod
+    def _is_transaction_drilldown_followup(message: str) -> bool:
+        normalized = ' '.join(message.lower().split()).strip('?.!, ')
+        return normalized in {'where', 'where exactly', 'show me where'} or bool(
+            re.search(r'\b(where did i spend|where was (?:it|that|this)|show me where i spent)\b', normalized)
+        )
+
+    @staticmethod
+    def _conversation_context(messages: list[BaseMessage], *, limit: int = 6) -> str:
+        relevant_messages = [
+            message
+            for message in messages
+            if isinstance(message, (HumanMessage, AIMessage))
+            and isinstance(message.content, str)
+            and message.content.strip()
+            and not (isinstance(message, AIMessage) and message.tool_calls)
+        ]
+        if len(relevant_messages) < 2:
+            return ''
+        prior_messages = relevant_messages[-(limit + 1) : -1]
+        return '\n'.join(
+            f"{'User' if isinstance(message, HumanMessage) else 'Assistant'}: {message.content.strip()}"
+            for message in prior_messages
+        )
+
+    @classmethod
+    def _conversation_aware_message(cls, messages: list[BaseMessage]) -> str:
+        latest_user_message = cls._latest_user_message(messages)
+        context = cls._conversation_context(messages)
+        if not context:
+            return latest_user_message
+        return f'Recent conversation (context only):\n{context}\nCurrent user message: {latest_user_message}'
 
     async def _query_tool_finalize(self, state: ChatGraphState) -> dict[str, Any]:
-        tool_message = self._latest_tool_message(
-            state.get('messages', []),
-            tool_call_id=state.get('query_tool_call_id'),
-        )
-        if tool_message is None:
-            return {'query_tool_call_id': None}
+        tool_call_ids = state.get('query_tool_call_ids', [])
+        if not tool_call_ids:
+            return {'query_tool_call_ids': []}
 
-        parsed_payload = self._parse_tool_payload(tool_message.content if tool_message is not None else None)
-        reply = str(parsed_payload.get('reply') or 'No matching transactions found for that time range.')
-        insights = self._normalize_insights_payload(parsed_payload.get('insights'))
+        tool_messages = {
+            str(message.tool_call_id): message
+            for message in state.get('messages', [])
+            if isinstance(message, ToolMessage) and str(message.tool_call_id) in tool_call_ids
+        }
+        if len(tool_messages) != len(tool_call_ids):
+            return {'query_tool_call_ids': []}
+
+        payloads = [self._parse_tool_payload(tool_messages[call_id].content) for call_id in tool_call_ids]
+        failed_categories = [
+            str(payload.get('category_hint') or '')
+            for payload in payloads
+            if payload.get('error') in {'category_ambiguous', 'category_not_found'}
+        ]
+        if failed_categories:
+            failed_label = ', '.join(name for name in failed_categories if name) or 'the requested category'
+            reply = f"I couldn't resolve {failed_label} to a unique expense category. Please clarify the category name."
+            return {
+                'messages': [AIMessage(content=reply)],
+                'query_tool_call_ids': [],
+                'insights': None,
+            }
+
+        facts_list = [payload.get('facts') for payload in payloads]
+        facts = self._combine_query_facts(facts_list)
+        reply = self._deterministic_combined_query_reply(facts)
+        insights = self._normalize_insights_payload(payloads[0].get('insights')) if len(payloads) == 1 else None
+        if isinstance(facts, dict) and self._llm_query_reply_chain is not None:
+            try:
+                generated_reply = await self._llm_query_reply_chain.ainvoke(
+                    {
+                        'question': self._latest_user_message(state.get('messages', [])),
+                        'facts_json': json.dumps(facts, ensure_ascii=False),
+                    }
+                )
+                candidate_reply = str(generated_reply.reply).strip()
+                if candidate_reply and self._query_reply_preserves_facts(candidate_reply, facts):
+                    reply = candidate_reply
+                    insights = None
+                elif candidate_reply:
+                    logger.warning(
+                        'Generated finance-query reply omitted required computed facts; using deterministic answer.'
+                    )
+            except Exception:
+                logger.exception('Finance query response generation failed; using deterministic answer.')
         return {
             'messages': [AIMessage(content=reply)],
-            'query_tool_call_id': None,
+            'query_tool_call_ids': [],
+            'last_finance_query_plan': state.get('query_plan'),
             'insights': insights,
         }
+
+    @staticmethod
+    def _combine_query_facts(raw_facts: list[Any]) -> dict[str, Any] | None:
+        facts_list = [facts for facts in raw_facts if isinstance(facts, dict)]
+        if not facts_list or len(facts_list) != len(raw_facts):
+            return None
+        query_kind = facts_list[0].get('query_kind')
+        if any(facts.get('query_kind') != query_kind for facts in facts_list):
+            return None
+        if len(facts_list) == 1:
+            return facts_list[0]
+
+        if query_kind == 'spending_summary':
+            total_spent_paise = sum(int(facts.get('total_spent_paise') or 0) for facts in facts_list)
+            transaction_count = sum(int(facts.get('transaction_count') or 0) for facts in facts_list)
+            categories = [
+                {
+                    'name': str(facts.get('category') or 'Uncategorized'),
+                    'total_spent_paise': int(facts.get('total_spent_paise') or 0),
+                    'total_spent_display': str(facts.get('total_spent_display') or 'INR 0.00'),
+                    'transaction_count': int(facts.get('transaction_count') or 0),
+                }
+                for facts in facts_list
+            ]
+            return {
+                'query_kind': query_kind,
+                'category': None,
+                'categories': categories,
+                'date_from': facts_list[0].get('date_from'),
+                'date_to': facts_list[0].get('date_to'),
+                'total_spent_paise': total_spent_paise,
+                'total_spent_display': f'INR {total_spent_paise / 100:,.2f}',
+                'transaction_count': transaction_count,
+            }
+
+        if query_kind == 'transaction_list':
+            transactions_by_id: dict[str, dict[str, Any]] = {}
+            for facts in facts_list:
+                for transaction in facts.get('transactions', []):
+                    if isinstance(transaction, dict):
+                        transaction_id = str(
+                            transaction.get('id')
+                            or '|'.join(
+                                str(transaction.get(key) or '')
+                                for key in ('occurred_at', 'date', 'amount', 'merchant', 'category')
+                            )
+                        )
+                        transactions_by_id[transaction_id] = transaction
+            transactions = sorted(
+                transactions_by_id.values(),
+                key=lambda transaction: str(transaction.get('occurred_at') or transaction.get('date') or ''),
+                reverse=True,
+            )[:10]
+            return {
+                'query_kind': query_kind,
+                'category': None,
+                'date_from': facts_list[0].get('date_from'),
+                'date_to': facts_list[0].get('date_to'),
+                'transaction_count': sum(int(facts.get('transaction_count') or 0) for facts in facts_list),
+                'transactions': transactions,
+            }
+
+        return None
+
+    @staticmethod
+    def _deterministic_combined_query_reply(facts: dict[str, Any] | None) -> str:
+        if not facts:
+            return 'I could not verify the requested finance-query results. Please try a more specific query.'
+        if facts.get('query_kind') == 'spending_summary':
+            categories = facts.get('categories')
+            if isinstance(categories, list):
+                category_totals = '; '.join(
+                    f"{item['name']}: {item['total_spent_display']} ({item['transaction_count']} transactions)"
+                    for item in categories
+                )
+                return (
+                    f"From {facts.get('date_from')} to {facts.get('date_to')}, the selected categories "
+                    f"total {facts.get('total_spent_display')} across {facts.get('transaction_count')} transactions. "
+                    f'{category_totals}.'
+                )
+            return (
+                f"From {facts.get('date_from')} to {facts.get('date_to')}, spending was "
+                f"{facts.get('total_spent_display')} across {facts.get('transaction_count')} transactions."
+            )
+        if facts.get('query_kind') == 'transaction_list':
+            transactions = facts.get('transactions')
+            if isinstance(transactions, list) and transactions:
+                transaction_lines = [
+                    f"{item.get('date')}: {item.get('merchant')} — {item.get('amount')} "
+                    f"({item.get('category')})"
+                    for item in transactions
+                ]
+                return (
+                    f"I found {facts.get('transaction_count')} matching transactions:\n"
+                    + '\n'.join(f'• {line}' for line in transaction_lines)
+                )
+            return 'No matching transactions found for that time range.'
+        return 'I could not verify the requested finance-query results. Please try a more specific query.'
+
+    @staticmethod
+    def _query_reply_preserves_facts(reply: str, facts: dict[str, Any]) -> bool:
+        normalized_reply = ' '.join(reply.lower().split())
+        query_kind = facts.get('query_kind')
+        category = str(facts.get('category') or '').strip()
+        if category and category.lower() not in normalized_reply:
+            return False
+
+        if query_kind == 'spending_summary':
+            total = str(facts.get('total_spent_display') or '').strip()
+            transaction_count = int(facts.get('transaction_count') or 0)
+            if not (
+                total
+                and total.lower() in normalized_reply
+                and re.search(rf'(?<!\d){transaction_count}(?!\d)', normalized_reply)
+                and re.search(r'\btransactions?\b', normalized_reply)
+            ):
+                return False
+            categories = facts.get('categories')
+            if not isinstance(categories, list):
+                return True
+            return all(
+                str(category.get('name') or '').lower() in normalized_reply
+                and str(category.get('total_spent_display') or '').lower() in normalized_reply
+                for category in categories
+            )
+
+        if query_kind == 'transaction_list':
+            transaction_count = int(facts.get('transaction_count') or 0)
+            if not re.search(rf'(?<!\d){transaction_count}(?!\d)', normalized_reply) or not re.search(
+                r'\btransactions?\b', normalized_reply
+            ):
+                return False
+            transactions = facts.get('transactions')
+            if not isinstance(transactions, list) or not transactions:
+                return True
+            latest = transactions[0]
+            if not isinstance(latest, dict):
+                return False
+            latest_amount = str(latest.get('amount') or '').strip()
+            latest_date = str(latest.get('date') or '').strip()
+            latest_merchant = str(latest.get('merchant') or '').strip()
+            required_fields = (latest_amount, latest_date, latest_merchant)
+            if not all(value and value.lower() in normalized_reply for value in required_fields):
+                return False
+            return all(
+                isinstance(transaction, dict)
+                and all(
+                    str(transaction.get(field) or '').strip().lower() in normalized_reply
+                    for field in ('date', 'amount', 'merchant')
+                )
+                for transaction in transactions
+            )
+
+        return False
 
     @staticmethod
     def _normalize_insights_payload(raw_insights: Any) -> list[dict[str, str]] | None:
@@ -1292,7 +1946,25 @@ class LangGraphChatOrchestrator:
         if not accounts:
             return 'I can log this transaction, but please create an account first.'
 
-        account = next((item for item in accounts if item['is_active']), accounts[0])
+        resolved_account_id = str(candidate.get('resolved_account_id') or '').strip()
+        account = next(
+            (
+                item
+                for item in accounts
+                if item['id'] == resolved_account_id and item['is_active']
+            ),
+            None,
+        ) if resolved_account_id else None
+        if account is None:
+            account = next((item for item in accounts if item['is_active'] and item['is_default']), None)
+        if account is None:
+            active_accounts = [item for item in accounts if item['is_active']]
+            if len(active_accounts) == 1:
+                account = active_accounts[0]
+            elif active_accounts:
+                return 'Please choose a default account or specify which account to use.'
+        if account is None:
+            return 'I can log this transaction, but please create an active account first.'
 
         category_type = (
             CategoryType.EXPENSE if candidate['type'] == TransactionType.EXPENSE.value else CategoryType.INCOME
@@ -1318,7 +1990,7 @@ class LangGraphChatOrchestrator:
             categories,
             category_type=category_type,
                 hint_values=[candidate.get('resolved_category_name'), candidate.get('category'), candidate.get('note')],
-                allow_default=True,
+                allow_default=False,
             )
 
         if category is None:
@@ -1352,7 +2024,16 @@ class LangGraphChatOrchestrator:
         accounts = self._normalize_state_accounts(user_accounts)
         if not accounts:
             accounts = await self._list_user_accounts_for_state(user_id)
-        account = next((item for item in accounts if item['is_active']), accounts[0]) if accounts else None
+        account_id = str(normalized_candidate.get('resolved_account_id') or '').strip()
+        account = next(
+            (item for item in accounts if item['id'] == account_id and item['is_active']),
+            None,
+        ) if account_id else None
+        if account is None:
+            account = next((item for item in accounts if item['is_active'] and item['is_default']), None)
+        if account is None:
+            active_accounts = [item for item in accounts if item['is_active']]
+            account = active_accounts[0] if len(active_accounts) == 1 else None
 
         raw_type = str(normalized_candidate.get('type') or '').strip().lower()
         parsed_type = self._map_transaction_type(raw_type)
@@ -1377,7 +2058,7 @@ class LangGraphChatOrchestrator:
                 normalized_candidate.get('note'),
                 context_message,
             ],
-            allow_default=True,
+            allow_default=False,
         )
 
         amount_paise = 0
@@ -1409,9 +2090,10 @@ class LangGraphChatOrchestrator:
         self,
         message: str,
         *,
+        accounts: list[dict[str, Any]] | None = None,
         categories: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any] | None:
-        llm_candidate = await self._extract_candidate_with_llm(message, categories=categories)
+        llm_candidate = await self._extract_candidate_with_llm(message, accounts=accounts, categories=categories)
         if llm_candidate is not None:
             return llm_candidate
         return self._extract_candidate_rule_based(message)
@@ -1420,6 +2102,7 @@ class LangGraphChatOrchestrator:
         self,
         message: str,
         *,
+        accounts: list[dict[str, Any]] | None = None,
         categories: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any] | None:
         if self._llm_extraction_chain is None:
@@ -1430,6 +2113,7 @@ class LangGraphChatOrchestrator:
                 {
                     'message': message,
                     'today_utc': datetime.now(UTC).isoformat(),
+                    'accounts_catalog': self._build_accounts_catalog_for_prompt(accounts or []),
                     'categories_catalog': self._build_categories_catalog_for_prompt(categories or []),
                 }
             )
@@ -1460,7 +2144,10 @@ class LangGraphChatOrchestrator:
             'type': transaction_type.value,
             'amount_paise': amount_paise,
             'occurred_at': occurred_at.isoformat(),
-            'category': self._sanitize_category(extracted.selected_category or extracted.category),
+            'selected_account': self._sanitize_category(extracted.selected_account),
+            'account_hint': self._sanitize_category(extracted.account_hint),
+            'selected_category': self._sanitize_category(extracted.selected_category),
+            'category': self._sanitize_category(extracted.category),
             'merchant': self._sanitize_merchant(extracted.merchant),
             'note': inferred_note,
             'confidence_score': max(0, min(100, int(round(extracted.confidence * 100)))),
@@ -1478,10 +2165,30 @@ class LangGraphChatOrchestrator:
 
         occurred_at = datetime.now(UTC)
         has_date_hint = False
-        if 'yesterday' in normalized:
+        relative_days_match = re.search(r'\b(\d{1,3})\s+days?\s+ago\b', normalized)
+        relative_weeks_match = re.search(r'\b(\d{1,3})\s+weeks?\s+ago\b', normalized)
+        relative_months_match = re.search(r'\b(\d{1,3})\s+months?\s+ago\b', normalized)
+
+        if relative_days_match:
+            occurred_at -= timedelta(days=int(relative_days_match.group(1)))
+            has_date_hint = True
+        elif relative_weeks_match:
+            occurred_at -= timedelta(weeks=int(relative_weeks_match.group(1)))
+            has_date_hint = True
+        elif relative_months_match:
+            # Approximate month offsets with 30-day windows in fallback parsing.
+            occurred_at -= timedelta(days=30 * int(relative_months_match.group(1)))
+            has_date_hint = True
+        elif 'yesterday' in normalized:
             occurred_at -= timedelta(days=1)
             has_date_hint = True
         elif 'today' in normalized:
+            has_date_hint = True
+        elif 'last week' in normalized:
+            occurred_at -= timedelta(weeks=1)
+            has_date_hint = True
+        elif 'last month' in normalized:
+            occurred_at -= timedelta(days=30)
             has_date_hint = True
 
         category = self._extract_category_hint(message)
@@ -1491,6 +2198,8 @@ class LangGraphChatOrchestrator:
             'type': transaction_type.value,
             'amount_paise': amount_paise,
             'occurred_at': occurred_at.isoformat(),
+            'selected_account': None,
+            'account_hint': None,
             'category': category,
             'merchant': merchant,
             'note': self._infer_note_from_message(message),
@@ -1606,7 +2315,9 @@ class LangGraphChatOrchestrator:
                 {
                     'id': account_id,
                     'name': account_name,
+                    'type': str(raw_account.get('type') or '').strip().lower(),
                     'is_active': bool(raw_account.get('is_active', False)),
+                    'is_default': bool(raw_account.get('is_default', False)),
                 }
             )
 
@@ -1646,7 +2357,9 @@ class LangGraphChatOrchestrator:
             {
                 'id': str(account.id),
                 'name': account.name,
+                'type': account.type.value,
                 'is_active': bool(account.is_active),
+                'is_default': bool(account.is_default),
             }
             for account in accounts
         ]
@@ -1661,6 +2374,74 @@ class LangGraphChatOrchestrator:
             }
             for category in categories
         ]
+
+    @classmethod
+    def _build_accounts_catalog_for_prompt(cls, accounts: list[dict[str, Any]]) -> str:
+        catalog = [
+            {
+                'name': str(account.get('name') or '').strip(),
+                'type': str(account.get('type') or '').strip().lower(),
+                'is_active': bool(account.get('is_active', False)),
+                'is_default': bool(account.get('is_default', False)),
+            }
+            for account in cls._normalize_state_accounts(accounts)
+            if bool(account.get('is_active', False))
+        ]
+        return json.dumps(catalog, ensure_ascii=False)
+
+    @classmethod
+    def _resolve_candidate_account(
+        cls,
+        *,
+        candidate: dict[str, Any],
+        accounts: list[dict[str, Any]],
+        latest_user_message: str,
+        hitl_active: bool,
+    ) -> tuple[dict[str, Any] | None, bool]:
+        active_accounts = [account for account in accounts if account.get('is_active')]
+        selected_name = cls._sanitize_category(candidate.get('selected_account'))
+        hint = cls._sanitize_category(candidate.get('account_hint'))
+
+        if hitl_active and selected_name and not cls._account_name_mentioned(selected_name, latest_user_message):
+            selected_name = None
+        if hitl_active and hint and not cls._account_name_mentioned(hint, latest_user_message):
+            hint = None
+
+        requested_name = hint or selected_name
+        if requested_name:
+            normalized_request = cls._normalize_lookup_text(requested_name)
+            exact_matches = [
+                account
+                for account in active_accounts
+                if cls._normalize_lookup_text(str(account.get('name') or '')) == normalized_request
+            ]
+            if len(exact_matches) == 1:
+                return exact_matches[0], False
+            if len(exact_matches) > 1:
+                return None, True
+
+            partial_matches = [
+                account
+                for account in active_accounts
+                if normalized_request
+                and normalized_request in cls._normalize_lookup_text(str(account.get('name') or ''))
+            ]
+            if len(partial_matches) == 1:
+                return partial_matches[0], False
+            return None, True
+
+        default_accounts = [account for account in active_accounts if account.get('is_default')]
+        if len(default_accounts) == 1:
+            return default_accounts[0], False
+        if len(active_accounts) == 1:
+            return active_accounts[0], False
+        return None, bool(active_accounts)
+
+    @classmethod
+    def _account_name_mentioned(cls, account_name: str, message: str) -> bool:
+        normalized_name = cls._normalize_lookup_text(account_name)
+        normalized_message = cls._normalize_lookup_text(message)
+        return bool(normalized_name and f' {normalized_name} ' in f' {normalized_message} ')
 
     @classmethod
     def _build_categories_catalog_for_prompt(cls, categories: list[dict[str, Any]]) -> str:
@@ -1740,7 +2521,35 @@ class LangGraphChatOrchestrator:
         if category_type is None:
             return None, None, normalized_categories
 
+        selected_category_hint = self._sanitize_category(candidate.get('selected_category'))
+        selected_category_was_answered_now = (
+            not hitl_active
+            or (
+                selected_category_hint is not None
+                and self._category_name_mentioned_in_message(selected_category_hint, latest_user_message)
+            )
+        )
+        if selected_category_hint is not None and selected_category_was_answered_now:
+            selected_category = next(
+                (
+                    item
+                    for item in normalized_categories
+                    if item.get('type') == category_type.value
+                    and self._normalize_lookup_text(str(item.get('name') or ''))
+                    == self._normalize_lookup_text(selected_category_hint)
+                ),
+                None,
+            )
+            if selected_category is not None:
+                return selected_category, selected_category_hint, normalized_categories
+
         category_hint = self._sanitize_category(candidate.get('category'))
+        if (
+            hitl_active
+            and category_hint is not None
+            and not self._category_name_mentioned_in_message(category_hint, latest_user_message)
+        ):
+            category_hint = None
         if category_hint is None:
             category_hint = self._sanitize_category(existing_suggested_category_name)
 
@@ -1755,12 +2564,21 @@ class LangGraphChatOrchestrator:
             ],
             allow_default=False,
         )
-        if matched_category is not None:
-            return matched_category, category_hint, normalized_categories
 
         scoped_categories = [item for item in normalized_categories if item.get('type') == category_type.value]
-        if len(scoped_categories) == 1:
-            return scoped_categories[0], category_hint, normalized_categories
+        if (
+            matched_category is not None
+            and len(scoped_categories) == 1
+            and self._extract_category_hint(latest_user_message) is None
+            and not self._category_name_mentioned_in_message(
+                str(matched_category.get('name') or ''),
+                latest_user_message,
+            )
+        ):
+            return None, None, normalized_categories
+
+        if matched_category is not None:
+            return matched_category, category_hint, normalized_categories
 
         create_category_name = self._extract_requested_new_category_name(latest_user_message)
         if create_category_name is not None:
@@ -1916,11 +2734,36 @@ class LangGraphChatOrchestrator:
         if matched_category is not None:
             return str(matched_category.get('name') or ''), None
 
+        affirmative_create_match = re.search(
+            r'^(?:yes|yeah|yep|yup|ok|okay|sure|proceed|go ahead)\s+(.+)$',
+            latest_user_message,
+            re.IGNORECASE,
+        )
+        if affirmative_create_match:
+            requested_name = cls._sanitize_category(affirmative_create_match.group(1))
+            if requested_name is not None:
+                suggested_name_for_case = cls._sanitize_category(suggested_category_name)
+                if suggested_name_for_case is not None:
+                    if cls._normalize_lookup_text(requested_name) == cls._normalize_lookup_text(
+                        suggested_name_for_case
+                    ):
+                        requested_name = suggested_name_for_case
+
+                requested_existing = cls._select_category_by_hint(
+                    category_options,
+                    category_type=None,
+                    hint_values=[requested_name],
+                    allow_default=False,
+                )
+                if requested_existing is not None:
+                    return str(requested_existing.get('name') or ''), None
+                return None, requested_name
+
+        normalized_message = cls._normalize_lookup_text(latest_user_message)
         suggested_name = cls._sanitize_category(suggested_category_name)
         if suggested_name is None:
             return None, None
 
-        normalized_message = cls._normalize_lookup_text(latest_user_message)
         normalized_suggested_name = cls._normalize_lookup_text(suggested_name)
         if not normalized_message or not normalized_suggested_name:
             return None, None
@@ -1946,6 +2789,14 @@ class LangGraphChatOrchestrator:
         if not match:
             return None
         return cls._sanitize_category(match.group(1))
+
+    @classmethod
+    def _category_name_mentioned_in_message(cls, category_name: str, message: str) -> bool:
+        normalized_message = cls._normalize_lookup_text(message)
+        normalized_category = cls._normalize_lookup_text(category_name)
+        if not normalized_message or not normalized_category:
+            return False
+        return f' {normalized_category} ' in f' {normalized_message} '
 
     @staticmethod
     def _infer_note_from_message(message: str) -> str | None:
@@ -1978,13 +2829,8 @@ class LangGraphChatOrchestrator:
 
     @staticmethod
     def _should_route_to_transaction_flow(*, latest_user_message: str, detected_intent: DetectedIntent) -> bool:
-        if detected_intent != DetectedIntent.LOG_TRANSACTION:
-            return False
-
-        if LangGraphChatOrchestrator._is_deterministic_transaction_candidate(latest_user_message):
-            return True
-
-        return not LangGraphChatOrchestrator._is_non_transaction_query(latest_user_message)
+        del latest_user_message
+        return detected_intent == DetectedIntent.LOG_TRANSACTION
 
     @staticmethod
     def _should_route_to_query_transactions(*, latest_user_message: str, detected_intent: DetectedIntent) -> bool:
@@ -2005,7 +2851,34 @@ class LangGraphChatOrchestrator:
     def _has_date_hint(message: str) -> bool:
         if 'today' in message or 'yesterday' in message:
             return True
+        if 'last week' in message or 'last month' in message:
+            return True
+        if re.search(r'\b\d{1,3}\s+days?\s+ago\b', message):
+            return True
+        if re.search(r'\b\d{1,3}\s+weeks?\s+ago\b', message):
+            return True
+        if re.search(r'\b\d{1,3}\s+months?\s+ago\b', message):
+            return True
         return bool(re.search(r'\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b', message))
+
+    @staticmethod
+    def _has_candidate_date(candidate: dict[str, Any] | None) -> bool:
+        if not isinstance(candidate, dict):
+            return False
+
+        occurred_at = candidate.get('occurred_at')
+        if not isinstance(occurred_at, str):
+            return False
+
+        cleaned = occurred_at.strip()
+        if not cleaned:
+            return False
+
+        try:
+            datetime.fromisoformat(cleaned)
+        except ValueError:
+            return False
+        return True
 
     @staticmethod
     def _confidence_score_from_rule_based(*, message: str, merchant: str | None, has_date_hint: bool) -> int:
@@ -2138,6 +3011,17 @@ class LangGraphChatOrchestrator:
         if not user_id_value:
             raise ValueError('Missing runtime_user_id in graph state')
         return uuid.UUID(str(user_id_value))
+
+    @staticmethod
+    def _validated_timezone_name(timezone_name: str | None) -> str:
+        if not timezone_name:
+            return 'UTC'
+        try:
+            ZoneInfo(timezone_name)
+        except (ZoneInfoNotFoundError, ValueError):
+            logger.warning('Invalid client timezone `%s`; using UTC.', timezone_name)
+            return 'UTC'
+        return timezone_name
 
     @staticmethod
     def _as_guardrail_assessment(value: GuardrailAssessment | GuardrailDecision | str) -> GuardrailAssessment:

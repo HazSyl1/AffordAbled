@@ -48,6 +48,7 @@ class ChatService:
         user_id: uuid.UUID,
         message: str,
         thread_id: str | None = None,
+        timezone: str | None = None,
     ) -> ChatResponseOutput:
         normalized_message = message.strip()
         if not normalized_message:
@@ -58,6 +59,7 @@ class ChatService:
             user_id=user_id,
             thread_id=resolved_thread_id,
             message=normalized_message,
+            timezone=timezone,
         )
 
         user = await self.user_repository.get_by_id(user_id)

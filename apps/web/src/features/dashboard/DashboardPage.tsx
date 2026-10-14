@@ -210,16 +210,19 @@ export function DashboardPage() {
       const response = await sendChatMessage({
         message: normalizedMessage,
         thread_id: chatThreadId ?? undefined,
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       }).unwrap();
 
       setChatThreadId(response.thread_id);
-      const assistantMessage: ChatMessage = { id: createLocalId(), role: 'assistant', content: response.message };
-      const insightMessages: ChatMessage[] = (response.insights ?? []).map((insight) => ({
+      const insightSummary = (response.insights ?? [])
+        .map((insight) => `• ${insight.title}: ${insight.detail}`)
+        .join('\n');
+      const assistantMessage: ChatMessage = {
         id: createLocalId(),
         role: 'assistant',
-        content: `Insight: ${insight.title} - ${insight.detail}`,
-      }));
-      const fullMessageList = [...userMessageList, assistantMessage, ...insightMessages];
+        content: insightSummary ? `${response.message}\n${insightSummary}` : response.message,
+      };
+      const fullMessageList = [...userMessageList, assistantMessage];
       setChatMessages(fullMessageList);
 
       if (response.transaction_logged) {

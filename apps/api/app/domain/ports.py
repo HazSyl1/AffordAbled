@@ -106,4 +106,11 @@ class ChatTurnResult:
 
 
 class ChatOrchestrator(Protocol):
-    async def run_turn(self, *, user_id: uuid.UUID, thread_id: str, message: str) -> ChatTurnResult: ...
+    async def run_turn(
+        self,
+        *,
+        user_id: uuid.UUID,
+        thread_id: str,
+        message: str,
+        timezone: str | None = None,
+    ) -> ChatTurnResult: ...

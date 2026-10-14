@@ -31,6 +31,7 @@ export interface CreateTransactionFormProps {
   showHeading?: boolean;
   mode?: 'page' | 'sheet';
   initialValues?: Partial<CreateTransactionFormValues>;
+  proposalCategory?: { id: string; name: string; type: 'expense' | 'income' };
   transactionId?: string;
   submitLabel?: string;
   prefillMode?: 'standard' | 'manual_low_confidence';
@@ -216,6 +217,7 @@ export function CreateTransactionForm({
   showHeading = true,
   mode = 'page',
   initialValues,
+  proposalCategory,
   transactionId,
   submitLabel = 'Add transaction',
   prefillMode = 'standard',
@@ -257,24 +259,41 @@ export function CreateTransactionForm({
   const categoryId = useWatch({ control, name: 'categoryId' });
 
   useEffect(() => {
+    if (sourceAccountId || initialValues?.accountId) {
+      return;
+    }
+
+    const activeAccounts = (accounts ?? []).filter((account) => account.is_active);
+    const defaultAccount = activeAccounts.find((account) => account.is_default);
+    const fallbackAccount = activeAccounts.length === 1 ? activeAccounts[0] : undefined;
+    const accountToSelect = defaultAccount ?? fallbackAccount;
+    if (accountToSelect) {
+      setValue('accountId', accountToSelect.id, { shouldValidate: true });
+    }
+  }, [accounts, initialValues?.accountId, setValue, sourceAccountId]);
+
+  useEffect(() => {
     reset(resolveInitialValues(initialValues));
   }, [initialValues, reset, transactionId]);
 
   const filteredCategories = useMemo(() => {
-    if (!categories) {
-      return [];
+    let transactionCategories =
+      transactionType === 'expense'
+        ? (categories ?? []).filter((category) => category.type === 'expense')
+        : transactionType === 'income' || transactionType === 'refund'
+          ? (categories ?? []).filter((category) => category.type === 'income')
+          : [];
+
+    if (
+      proposalCategory &&
+      proposalCategory.type === (transactionType === 'expense' ? 'expense' : 'income') &&
+      !transactionCategories.some((category) => category.id === proposalCategory.id)
+    ) {
+      transactionCategories = [...transactionCategories, { ...proposalCategory, icon: null, color: null, created_at: '' }];
     }
 
-    if (transactionType === 'expense') {
-      return categories.filter((category) => category.type === 'expense');
-    }
-
-    if (transactionType === 'income' || transactionType === 'refund') {
-      return categories.filter((category) => category.type === 'income');
-    }
-
-    return [];
-  }, [categories, transactionType]);
+    return transactionCategories;
+  }, [categories, proposalCategory, transactionType]);
 
   const destinationAccountOptions = useMemo(() => {
     if (!accounts) {

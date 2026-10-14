@@ -196,18 +196,17 @@ export function ChatPage() {
       const response = await sendChatMessage({
         message: normalizedMessage,
         thread_id: optimisticDraft.thread_id ?? undefined,
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       }).unwrap();
 
+      const insightSummary = (response.insights ?? [])
+        .map((insight) => `• ${insight.title}: ${insight.detail}`)
+        .join('\n');
       const assistantMessage: ChatDraftMessage = {
         id: createLocalMessageId(),
         role: 'assistant',
-        content: response.message,
+        content: insightSummary ? `${response.message}\n${insightSummary}` : response.message,
       };
-      const insightMessages: ChatDraftMessage[] = (response.insights ?? []).map((insight) => ({
-        id: createLocalMessageId(),
-        role: 'assistant',
-        content: `Insight: ${insight.title} - ${insight.detail}`,
-      }));
 
       if (optimisticDraft.lifecycle === 'draft' && response.transaction_logged) {
         deleteChatDraft(optimisticDraft.id);
@@ -226,7 +225,7 @@ export function ChatPage() {
 
       persistDraftMessages(
         optimisticDraft,
-        [...optimisticMessages, assistantMessage, ...insightMessages],
+        [...optimisticMessages, assistantMessage],
         response.thread_id,
         nextLifecycle,
       );
@@ -532,7 +531,7 @@ export function ChatPage() {
                   className={`max-w-[92%] rounded-xl px-3 py-2 text-sm ${
                     message.role === 'user'
                       ? 'ml-auto bg-[var(--brand-primary)] text-white'
-                      : 'bg-[var(--bg-card)] text-[var(--text-primary)]'
+                      : 'whitespace-pre-line bg-[var(--bg-card)] text-[var(--text-primary)]'
                   }`}
                 >
                   {message.content}
@@ -631,6 +630,15 @@ export function ChatPage() {
           mode='sheet'
           showHeading={false}
           initialValues={proposalInitialValues}
+          proposalCategory={
+            proposalForSheet && proposalForSheet.type !== 'transfer'
+              ? {
+                  id: proposalForSheet.category_id,
+                  name: proposalForSheet.category_name,
+                  type: proposalForSheet.type === 'expense' ? 'expense' : 'income',
+                }
+              : undefined
+          }
           prefillMode={proposalSheetMode}
           submitLabel={proposalForSheet ? 'Confirm & Add' : 'Add transaction'}
           onSuccess={() => {

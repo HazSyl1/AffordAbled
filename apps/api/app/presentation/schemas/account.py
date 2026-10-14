@@ -27,6 +27,7 @@ class AccountResponse(BaseModel):
     balance_paise: int
     currency: str
     is_active: bool
+    is_default: bool
     created_at: datetime
     updated_at: datetime
 
@@ -39,6 +40,7 @@ class AccountResponse(BaseModel):
             balance_paise=account.balance_paise,
             currency=account.currency,
             is_active=account.is_active,
+            is_default=account.is_default,
             created_at=account.created_at,
             updated_at=account.updated_at,
         )
