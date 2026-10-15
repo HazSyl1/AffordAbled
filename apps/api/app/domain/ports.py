@@ -63,9 +63,11 @@ class DetectedIntent(str, Enum):
     LOG_TRANSACTION = 'log_transaction'
     QUERY_SPENDING = 'query_spending'
     CATEGORY_MANAGEMENT = 'category_management'
+    ACCOUNT_MANAGEMENT = 'account_management'  # Create, rename, set default, deactivate
+    TRANSACTION_MANAGEMENT = 'transaction_management'  # Edit, delete transactions
     SPLIT_REQUEST = 'split_request'
     GENERATE_REPORT = 'generate_report'
-    ACCOUNT_QUERY = 'account_query'
+    ACCOUNT_QUERY = 'account_query'  # Balance queries
     MEMORY_RELATED = 'memory_related'
     OFF_TOPIC = 'off_topic'
 
@@ -96,6 +98,7 @@ class PendingTransactionProposal:
 class ChatTurnResult:
     message: str
     pending_transaction_proposal: PendingTransactionProposal | None = None
+    pending_transaction_proposals: list[PendingTransactionProposal] | None = None
     transaction_logged: bool = False
     manual_transaction_input_required: bool = False
     intent: str | None = None

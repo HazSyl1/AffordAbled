@@ -71,8 +71,6 @@ class TransactionService:
         data: UpdateTransactionInput,
     ) -> Transaction:
         transaction = await self.get_transaction(user_id, transaction_id)
-        await self._revert_balance_effect(transaction)
-
         account_id = data.account_id if data.account_id is not None else transaction.account_id
         transaction_type = data.type if data.type is not None else transaction.type
         amount_paise = data.amount_paise if data.amount_paise is not None else transaction.amount_paise
@@ -87,6 +85,10 @@ class TransactionService:
             category_id=category_id,
             to_account_id=to_account_id,
         )
+
+        # Validate the complete replacement before touching any persisted balance. This is
+        # especially important for chat-driven edits, where model output is untrusted input.
+        await self._revert_balance_effect(transaction)
 
         transaction.account_id = account_id
         transaction.type = transaction_type

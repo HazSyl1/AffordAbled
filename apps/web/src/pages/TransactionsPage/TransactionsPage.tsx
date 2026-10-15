@@ -12,6 +12,7 @@ import { clearCredentials } from '../../features/auth/authSlice';
 import { useListTransactionsQuery } from '../../features/transactions/transactionsApi';
 import type { Transaction } from '../../features/transactions/transactionsApi';
 import { SHEET_TITLES } from '../../constants';
+import { apiClient } from '../../lib/apiClient';
 import { formatPaiseAsInr } from '../../lib/money';
 
 function mapTransactionToFormValues(transaction: Transaction): Partial<CreateTransactionFormValues> {
@@ -71,6 +72,7 @@ export function TransactionsPage() {
       await logout().unwrap();
     } finally {
       dispatch(clearCredentials());
+      dispatch(apiClient.util.resetApiState());
     }
   };
 

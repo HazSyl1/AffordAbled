@@ -29,6 +29,7 @@ class ChatResponse(BaseModel):
     thread_id: str
     message: str
     pending_transaction_proposal: PendingTransactionProposalResponse | None = None
+    pending_transaction_proposals: list[PendingTransactionProposalResponse] | None = None
     transaction_logged: bool = False
     manual_transaction_input_required: bool = False
     insights: list[ChatInsightResponse] | None = None

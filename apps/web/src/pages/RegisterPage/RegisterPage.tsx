@@ -12,6 +12,7 @@ import { useRegisterMutation } from '../../features/auth/authApi';
 import { setCredentials } from '../../features/auth/authSlice';
 import { registerSchema } from './RegisterPage.schema';
 import type { RegisterFormValues } from './RegisterPage.schema';
+import { apiClient } from '../../lib/apiClient';
 
 export function RegisterPage() {
   const dispatch = useAppDispatch();
@@ -29,6 +30,7 @@ export function RegisterPage() {
     setFormError(null);
     try {
       const result = await registerUser(values).unwrap();
+      dispatch(apiClient.util.resetApiState());
       dispatch(setCredentials({ accessToken: result.access_token }));
       navigate('/', { replace: true });
     } catch {

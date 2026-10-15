@@ -2,6 +2,7 @@ import { ImagePlus, Mic } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 
+import { useAppSelector } from '../../app/hooks';
 import { BottomSheet } from '../../components/molecules/BottomSheet';
 import { AssistantReplyIndicator } from '../../components/molecules/AssistantReplyIndicator';
 import { AssistantMessageContent } from '../../components/molecules/AssistantMessageContent';
@@ -65,12 +66,22 @@ function formatDraftDeadline(draft: ChatDraft): string | null {
 }
 
 export function ChatPage() {
+  const userId = useAppSelector((state) => state.auth.user?.id ?? null);
+
+  if (!userId) {
+    return <div className='p-6 text-sm text-[var(--text-muted)]'>Loading your chat…</div>;
+  }
+
+  return <ChatWorkspace key={userId} userId={userId} />;
+}
+
+function ChatWorkspace({ userId }: { userId: string }) {
   const navigate = useNavigate();
   const location = useLocation();
   const [sendChatMessage, { isLoading: isSendingChatMessage }] = useSendChatMessageMutation();
   const [transcribeVoice, { isLoading: isTranscribingVoice }] = useTranscribeVoiceMutation();
   const [analyzeImage, { isLoading: isAnalyzingImage }] = useAnalyzeImageMutation();
-  const [drafts, setDrafts] = useState<ChatDraft[]>(() => listChatDrafts());
+  const [drafts, setDrafts] = useState<ChatDraft[]>(() => listChatDrafts(userId));
   const [selectedDraftId, setSelectedDraftId] = useState<string | null>(null);
   const [activeFilter, setActiveFilter] = useState<ChatListFilter>('finance');
   const [isSideToolCollapsed, setIsSideToolCollapsed] = useState(false);
@@ -78,6 +89,9 @@ export function ChatPage() {
   const [chatError, setChatError] = useState<string | null>(null);
   const [showProposalSheet, setShowProposalSheet] = useState(false);
   const [proposalForSheet, setProposalForSheet] = useState<ChatTransactionProposal | null>(null);
+  const [proposalQueue, setProposalQueue] = useState<ChatTransactionProposal[]>([]);
+  const [proposalBatchTotal, setProposalBatchTotal] = useState(0);
+  const [proposalBatchCompleted, setProposalBatchCompleted] = useState(0);
   const [proposalSheetMode, setProposalSheetMode] = useState<'standard' | 'manual_low_confidence'>('standard');
   const imageFileInputRef = useRef<HTMLInputElement | null>(null);
   const [openingGreeting] = useState(() => {
@@ -87,17 +101,18 @@ export function ChatPage() {
     return selectedGreeting ?? DASHBOARD_CHAT_UI_TEXT.emptyState;
   });
 
+  const scopedDrafts = drafts;
   const selectedDraft = useMemo(
-    () => drafts.find((draft) => draft.id === selectedDraftId) ?? null,
-    [drafts, selectedDraftId],
+    () => scopedDrafts.find((draft) => draft.id === selectedDraftId) ?? null,
+    [scopedDrafts, selectedDraftId],
   );
 
   const groupedDrafts = useMemo(() => {
     return {
-      financeChats: drafts.filter((draft) => draft.lifecycle === 'conversation' && draft.kind === 'general'),
-      draftChats: drafts.filter((draft) => draft.lifecycle === 'draft'),
+      financeChats: scopedDrafts.filter((draft) => draft.lifecycle === 'conversation' && draft.kind === 'general'),
+      draftChats: scopedDrafts.filter((draft) => draft.lifecycle === 'draft'),
     };
-  }, [drafts]);
+  }, [scopedDrafts]);
 
   const filteredItems = activeFilter === 'finance' ? groupedDrafts.financeChats : groupedDrafts.draftChats;
   const messageList = selectedDraft?.messages ?? [];
@@ -112,7 +127,7 @@ export function ChatPage() {
     : 'grid-cols-1 md:grid-cols-[340px_minmax(0,1fr)]';
 
   const refreshDrafts = (preferredDraftId: string | null = selectedDraftId) => {
-    const nextDrafts = listChatDrafts();
+    const nextDrafts = listChatDrafts(userId);
     setDrafts(nextDrafts);
 
     if (!preferredDraftId) {
@@ -129,7 +144,7 @@ export function ChatPage() {
       return selectedDraft;
     }
 
-    const createdDraft = createChatDraft('general', null, { lifecycle: 'conversation' });
+    const createdDraft = createChatDraft(userId, 'general', null, { lifecycle: 'conversation' });
     refreshDrafts(createdDraft.id);
     setActiveFilter('finance');
     return createdDraft;
@@ -143,7 +158,7 @@ export function ChatPage() {
   };
 
   const handleDeleteDraft = (draftId: string) => {
-    deleteChatDraft(draftId);
+    deleteChatDraft(userId, draftId);
     refreshDrafts(selectedDraftId === draftId ? null : selectedDraftId);
     setChatError(null);
   };
@@ -156,6 +171,7 @@ export function ChatPage() {
   ): ChatDraft => {
     const nextLifecycle = lifecycleOverride ?? draft.lifecycle;
     const savedDraft = saveChatDraft({
+      userId,
       draftId: draft.id,
       kind: draft.kind,
       lifecycle: nextLifecycle,
@@ -174,7 +190,6 @@ export function ChatPage() {
     if (!normalizedMessage || isSendingChatMessage) {
       return;
     }
-
     setIsSideToolCollapsed(true);
 
     const draft = ensureSelectedDraft();
@@ -191,7 +206,7 @@ export function ChatPage() {
 
     const optimisticMessages = [...draft.messages, userMessage];
     const optimisticDraft = persistDraftMessages(draft, optimisticMessages);
-    queueChatDraftTitleGeneration(optimisticDraft.id);
+    queueChatDraftTitleGeneration(userId, optimisticDraft.id);
 
     try {
       const response = await sendChatMessage({
@@ -210,13 +225,17 @@ export function ChatPage() {
       };
 
       if (optimisticDraft.lifecycle === 'draft' && response.transaction_logged) {
-        deleteChatDraft(optimisticDraft.id);
+        deleteChatDraft(userId, optimisticDraft.id);
         refreshDrafts(null);
         return;
       }
 
       if (response.pending_transaction_proposal || response.manual_transaction_input_required) {
-        setProposalForSheet(response.pending_transaction_proposal ?? null);
+        const proposalBatch = response.pending_transaction_proposals ?? [];
+        setProposalQueue(proposalBatch);
+        setProposalBatchTotal(proposalBatch.length);
+        setProposalBatchCompleted(0);
+        setProposalForSheet(proposalBatch[0] ?? response.pending_transaction_proposal ?? null);
         setProposalSheetMode(response.manual_transaction_input_required ? 'manual_low_confidence' : 'standard');
         setShowProposalSheet(true);
       }
@@ -627,9 +646,16 @@ export function ChatPage() {
         onClose={() => {
           setShowProposalSheet(false);
           setProposalForSheet(null);
+          setProposalQueue([]);
+          setProposalBatchTotal(0);
+          setProposalBatchCompleted(0);
           setProposalSheetMode('standard');
         }}
-        title={SHEET_TITLES.addTransaction}
+        title={
+          proposalBatchTotal > 1
+            ? `${SHEET_TITLES.addTransaction} (${proposalBatchCompleted + 1} of ${proposalBatchTotal})`
+            : SHEET_TITLES.addTransaction
+        }
       >
         <CreateTransactionForm
           mode='sheet'
@@ -647,9 +673,31 @@ export function ChatPage() {
           prefillMode={proposalSheetMode}
           submitLabel={proposalForSheet ? 'Confirm & Add' : 'Add transaction'}
           onSuccess={() => {
+            if (proposalQueue.length > 1) {
+              const remainingQueue = proposalQueue.slice(1);
+              setProposalQueue(remainingQueue);
+              setProposalBatchCompleted((completed) => completed + 1);
+              setProposalForSheet(remainingQueue[0]);
+              refreshDrafts(selectedDraftId);
+              return;
+            }
+            if (proposalBatchTotal > 0) {
+              setShowProposalSheet(false);
+              setProposalForSheet(null);
+              setProposalQueue([]);
+              setProposalBatchTotal(0);
+              setProposalBatchCompleted(0);
+              setProposalSheetMode('standard');
+              refreshDrafts(selectedDraftId);
+              return;
+            }
             setShowProposalSheet(false);
             setProposalForSheet(null);
+            setProposalQueue([]);
+            setProposalBatchTotal(0);
+            setProposalBatchCompleted(0);
             setProposalSheetMode('standard');
+            refreshDrafts(selectedDraftId);
             navigate('/transactions');
           }}
         />

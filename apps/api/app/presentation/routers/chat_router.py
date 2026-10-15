@@ -32,6 +32,7 @@ async def send_chat_message(
         timezone=payload.timezone,
     )
     proposal = response.pending_transaction_proposal
+    proposals = response.pending_transaction_proposals or []
     return ChatResponse(
         thread_id=response.thread_id,
         message=response.message,
@@ -50,6 +51,24 @@ async def send_chat_message(
             )
             if proposal is not None
             else None
+        ),
+        pending_transaction_proposals=(
+            [
+                PendingTransactionProposalResponse(
+                    type=item.type,
+                    amount_paise=item.amount_paise,
+                    occurred_at=item.occurred_at,
+                    account_id=item.account_id,
+                    account_name=item.account_name,
+                    category_id=item.category_id,
+                    category_name=item.category_name,
+                    confidence_score=item.confidence_score,
+                    merchant=item.merchant,
+                    note=item.note,
+                )
+                for item in proposals
+            ]
+            or None
         ),
         transaction_logged=response.transaction_logged,
         manual_transaction_input_required=response.manual_transaction_input_required,

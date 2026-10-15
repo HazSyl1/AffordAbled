@@ -23,6 +23,7 @@ class ChatResponseOutput:
     thread_id: str
     message: str
     pending_transaction_proposal: PendingTransactionProposal | None = None
+    pending_transaction_proposals: list[PendingTransactionProposal] | None = None
     transaction_logged: bool = False
     manual_transaction_input_required: bool = False
     intent: str | None = None
@@ -138,6 +139,7 @@ class ChatService:
             thread_id=resolved_thread_id,
             message=result.message,
             pending_transaction_proposal=result.pending_transaction_proposal,
+            pending_transaction_proposals=result.pending_transaction_proposals,
             transaction_logged=result.transaction_logged,
             manual_transaction_input_required=result.manual_transaction_input_required,
             intent=result.intent,

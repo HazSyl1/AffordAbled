@@ -29,9 +29,12 @@ const authSlice = createSlice({
       state,
       action: PayloadAction<{ accessToken: string; user?: AuthUser | null }>,
     ) {
+      const identityTokenChanged = state.accessToken !== action.payload.accessToken;
       state.accessToken = action.payload.accessToken;
       if (action.payload.user !== undefined) {
         state.user = action.payload.user;
+      } else if (identityTokenChanged) {
+        state.user = null;
       }
     },
     setUser(state, action: PayloadAction<AuthUser | null>) {

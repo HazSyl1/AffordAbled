@@ -2,6 +2,8 @@ import { ImagePlus, Mic } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
+import { useAppSelector } from '../../app/hooks';
+import type { AuthUser } from '../auth/authSlice';
 import { Badge } from '../../components/atoms/Badge';
 import { Button } from '../../components/atoms/Button';
 import { Card } from '../../components/atoms/Card';
@@ -66,7 +68,13 @@ function formatTransactionTime(value: string): string {
 }
 
 export function DashboardPage() {
+  const currentUser = useAppSelector((state) => state.auth.user);
+  return <DashboardContent key={currentUser?.id ?? 'profile-loading'} currentUser={currentUser} />;
+}
+
+function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
   const navigate = useNavigate();
+  const [currentHour, setCurrentHour] = useState(() => new Date().getHours());
   const { data: accounts, isLoading: isLoadingAccounts } = useListAccountsQuery();
   const { data: transactions, isLoading: isLoadingTransactions } = useListTransactionsQuery();
   const { data: categories } = useListCategoriesQuery();
@@ -77,6 +85,9 @@ export function DashboardPage() {
   const [showChatSheet, setShowChatSheet] = useState(false);
   const [showSaveDraftPrompt, setShowSaveDraftPrompt] = useState(false);
   const [proposalForSheet, setProposalForSheet] = useState<ChatTransactionProposal | null>(null);
+  const [proposalQueue, setProposalQueue] = useState<ChatTransactionProposal[]>([]);
+  const [proposalBatchTotal, setProposalBatchTotal] = useState(0);
+  const [proposalBatchCompleted, setProposalBatchCompleted] = useState(0);
   const [proposalSheetMode, setProposalSheetMode] = useState<'standard' | 'manual_low_confidence'>('standard');
   const [chatInput, setChatInput] = useState('');
   const [chatThreadId, setChatThreadId] = useState<string | null>(null);
@@ -161,17 +172,26 @@ export function DashboardPage() {
 
   const isLoading = isLoadingAccounts || isLoadingTransactions;
   const isAssistantResponding = isSendingChatMessage;
+  const greetingName = currentUser?.name?.trim().split(/\s+/)[0] || 'there';
+  const greeting = currentHour < 12 ? 'Good morning' : currentHour < 17 ? 'Good afternoon' : 'Good evening';
+
+  useEffect(() => {
+    const updateGreetingHour = () => setCurrentHour(new Date().getHours());
+    const intervalId = window.setInterval(updateGreetingHour, 60_000);
+    return () => window.clearInterval(intervalId);
+  }, []);
 
   const persistGeneralDraft = (
     messages: ChatMessage[],
     threadId: string | null,
     draftIdOverride: string | null = chatDraftId,
   ): string | null => {
-    if (messages.length === 0) {
+    if (messages.length === 0 || !currentUser?.id) {
       return draftIdOverride;
     }
 
     const savedDraft = saveChatDraft({
+      userId: currentUser.id,
       draftId: draftIdOverride,
       kind: 'general',
       lifecycle: 'draft',
@@ -187,6 +207,9 @@ export function DashboardPage() {
     setShowChatSheet(false);
     setShowAddSheet(false);
     setProposalForSheet(null);
+    setProposalQueue([]);
+    setProposalBatchTotal(0);
+    setProposalBatchCompleted(0);
     setProposalSheetMode('standard');
     setChatInput('');
     setChatDraftId(null);
@@ -227,15 +250,19 @@ export function DashboardPage() {
       setChatMessages(fullMessageList);
 
       if (response.transaction_logged) {
-        if (currentDraftId) {
-          deleteChatDraft(currentDraftId);
+        if (currentDraftId && currentUser?.id) {
+          deleteChatDraft(currentUser.id, currentDraftId);
         }
         setChatDraftId(null);
         return;
       }
 
       if (response.pending_transaction_proposal || response.manual_transaction_input_required) {
-        setProposalForSheet(response.pending_transaction_proposal ?? null);
+        const proposalBatch = response.pending_transaction_proposals ?? [];
+        setProposalQueue(proposalBatch);
+        setProposalBatchTotal(proposalBatch.length);
+        setProposalBatchCompleted(0);
+        setProposalForSheet(proposalBatch[0] ?? response.pending_transaction_proposal ?? null);
         setProposalSheetMode(response.manual_transaction_input_required ? 'manual_low_confidence' : 'standard');
         setShowAddSheet(true);
       }
@@ -365,10 +392,10 @@ export function DashboardPage() {
   };
 
   const handleDiscardDraftAndClose = () => {
-    if (chatDraftId) {
-      deleteChatDraft(chatDraftId);
-    } else if (chatThreadId) {
-      deleteChatDraftByThreadId(chatThreadId);
+    if (currentUser?.id && chatDraftId) {
+      deleteChatDraft(currentUser.id, chatDraftId);
+    } else if (currentUser?.id && chatThreadId) {
+      deleteChatDraftByThreadId(currentUser.id, chatThreadId);
     }
 
     setShowSaveDraftPrompt(false);
@@ -492,7 +519,9 @@ export function DashboardPage() {
       <header className='sticky top-[env(safe-area-inset-top)] z-20 -mx-4 mb-4 border-b border-[var(--bg-border)] bg-[color:rgba(9,9,11,0.8)] px-4 py-4 pt-[calc(1rem+env(safe-area-inset-top))] backdrop-blur-xl md:static md:mx-0 md:mb-5 md:border-none md:bg-transparent md:px-0 md:pt-0'>
         <div className='flex items-center justify-between'>
           <div>
-            <h1 className='text-lg font-semibold text-[var(--text-secondary)]'>Good morning, Sarthak 👋</h1>
+            <h1 className='text-lg font-semibold text-[var(--text-secondary)]'>
+              {greeting}, {greetingName} 👋
+            </h1>
             <p className='mt-0.5 text-xs text-[var(--text-muted)]'>Here is your wallet snapshot for today.</p>
           </div>
           <button
@@ -769,9 +798,16 @@ export function DashboardPage() {
         onClose={() => {
           setShowAddSheet(false);
           setProposalForSheet(null);
+          setProposalQueue([]);
+          setProposalBatchTotal(0);
+          setProposalBatchCompleted(0);
           setProposalSheetMode('standard');
         }}
-        title={SHEET_TITLES.addTransaction}
+        title={
+          proposalBatchTotal > 1
+            ? `${SHEET_TITLES.addTransaction} (${proposalBatchCompleted + 1} of ${proposalBatchTotal})`
+            : SHEET_TITLES.addTransaction
+        }
       >
         <CreateTransactionForm
           mode='sheet'
@@ -780,8 +816,27 @@ export function DashboardPage() {
           prefillMode={proposalSheetMode}
           submitLabel={proposalForSheet ? 'Confirm & Add' : 'Add transaction'}
           onSuccess={() => {
+            if (proposalQueue.length > 1) {
+              const remainingQueue = proposalQueue.slice(1);
+              setProposalQueue(remainingQueue);
+              setProposalBatchCompleted((completed) => completed + 1);
+              setProposalForSheet(remainingQueue[0]);
+              return;
+            }
+            if (proposalBatchTotal > 0) {
+              setShowAddSheet(false);
+              setProposalForSheet(null);
+              setProposalQueue([]);
+              setProposalBatchTotal(0);
+              setProposalBatchCompleted(0);
+              setProposalSheetMode('standard');
+              return;
+            }
             setShowAddSheet(false);
             setProposalForSheet(null);
+            setProposalQueue([]);
+            setProposalBatchTotal(0);
+            setProposalBatchCompleted(0);
             setProposalSheetMode('standard');
             setShowChatSheet(false);
             navigate('/transactions');

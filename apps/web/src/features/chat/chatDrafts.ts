@@ -20,6 +20,7 @@ export interface ChatDraft {
 }
 
 interface SaveChatDraftInput {
+  userId: string;
   draftId?: string | null;
   kind: ChatDraftKind;
   lifecycle?: ChatDraftLifecycle;
@@ -36,7 +37,8 @@ interface CreateChatDraftOptions {
   title?: string;
 }
 
-const STORAGE_KEY = 'affordabled_chat_drafts_v1';
+const LEGACY_STORAGE_KEY = 'affordabled_chat_drafts_v1';
+const STORAGE_KEY_PREFIX = 'affordabled_chat_drafts_v1_user_';
 const MAX_SAVED_MESSAGES = 80;
 const DRAFT_DEFAULT_TTL_HOURS = 72;
 const TITLE_MAX_WORDS = 8;
@@ -238,20 +240,35 @@ function parseDrafts(rawValue: string | null): ChatDraft[] {
   }
 }
 
-function readDrafts(): ChatDraft[] {
+function getStorageKey(userId: string): string {
+  const normalizedUserId = userId.trim();
+  if (!normalizedUserId) {
+    throw new Error('An authenticated user ID is required to access chat drafts.');
+  }
+  return `${STORAGE_KEY_PREFIX}${encodeURIComponent(normalizedUserId)}`;
+}
+
+function readDrafts(userId: string): ChatDraft[] {
   if (typeof window === 'undefined') {
     return [];
   }
 
-  return parseDrafts(window.localStorage.getItem(STORAGE_KEY));
+  return parseDrafts(window.localStorage.getItem(getStorageKey(userId)));
 }
 
-function writeDrafts(drafts: ChatDraft[]): void {
+export function discardLegacyUnscopedChatDrafts(): void {
+  if (typeof window !== 'undefined') {
+    // Legacy drafts had no owner and must never be surfaced to an arbitrary signed-in user.
+    window.localStorage.removeItem(LEGACY_STORAGE_KEY);
+  }
+}
+
+function writeDrafts(userId: string, drafts: ChatDraft[]): void {
   if (typeof window === 'undefined') {
     return;
   }
 
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(drafts));
+  window.localStorage.setItem(getStorageKey(userId), JSON.stringify(drafts));
 }
 
 function isDraftExpired(draft: ChatDraft): boolean {
@@ -295,13 +312,13 @@ function dedupeDrafts(drafts: ChatDraft[]): ChatDraft[] {
   return dedupedDrafts;
 }
 
-export function listChatDrafts(): ChatDraft[] {
-  const drafts = readDrafts();
+export function listChatDrafts(userId: string): ChatDraft[] {
+  const drafts = readDrafts(userId);
   const unexpiredDrafts = drafts.filter((draft) => !isDraftExpired(draft));
   const dedupedDrafts = dedupeDrafts(unexpiredDrafts);
 
   if (dedupedDrafts.length !== drafts.length) {
-    writeDrafts(dedupedDrafts);
+    writeDrafts(userId, dedupedDrafts);
   }
 
   return dedupedDrafts.sort(
@@ -309,11 +326,12 @@ export function listChatDrafts(): ChatDraft[] {
   );
 }
 
-export function getChatDraftById(draftId: string): ChatDraft | null {
-  return listChatDrafts().find((draft) => draft.id === draftId) ?? null;
+export function getChatDraftById(userId: string, draftId: string): ChatDraft | null {
+  return listChatDrafts(userId).find((draft) => draft.id === draftId) ?? null;
 }
 
 export function createChatDraft(
+  userId: string,
   kind: ChatDraftKind,
   transactionId: string | null = null,
   options: CreateChatDraftOptions = {},
@@ -334,14 +352,14 @@ export function createChatDraft(
     expires_at: expiresAt,
   };
 
-  const drafts = listChatDrafts().filter((draft) => draft.id !== newDraft.id);
-  writeDrafts([newDraft, ...drafts]);
+  const drafts = listChatDrafts(userId).filter((draft) => draft.id !== newDraft.id);
+  writeDrafts(userId, [newDraft, ...drafts]);
   return newDraft;
 }
 
 export function saveChatDraft(input: SaveChatDraftInput): ChatDraft {
   const nowIso = getDefaultOccurredAtIso();
-  const drafts = listChatDrafts();
+  const drafts = listChatDrafts(input.userId);
   const existingDraftById = input.draftId ? drafts.find((draft) => draft.id === input.draftId) ?? null : null;
   const existingDraftByThread =
     !existingDraftById && input.threadId ? drafts.find((draft) => draft.thread_id === input.threadId) ?? null : null;
@@ -407,26 +425,26 @@ export function saveChatDraft(input: SaveChatDraftInput): ChatDraft {
     }),
   ].sort((first, second) => new Date(second.updated_at).getTime() - new Date(first.updated_at).getTime());
 
-  writeDrafts(nextDrafts);
+  writeDrafts(input.userId, nextDrafts);
   return updatedDraft;
 }
 
-export function deleteChatDraft(draftId: string): void {
-  const nextDrafts = listChatDrafts().filter((draft) => draft.id !== draftId);
-  writeDrafts(nextDrafts);
+export function deleteChatDraft(userId: string, draftId: string): void {
+  const nextDrafts = listChatDrafts(userId).filter((draft) => draft.id !== draftId);
+  writeDrafts(userId, nextDrafts);
 }
 
-export function deleteChatDraftByThreadId(threadId: string): void {
-  const nextDrafts = listChatDrafts().filter((draft) => draft.thread_id !== threadId);
-  writeDrafts(nextDrafts);
+export function deleteChatDraftByThreadId(userId: string, threadId: string): void {
+  const nextDrafts = listChatDrafts(userId).filter((draft) => draft.thread_id !== threadId);
+  writeDrafts(userId, nextDrafts);
 }
 
-export function queueChatDraftTitleGeneration(draftId: string): void {
+export function queueChatDraftTitleGeneration(userId: string, draftId: string): void {
   if (typeof window === 'undefined') {
     return;
   }
 
-  const draft = getChatDraftById(draftId);
+  const draft = getChatDraftById(userId, draftId);
   if (!draft || draft.kind !== 'general') {
     return;
   }
@@ -445,12 +463,13 @@ export function queueChatDraftTitleGeneration(draftId: string): void {
     return;
   }
 
-  const latestDraft = getChatDraftById(draftId);
+  const latestDraft = getChatDraftById(userId, draftId);
   if (!latestDraft || latestDraft.kind !== 'general' || latestDraft.title.trim().length > 0) {
     return;
   }
 
   saveChatDraft({
+    userId,
     draftId: latestDraft.id,
     kind: latestDraft.kind,
     lifecycle: latestDraft.lifecycle,
