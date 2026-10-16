@@ -78,9 +78,33 @@ _TOOL_SCHEMAS: dict[str, type[BaseModel]] = {
 }
 
 _TOOL_DESCRIPTIONS = {
-    "create_account": "Create an account. Supply arguments.name, arguments.type, and arguments.balance_rupees.",
-    "create_category": "Create a category. Supply arguments.name and arguments.type (expense or income).",
-    "create_transaction": "Create a transaction using IDs from list_accounts/list_categories and amount_rupees.",
+    "list_accounts": "Read user accounts and IDs before a transaction when an account is missing or ambiguous.",
+    "create_account": "Create a user account when absent; supply name, type, and balance_rupees.",
+    "update_account": "Update one existing user-owned account by account_id, such as its name or active status.",
+    "rename_account": "Rename an existing user-owned account when explicitly requested.",
+    "activate_account": "Activate one existing user-owned account so it can be used for transactions.",
+    "deactivate_account": "Deactivate one existing user-owned account. Use only when the user explicitly requests it.",
+    "set_default_account": "Set one existing user-owned account as the default for future transaction choices.",
+    "delete_account": "Account deletion capability; use only if supported and report verified limitations.",
+    "list_categories": "Read category IDs before choosing a transaction category or verifying a request.",
+    "create_category": "Create an idempotent user-owned category with name and type: expense or income.",
+    "update_category": "Update a user-owned category by category_id when its name or type should change.",
+    "delete_category": "Delete one user-owned category only after explicit confirmation from the user.",
+    "extract_transaction": "Extract fields from ambiguous transaction text or receipts; skip for clear requests.",
+    "list_transactions": "Read user transactions for lookup requests; do not use to create or edit records.",
+    "create_transaction": "Create one user transaction after resolving IDs; amount_rupees is in rupees.",
+    "create_transaction_batch": "Create several explicit transaction rows; do not use for one transaction.",
+    "update_transaction": "Edit a user transaction by transaction_id when explicitly requested.",
+    "delete_transaction": "Soft-delete one user-owned transaction only after explicit confirmation.",
+    "restore_transaction": "Restore one previously deleted user-owned transaction when explicitly requested.",
+    "get_account_balances": "Read current account balances for balance questions, not transaction history.",
+    "get_transactions": "Read transactions in a bounded date window for recent, prior, or date-range history.",
+    "get_spending_summary": "Read aggregate spending for a supplied date range, not individual transactions.",
+    "get_spending_by_account": "Read spending grouped by account for a supplied date range.",
+    "get_spending_comparison": "Compare two supported spending periods.",
+    "get_split_summary": "Read outstanding split balances for money-owed or remaining-split questions.",
+    "list_split_contacts": "Read names used in prior splits to help match people; new names are allowed.",
+    "create_split": "Create a split after its expense exists, using its ID and requested participants.",
 }
 
 
@@ -473,6 +497,9 @@ class ToolBoundSpecialistRuntime:
                 constraints={
                     "last_transaction_window": state.get("last_transaction_window"),
                     "original_request": state.get("task_request"),
+                    "created_transaction_ids": state.get("created_transaction_ids", []),
+                    "available_categories": state.get("available_categories", []),
+                    "available_accounts": state.get("available_accounts", []),
                 },
             )
             values = dict(arguments)
