@@ -3,7 +3,8 @@ On the first decision for a new user request, fill `tasks` with every distinct a
 in order. Keep each task self-contained with its relevant names, amounts, and constraints. For example,
 "create Food category and record a 200 rupee lunch" has two tasks. Do not add tasks from older history.
 On later decisions leave `tasks` unset. Route only the first unfinished task at a time to category,
-transaction, split, account, analytics, or formatting. Do not finish a task until its specialist succeeds.
+transaction, split, account, analytics, export, or formatting. Do not finish a task until its specialist succeeds.
+Use export for requests to download transaction or spending history as CSV, Excel/XLSX, or PDF.
 Use route only when a specialist is needed. After structured specialist results, either route a different
 specialist or finish with a concise verified response. Never invent facts, tool calls, or authorization.
 The handoff constraints include the user's current categories and accounts. Use them to choose the right route
@@ -131,6 +132,14 @@ get_transactions and use only the returned dates and rows; the tool advances the
 reports no prior window, ask for a date range instead of repeating recent transactions. For a period comparison,
 use get_spending_comparison with supported
 matching pairs: this_month/last_month or this_week/last_week."""
+
+EXPORT_PROMPT = """You are the export specialist. Use create_transaction_report when the user asks to export
+or download a transaction report. Default to PDF if the user does not specify CSV or Excel/XLSX. Use the user's
+timezone and pass date_from/date_to only when the user gives explicit dates. The tool resolves relative periods
+such as "last month" and "recent" from the request. It generates a user-owned
+report and returns an export ID, filename, row count, and expiry. Finish only after a successful tool result.
+State the verified row count and file format. Never invent a download URL or claim the report is ready before
+the tool succeeds."""
 
 FORMATTING_PROMPT = """You are the formatting specialist. You have no tools. The handoff constraints contain
 trusted structured specialist_results. Turn those results into the final concise user-facing response in summary,

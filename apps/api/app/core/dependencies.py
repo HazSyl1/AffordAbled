@@ -24,6 +24,7 @@ from app.application.services.profile_summary_service import ProfileSummaryServi
 from app.application.services.speech_service import SpeechService
 from app.application.services.split_service import SplitService
 from app.application.services.thread_service import ThreadService
+from app.application.services.transaction_import_service import TransactionImportService
 from app.application.services.transaction_service import TransactionService
 from app.core.config import Settings, get_settings
 from app.domain.entities import User
@@ -56,6 +57,9 @@ from app.infrastructure.database.repositories.sqlalchemy_refresh_session_reposit
     SqlAlchemyRefreshSessionRepository,
 )
 from app.infrastructure.database.repositories.sqlalchemy_split_repository import SqlAlchemySplitRepository
+from app.infrastructure.database.repositories.sqlalchemy_transaction_import_repository import (
+    SqlAlchemyTransactionImportRepository,
+)
 from app.infrastructure.database.repositories.sqlalchemy_transaction_repository import SqlAlchemyTransactionRepository
 from app.infrastructure.database.repositories.sqlalchemy_user_repository import SqlAlchemyUserRepository
 from app.infrastructure.database.session import get_session
@@ -276,8 +280,32 @@ def get_thread_service(
 
 def get_export_service(
     export_artifact_repository: SqlAlchemyExportArtifactRepository = Depends(get_export_artifact_repository),
+    transaction_repository: SqlAlchemyTransactionRepository = Depends(get_transaction_repository),
+    account_repository: SqlAlchemyAccountRepository = Depends(get_account_repository),
+    category_repository: SqlAlchemyCategoryRepository = Depends(get_category_repository),
+    settings: Settings = Depends(get_settings_dependency),
 ) -> ExportService:
-    return ExportService(export_artifact_repository=export_artifact_repository)
+    return ExportService(
+        export_artifact_repository=export_artifact_repository,
+        transaction_repository=transaction_repository,
+        account_repository=account_repository,
+        category_repository=category_repository,
+        signing_key=settings.jwt_secret_key,
+    )
+
+
+def get_transaction_import_service(
+    db: AsyncSession = Depends(get_db),
+    transaction_repository: SqlAlchemyTransactionRepository = Depends(get_transaction_repository),
+    account_repository: SqlAlchemyAccountRepository = Depends(get_account_repository),
+    category_repository: SqlAlchemyCategoryRepository = Depends(get_category_repository),
+) -> TransactionImportService:
+    return TransactionImportService(
+        account_repository=account_repository,
+        category_repository=category_repository,
+        transaction_repository=transaction_repository,
+        import_repository=SqlAlchemyTransactionImportRepository(db),
+    )
 
 
 def get_category_tools(
@@ -309,6 +337,7 @@ def get_chat_orchestrator(
     category_repository: SqlAlchemyCategoryRepository = Depends(get_category_repository),
     category_tools: CategoryTools = Depends(get_category_tools),
     transaction_query_tools: TransactionQueryTools = Depends(get_transaction_query_tools),
+    export_service: ExportService = Depends(get_export_service),
     extraction_llm: Any | None = Depends(get_transaction_extraction_llm),
 ) -> ChatOrchestrator:
     del intent_classifier, category_tools, settings
@@ -327,6 +356,7 @@ def get_chat_orchestrator(
             transaction_service=transaction_service,
             split_service=SplitService(SqlAlchemySplitRepository(db)),
             query_tools=transaction_query_tools,
+            export_service=export_service,
             db_session=db,
         )
     )

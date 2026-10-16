@@ -85,6 +85,18 @@ class UpdateTransactionInput:
     note: str | None = None
 
 
+@dataclass(frozen=True)
+class ImportTransactionInput:
+    account_id: uuid.UUID
+    type: TransactionType
+    amount_paise: int
+    occurred_at: datetime
+    category_id: uuid.UUID | None = None
+    to_account_id: uuid.UUID | None = None
+    merchant: str | None = None
+    note: str | None = None
+
+
 @dataclass
 class CreateChatThreadInput:
     user_id: uuid.UUID

@@ -12,3 +12,10 @@ class ExportArtifact:
     download_url: str
     expires_at: datetime
     created_at: datetime
+    format: str = 'pdf'
+    content: bytes | None = None
+    content_type: str | None = None
+    filename: str | None = None
+    row_count: int | None = None
+    report_schema_version: int | None = None
+    file_sha256: str | None = None

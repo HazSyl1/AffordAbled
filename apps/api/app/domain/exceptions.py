@@ -54,6 +54,18 @@ class ExportLinkExpiredError(DomainError):
     'Raised when an export exists but its download link has expired.'
 
 
+class InvalidExportError(DomainError):
+    'Raised when an export request exceeds the supported format or size limits.'
+
+
+class InvalidImportError(DomainError):
+    'Raised when an imported file or its transaction rows are invalid.'
+
+
+class ImportAlreadyExistsError(DomainError):
+    'Raised when the same file was previously imported for the user.'
+
+
 class SpeechServiceNotConfiguredError(DomainError):
     'Raised when speech service credentials/region are missing.'
 

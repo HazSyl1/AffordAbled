@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-SpecialistName = Literal["category", "transaction", "split", "account", "analytics", "formatting"]
+SpecialistName = Literal["category", "transaction", "split", "account", "analytics", "export", "formatting"]
 ResultStatus = Literal["success", "partial", "failed", "needs_input"]
 
 

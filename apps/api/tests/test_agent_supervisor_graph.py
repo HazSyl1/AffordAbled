@@ -3,11 +3,11 @@ from __future__ import annotations
 import json
 import uuid
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableLambda
 from langgraph.checkpoint.memory import InMemorySaver
 
@@ -124,6 +124,81 @@ def test_new_category_reply_keeps_the_pending_expense_queued() -> None:
     assert task_queue == ["spent 99 on drugs"]
     assert resumes is True
     assert creates_category is True
+
+
+def test_report_request_routes_to_export_and_requires_verified_report() -> None:
+    task = "Export my transactions as CSV"
+    assert _obvious_specialist(task) == "export"
+    assert _obvious_specialist("Download my spending history as Excel") == "export"
+    assert _obvious_specialist("Give me an Excel report of my expenses") == "export"
+    assert _required_tools(task, "export") == {"create_transaction_report"}
+    remaining, satisfied = _reconcile_task_queue(
+        [task],
+        [{"tool": "create_transaction_report", "data": {"export_id": str(uuid.uuid4())}}],
+        original_request=task,
+        latest_reply=task,
+        available_categories=[],
+        verify_categories=False,
+    )
+    assert remaining == []
+    assert satisfied == [task]
+
+
+@pytest.mark.asyncio
+async def test_chat_report_handoff_returns_a_refreshable_download_marker() -> None:
+    report_id = uuid.uuid4()
+
+    class FakeExportService:
+        async def create_report(self, **kwargs: Any) -> Any:
+            assert kwargs["format"] == "csv"
+            return type(
+                "Report",
+                (),
+                {
+                    "id": report_id,
+                    "filename": "transactions.csv",
+                    "format": "csv",
+                    "row_count": 2,
+                    "expires_at": datetime.now(UTC) + timedelta(hours=24),
+                },
+            )()
+
+    class ExportLlm(NativeTestLlm):
+        def bind_tools(self, _tools: list[Any], **_kwargs: Any) -> RunnableLambda:
+            async def respond(messages: list[Any]) -> AIMessage:
+                if "export specialist" not in str(messages[0].content).lower():
+                    return AIMessage(content="Done.")
+                if any(isinstance(message, ToolMessage) for message in messages):
+                    return AIMessage(content="Your CSV report is ready with two transactions.")
+                return AIMessage(
+                    content="",
+                    tool_calls=[{
+                        "name": "create_transaction_report",
+                        "args": {"arguments": {"format": "csv"}},
+                        "id": "report-call",
+                    }],
+                )
+
+            return RunnableLambda(respond)
+
+    graph = AgenticSupervisorGraph(
+        checkpointer=InMemorySaver(),
+        llm=ExportLlm(),
+        guardrail=AllowingGuardrail(),
+        category_service=None,  # type: ignore[arg-type]
+        account_service=None,  # type: ignore[arg-type]
+        transaction_service=None,  # type: ignore[arg-type]
+        query_tools=None,  # type: ignore[arg-type]
+        export_service=FakeExportService(),  # type: ignore[arg-type]
+    )
+    graph._supervisor = ScriptedSupervisor([
+        SupervisorDecision(action="route", specialist="export", tasks=["Export my transactions as CSV"]),
+        SupervisorDecision(action="finish", response="Your CSV report is ready."),
+    ])  # type: ignore[assignment]
+    result = await graph.invoke(user_id=uuid.uuid4(), thread_id="export", message="Export my transactions as CSV")
+    assert result["tasks_completed"] is True
+    assert result["task_queue"] == []
+    assert f"[[export:{report_id}]]" in result["final_response"]
 
 
 def test_category_creation_verification_infers_expense_from_pending_transaction() -> None:

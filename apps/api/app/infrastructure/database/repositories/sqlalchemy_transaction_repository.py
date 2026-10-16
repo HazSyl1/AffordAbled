@@ -62,6 +62,34 @@ class SqlAlchemyTransactionRepository:
         result = await self._session.execute(query.order_by(TransactionModel.occurred_at.desc()))
         return [self._to_entity(model) for model in result.scalars().all()]
 
+    async def list_for_export(
+        self, user_id: uuid.UUID, *, date_from: datetime | None, date_to: datetime | None, limit: int
+    ) -> list[Transaction]:
+        filters = [TransactionModel.user_id == user_id, TransactionModel.deleted_at.is_(None)]
+        if date_from is not None:
+            filters.append(TransactionModel.occurred_at >= date_from)
+        if date_to is not None:
+            filters.append(TransactionModel.occurred_at < date_to)
+        result = await self._session.execute(
+            select(TransactionModel)
+            .where(*filters)
+            .order_by(
+                TransactionModel.occurred_at.desc(),
+                TransactionModel.created_at.desc(),
+                TransactionModel.id.desc(),
+            )
+            .limit(limit)
+        )
+        return [self._to_entity(model) for model in result.scalars().all()]
+
+    async def existing_ids_for_user(self, user_id: uuid.UUID, ids: set[uuid.UUID]) -> set[uuid.UUID]:
+        if not ids:
+            return set()
+        result = await self._session.execute(
+            select(TransactionModel.id).where(TransactionModel.user_id == user_id, TransactionModel.id.in_(ids))
+        )
+        return set(result.scalars().all())
+
     async def list_recent_for_user(self, user_id: uuid.UUID, *, limit: int) -> list[Transaction]:
         result = await self._session.execute(
             select(TransactionModel)

@@ -4,12 +4,20 @@ import { useSearchParams } from 'react-router-dom';
 import { Button } from '../../components/atoms/Button';
 import { Card } from '../../components/atoms/Card';
 import { BottomSheet } from '../../components/molecules/BottomSheet';
+import { ThemedSelect } from '../../components/molecules/ThemedSelect';
 import { CreateTransactionForm } from '../../components/organisms/CreateTransactionForm';
 import type { CreateTransactionFormValues } from '../../components/organisms/CreateTransactionForm/CreateTransactionForm.schema';
 import { TransactionList } from '../../components/organisms/TransactionList';
 import { useListTransactionsQuery } from '../../features/transactions/transactionsApi';
 import type { Transaction } from '../../features/transactions/transactionsApi';
+import {
+  useConfirmTransactionImportMutation,
+  useCreateTransactionExportMutation,
+  usePreviewTransactionImportMutation,
+} from '../../features/transactions/transactionFilesApi';
+import type { TransactionExportFormat, TransactionImportPreview } from '../../features/transactions/transactionFilesApi';
 import { SHEET_TITLES } from '../../constants';
+import { API_BASE_URL } from '../../lib/env';
 import { formatPaiseAsInr } from '../../lib/money';
 
 function mapTransactionToFormValues(transaction: Transaction): Partial<CreateTransactionFormValues> {
@@ -25,12 +33,35 @@ function mapTransactionToFormValues(transaction: Transaction): Partial<CreateTra
   };
 }
 
+function errorDetail(error: unknown): string {
+  if (error && typeof error === 'object' && 'data' in error) {
+    const data = error.data as { detail?: unknown } | undefined;
+    if (typeof data?.detail === 'string') return data.detail;
+  }
+  return 'Something went wrong. Please try again.';
+}
+
+const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+
 export function TransactionsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedTransactionId = searchParams.get('transactionId');
   const { data: transactions } = useListTransactionsQuery();
   const [isAddTransactionSheetOpen, setIsAddTransactionSheetOpen] = useState(false);
   const [selectedTransaction, setSelectedTransaction] = useState<Transaction | null>(null);
+  const [isExportOpen, setIsExportOpen] = useState(false);
+  const [isImportOpen, setIsImportOpen] = useState(false);
+  const [exportFormat, setExportFormat] = useState<TransactionExportFormat>('xlsx');
+  const [exportFrom, setExportFrom] = useState('');
+  const [exportTo, setExportTo] = useState('');
+  const [exportError, setExportError] = useState('');
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [importPreview, setImportPreview] = useState<TransactionImportPreview | null>(null);
+  const [importError, setImportError] = useState('');
+  const [importSuccess, setImportSuccess] = useState('');
+  const [createExport, { isLoading: exporting }] = useCreateTransactionExportMutation();
+  const [previewImport, { isLoading: previewing }] = usePreviewTransactionImportMutation();
+  const [confirmImport, { isLoading: importing }] = useConfirmTransactionImportMutation();
   const transactionBeingEdited = requestedTransactionId
     ? transactions?.find((item) => item.id === requestedTransactionId) ?? null
     : selectedTransaction;
@@ -82,6 +113,64 @@ export function TransactionsPage() {
     }
   };
 
+  const handleExport = async () => {
+    setExportError('');
+    try {
+      const result = await createExport({
+        format: exportFormat,
+        date_from: exportFrom || undefined,
+        date_to: exportTo || undefined,
+        timezone,
+      }).unwrap();
+      const anchor = document.createElement('a');
+      anchor.href = result.download_url.startsWith('http')
+        ? result.download_url
+        : `${API_BASE_URL}${result.download_url}`;
+      anchor.download = result.filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      setIsExportOpen(false);
+    } catch (error) {
+      setExportError(errorDetail(error));
+    }
+  };
+
+  const handlePreviewImport = async () => {
+    if (!importFile) return;
+    setImportError('');
+    setImportSuccess('');
+    try {
+      setImportPreview(await previewImport({ file: importFile, timezone }).unwrap());
+    } catch (error) {
+      setImportPreview(null);
+      setImportError(errorDetail(error));
+    }
+  };
+
+  const handleConfirmImport = async () => {
+    if (!importFile || !importPreview) return;
+    setImportError('');
+    try {
+      const result = await confirmImport({ file: importFile, timezone, previewHash: importPreview.file_hash }).unwrap();
+      setImportSuccess(`${result.imported_count} transactions imported.`);
+      setImportPreview(null);
+      setImportFile(null);
+    } catch (error) {
+      setImportError(errorDetail(error));
+    }
+  };
+
+  const downloadImportTemplate = () => {
+    const template = 'occurred_at,type,amount_paise,account,category,to_account,merchant,note\r\n';
+    const objectUrl = URL.createObjectURL(new Blob([template], { type: 'text/csv;charset=utf-8' }));
+    const anchor = document.createElement('a');
+    anchor.href = objectUrl;
+    anchor.download = 'affordabled-import-template.csv';
+    anchor.click();
+    URL.revokeObjectURL(objectUrl);
+  };
+
   return (
     <div className='mx-auto w-full max-w-[1200px] px-4 py-4 md:px-6 md:py-6'>
       <header className='sticky top-[env(safe-area-inset-top)] z-10 -mx-4 mb-4 border-b border-[var(--bg-border)] bg-[color:rgba(9,9,11,0.9)] px-4 py-4 backdrop-blur-xl md:static md:mx-0 md:border-none md:bg-transparent md:px-0 md:py-0'>
@@ -91,7 +180,13 @@ export function TransactionsPage() {
             <p className='text-xs text-[var(--text-secondary)]'>Review spending, income, and transfers in one place. Click a transaction to edit it or add a split.</p>
           </div>
 
-          <div className='flex gap-2'>
+          <div className='flex flex-wrap justify-end gap-2'>
+            <Button type='button' variant='secondary' className='w-auto px-3' onClick={() => setIsImportOpen(true)}>
+              Import
+            </Button>
+            <Button type='button' variant='secondary' className='w-auto px-3' onClick={() => setIsExportOpen(true)}>
+              Export
+            </Button>
             <Button type='button' className='w-auto px-3 lg:hidden' onClick={() => setIsAddTransactionSheetOpen(true)}>
               + Add
             </Button>
@@ -133,6 +228,79 @@ export function TransactionsPage() {
           </Card>
         </section>
       </div>
+
+      <BottomSheet
+        isOpen={isExportOpen}
+        onClose={() => setIsExportOpen(false)}
+        title='Export transactions'
+      >
+        <div className='space-y-4'>
+          <p className='text-sm text-[var(--text-secondary)]'>Download your transactions as a spreadsheet or PDF report. Internal IDs and notes are excluded.</p>
+          <div>
+            <label htmlFor='export-format' className='mb-1 block text-sm text-[var(--text-secondary)]'>Format</label>
+            <ThemedSelect id='export-format' value={exportFormat} placeholder='Choose a format'
+              options={[{ label: 'Excel (.xlsx)', value: 'xlsx' }, { label: 'CSV (.csv)', value: 'csv' },
+                { label: 'PDF (.pdf)', value: 'pdf' }]}
+              onChange={(value) => setExportFormat(value as TransactionExportFormat)} />
+          </div>
+          <div className='grid grid-cols-2 gap-3'>
+            <label className='text-sm text-[var(--text-secondary)]'>From (optional)
+              <input type='date' value={exportFrom} onChange={(event) => setExportFrom(event.target.value)}
+                className='mt-1 min-h-12 w-full rounded-xl border border-[var(--bg-border)] bg-[var(--bg-surface)] px-3 text-[var(--text-primary)]' />
+            </label>
+            <label className='text-sm text-[var(--text-secondary)]'>To (optional)
+              <input type='date' value={exportTo} onChange={(event) => setExportTo(event.target.value)}
+                className='mt-1 min-h-12 w-full rounded-xl border border-[var(--bg-border)] bg-[var(--bg-surface)] px-3 text-[var(--text-primary)]' />
+            </label>
+          </div>
+          <p className='text-xs text-[var(--text-muted)]'>Leave dates empty to export all transactions. Downloads remain available for 24 hours.</p>
+          {exportError && <p role='alert' className='text-sm text-[var(--negative)]'>{exportError}</p>}
+          <Button type='button' isLoading={exporting} onClick={() => void handleExport()}>Download export</Button>
+        </div>
+      </BottomSheet>
+
+      <BottomSheet
+        isOpen={isImportOpen}
+        onClose={() => { setIsImportOpen(false); setImportPreview(null); setImportError(''); }}
+        title='Import transactions'
+      >
+        <div className='space-y-4'>
+          <p className='text-sm text-[var(--text-secondary)]'>Upload a CSV or Excel file. Check the import preview before adding transactions.</p>
+          <button type='button' className='text-sm font-medium text-[var(--brand-primary)] underline'
+            onClick={downloadImportTemplate}>Download CSV template</button>
+          <input type='file' accept='.csv,.xlsx' aria-label='Transaction file'
+            className='block w-full text-sm text-[var(--text-secondary)] file:mr-3 file:rounded-lg file:border-0 file:bg-[var(--bg-elevated)] file:px-3 file:py-2 file:text-[var(--text-primary)]'
+            onChange={(event) => { setImportFile(event.target.files?.[0] ?? null); setImportPreview(null);
+              setImportError(''); setImportSuccess(''); }} />
+          <p className='text-xs text-[var(--text-muted)]'>Use your existing account and category names. No transactions are added until you confirm.</p>
+          {importFile && <Button type='button' variant='secondary' isLoading={previewing}
+            onClick={() => void handlePreviewImport()}>Preview import</Button>}
+          {importPreview && <div className='space-y-3 rounded-xl border border-[var(--bg-border)] p-3'>
+            <p className='text-sm font-semibold text-[var(--text-primary)]'>
+              {importPreview.valid_count} of {importPreview.row_count} rows ready
+            </p>
+            <p className='text-xs text-[var(--text-muted)]'>Only identical files are blocked. An edited file may add transactions that already exist.</p>
+            {importPreview.already_imported && <p role='alert' className='text-sm text-[var(--negative)]'>This file is already in your account.</p>}
+            {importPreview.errors.length > 0 && <ul className='max-h-32 overflow-auto text-sm text-[var(--negative)]'>
+              {importPreview.errors.map((error) => <li key={error.row_number}>Row {error.row_number}: {error.message}</li>)}
+            </ul>}
+            <div className='max-h-52 overflow-auto text-xs text-[var(--text-secondary)]'>
+              {importPreview.preview_rows.map((row) => <div key={row.row_number}
+                className='border-b border-[var(--bg-border)] py-2'>
+                Row {row.row_number}: {row.type} {row.amount_paise !== undefined
+                  ? formatPaiseAsInr(row.amount_paise) : row.amount} · {row.account} · {row.category || row.merchant}
+              </div>)}
+              {importPreview.row_count > importPreview.preview_rows.length &&
+                <p className='py-2'>Showing the first {importPreview.preview_rows.length} rows.</p>}
+            </div>
+            <Button type='button' isLoading={importing}
+              disabled={importPreview.already_imported || importPreview.valid_count !== importPreview.row_count}
+              onClick={() => void handleConfirmImport()}>Confirm import</Button>
+          </div>}
+          {importError && <p role='alert' className='text-sm text-[var(--negative)]'>{importError}</p>}
+          {importSuccess && <p role='status' className='text-sm text-[var(--positive)]'>{importSuccess}</p>}
+        </div>
+      </BottomSheet>
 
       <BottomSheet
         isOpen={isAddTransactionSheetOpen}

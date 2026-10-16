@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.services.account_service import AccountService
 from app.application.services.category_service import CategoryService
+from app.application.services.export_service import ExportService
 from app.application.services.split_service import SplitService
 from app.application.services.transaction_service import TransactionService
 from app.domain.ports import ChatTurnResult, GuardrailDecision, SemanticGuardrail
@@ -23,11 +24,13 @@ from app.infrastructure.ai.agents.analytics import AnalyticsToolset
 from app.infrastructure.ai.agents.brains import StructuredSupervisorBrain
 from app.infrastructure.ai.agents.category import CategoryToolset
 from app.infrastructure.ai.agents.contracts import HandoffContext, SupervisorDecision
+from app.infrastructure.ai.agents.export import ExportToolset
 from app.infrastructure.ai.agents.extraction import TransactionExtractionAgent
 from app.infrastructure.ai.agents.prompts import (
     ACCOUNT_PROMPT,
     ANALYTICS_PROMPT,
     CATEGORY_PROMPT,
+    EXPORT_PROMPT,
     FORMATTING_PROMPT,
     SPLIT_PROMPT,
     SUPERVISOR_PROMPT,
@@ -237,6 +240,10 @@ def _matches_observed_action(task: str, action: dict[str, Any]) -> bool:
         return any(_mentions(task, word) for word in ("spending", "spend", "spent")) and any(
             _mentions(task, word) for word in ("summary", "total", "much")
         )
+    if tool == "create_transaction_report":
+        return bool(data.get("export_id")) and any(
+            _mentions(task, word) for word in ("export", "download", "report")
+        )
     return False
 
 
@@ -344,12 +351,22 @@ def _required_tools(task: str, specialist: str | None) -> set[str] | None:
     if specialist == "split":
         if says("split", "shared", "owe", "people", "participants"):
             return {"create_split"}
+    if specialist == "export":
+        return {"create_transaction_report"}
     return None
 
 
 def _obvious_specialist(task: str) -> str | None:
     """Keep an actionable first turn from being finished before any tool runs."""
     normalized = task.casefold()
+    wants_report_file = any(
+        _mentions(task, word) for word in ("export", "download", "csv", "xlsx", "excel", "pdf")
+    )
+    if wants_report_file and any(
+        _mentions(task, word)
+        for word in ("transaction", "transactions", "report", "spending", "expenses", "history")
+    ):
+        return "export"
     if "split" in normalized and not re.search(r"\b(?:spent|spend|paid|pay|record|log)\b", normalized):
         return "split"
     if any(_mentions(task, word) for word in ("balance", "balances")):
@@ -564,6 +581,7 @@ class AgenticSupervisorGraph:
         account_service: AccountService,
         transaction_service: TransactionService,
         query_tools: TransactionQueryTools,
+        export_service: ExportService | None = None,
         split_service: SplitService | None = None,
         db_session: AsyncSession | None = None,
     ) -> None:
@@ -584,6 +602,7 @@ class AgenticSupervisorGraph:
         transaction_llm = model_for("transaction")
         split_llm = model_for("split")
         analytics_llm = model_for("analytics")
+        export_llm = model_for("export")
         formatting_llm = model_for("formatting")
         self._supervisor = StructuredSupervisorBrain(llm=supervisor_llm, system_prompt=SUPERVISOR_PROMPT)
         extraction_agent = TransactionExtractionAgent(transaction_llm)
@@ -591,6 +610,7 @@ class AgenticSupervisorGraph:
         account_tools = AccountToolset(account_service).registry()
         transaction_tools = TransactionToolset(transaction_service, extraction_agent=extraction_agent).registry()
         analytics_tools = AnalyticsToolset(query_tools, split_service=split_service).registry()
+        export_tools = ExportToolset(export_service).registry() if export_service else {}
         split_tools = SplitToolset(split_service, transaction_service).registry() if split_service else {}
         tool_lock = asyncio.Lock()
         self._specialists = {
@@ -629,6 +649,15 @@ class AgenticSupervisorGraph:
                 llm=analytics_llm,
                 system_prompt=ANALYTICS_PROMPT,
                 tools=analytics_tools,
+                allow_interrupts=False,
+                db_session=db_session,
+                tool_lock=tool_lock,
+            ),
+            "export": ToolBoundSpecialistRuntime(
+                name="export",
+                llm=export_llm,
+                system_prompt=EXPORT_PROMPT,
+                tools=export_tools,
                 allow_interrupts=False,
                 db_session=db_session,
                 tool_lock=tool_lock,
@@ -890,6 +919,14 @@ class AgenticSupervisorGraph:
                     if not remaining_tasks or len(satisfied_tasks) == 1
                     else "Completed: " + "; ".join(satisfied_tasks)
                 )
+                report_actions = [
+                    action for action in observed_actions
+                    if action.get("tool") == "create_transaction_report"
+                ]
+                if report_actions:
+                    report = report_actions[-1].get("data") or {}
+                    if report.get("export_id"):
+                        summary += f"\n[[export:{report['export_id']}]]"
                 completed_tasks = [*state.get("completed_tasks", []), summary]
                 created_transaction_ids = [
                     *state.get("created_transaction_ids", []),

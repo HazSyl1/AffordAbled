@@ -77,11 +77,22 @@ class EmptyArgumentsToolInput(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
 
 
+class CreateTransactionReportArguments(BaseModel):
+    format: Literal["csv", "xlsx", "pdf"] = Field(default="pdf", description="Report file format.")
+    date_from: str | None = Field(default=None, description="Inclusive local start date YYYY-MM-DD.")
+    date_to: str | None = Field(default=None, description="Inclusive local end date YYYY-MM-DD.")
+
+
+class CreateTransactionReportToolInput(BaseModel):
+    arguments: CreateTransactionReportArguments
+
+
 _TOOL_SCHEMAS: dict[str, type[BaseModel]] = {
     "create_account": CreateAccountToolInput,
     "create_category": CreateCategoryToolInput,
     "create_transaction": CreateTransactionToolInput,
     "get_split_summary": EmptyArgumentsToolInput,
+    "create_transaction_report": CreateTransactionReportToolInput,
 }
 
 _TOOL_DESCRIPTIONS = {
@@ -114,6 +125,10 @@ _TOOL_DESCRIPTIONS = {
     ),
     "list_split_contacts": "Read names used in prior splits to help match people; new names are allowed.",
     "create_split": "Create a split after its expense exists, using its ID and requested participants.",
+    "create_transaction_report": (
+        "Generate a user-owned transaction report for download. Use for export or download requests; "
+        "choose CSV, XLSX, or PDF and optional local date range."
+    ),
 }
 
 
@@ -418,6 +433,7 @@ class ToolBoundSpecialistRuntime:
                 "get_spending_by_account",
                 "get_spending_comparison",
                 "get_split_summary",
+                "create_transaction_report",
             }
         ]
         observed_actions.extend(
