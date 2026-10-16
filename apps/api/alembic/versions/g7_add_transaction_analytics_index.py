@@ -7,7 +7,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "g7_add_transaction_analytics_index"
-down_revision: str | None = "f2_add_default_account"
+down_revision: str | None = "f3_widen_alembic_version"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
