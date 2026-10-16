@@ -26,6 +26,7 @@ import { mapProposalToCreateTransactionValues } from '../chat/chatProposal';
 import { deleteChatDraft, deleteChatDraftByThreadId, saveChatDraft } from '../chat/chatDrafts';
 import { useVoiceCapture } from '../chat/useVoiceCapture';
 import { useListTransactionsQuery } from '../transactions/transactionsApi';
+import { useListSplitsQuery } from '../splits/splitsApi';
 import type { TransactionType } from '../transactions/transactionsApi';
 import {
   DASHBOARD_CHAT_UI_TEXT,
@@ -78,6 +79,7 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
   const [currentHour, setCurrentHour] = useState(() => new Date().getHours());
   const { data: accounts, isLoading: isLoadingAccounts } = useListAccountsQuery();
   const { data: transactions, isLoading: isLoadingTransactions } = useListTransactionsQuery();
+  const { data: splits, isLoading: isLoadingSplits } = useListSplitsQuery();
   const { data: categories } = useListCategoriesQuery();
   const [sendChatMessage, { isLoading: isSendingChatMessage }] = useSendChatMessageMutation();
   const [transcribeVoice, { isLoading: isTranscribingVoice }] = useTranscribeVoiceMutation();
@@ -105,7 +107,24 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
     return options[Math.floor(Math.random() * options.length)] ?? DASHBOARD_CHAT_UI_TEXT.emptyState;
   });
 
-  const pendingSplits: PendingSplit[] = [];
+  const pendingSplits = useMemo<PendingSplit[]>(() => {
+    const byName = new Map<string, PendingSplit>();
+    for (const split of splits ?? []) {
+      for (const participant of split.participants) {
+        const due = participant.share_paise - participant.settled_paise;
+        if (due <= 0) continue;
+        const key = participant.name.toLocaleLowerCase();
+        const current = byName.get(key) ?? {
+          id: key, name: participant.name, split_count: 0,
+          total_pending_paise: 0, avatar_color: '#a855f7',
+        };
+        current.split_count += 1;
+        current.total_pending_paise += due;
+        byName.set(key, current);
+      }
+    }
+    return [...byName.values()].sort((a, b) => b.total_pending_paise - a.total_pending_paise);
+  }, [splits]);
 
   const proposalInitialValues = useMemo(
     () => (proposalForSheet ? mapProposalToCreateTransactionValues(proposalForSheet) : undefined),
@@ -767,7 +786,9 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
                 </Button>
               </div>
 
-              {pendingSplits.length === 0 ? (
+              {isLoadingSplits ? (
+                <p className='py-8 text-center text-sm text-[var(--text-muted)]'>Loading splits…</p>
+              ) : pendingSplits.length === 0 ? (
                 <div className='py-8 text-center'>
                   <p className='mb-2 text-3xl'>🤝</p>
                   <p className='text-sm text-[var(--text-muted)]'>No pending splits</p>

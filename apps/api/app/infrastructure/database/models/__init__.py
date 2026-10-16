@@ -6,6 +6,7 @@ from app.infrastructure.database.models.chat_thread import ChatThreadModel
 from app.infrastructure.database.models.export_artifact import ExportArtifactModel
 from app.infrastructure.database.models.guardrail_log import GuardrailLogModel
 from app.infrastructure.database.models.refresh_session import RefreshSessionModel
+from app.infrastructure.database.models.split import SplitModel, SplitParticipantModel
 from app.infrastructure.database.models.transaction import TransactionModel
 from app.infrastructure.database.models.user import UserModel
 
@@ -18,6 +19,8 @@ __all__ = [
     'ExportArtifactModel',
     'GuardrailLogModel',
     'RefreshSessionModel',
+    'SplitModel',
+    'SplitParticipantModel',
     'TransactionModel',
     'UserModel',
 ]

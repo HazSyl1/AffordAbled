@@ -54,6 +54,7 @@ from app.infrastructure.database.repositories.sqlalchemy_guardrail_log_repositor
 from app.infrastructure.database.repositories.sqlalchemy_refresh_session_repository import (
     SqlAlchemyRefreshSessionRepository,
 )
+from app.infrastructure.database.repositories.sqlalchemy_split_repository import SqlAlchemySplitRepository
 from app.infrastructure.database.repositories.sqlalchemy_transaction_repository import SqlAlchemyTransactionRepository
 from app.infrastructure.database.repositories.sqlalchemy_user_repository import SqlAlchemyUserRepository
 from app.infrastructure.database.session import get_session
@@ -252,11 +253,13 @@ def get_transaction_service(
     transaction_repository: SqlAlchemyTransactionRepository = Depends(get_transaction_repository),
     account_repository: SqlAlchemyAccountRepository = Depends(get_account_repository),
     category_repository: SqlAlchemyCategoryRepository = Depends(get_category_repository),
+    db: AsyncSession = Depends(get_db),
 ) -> TransactionService:
     return TransactionService(
         transaction_repository=transaction_repository,
         account_repository=account_repository,
         category_repository=category_repository,
+        split_repository=SqlAlchemySplitRepository(db),
     )
 
 
