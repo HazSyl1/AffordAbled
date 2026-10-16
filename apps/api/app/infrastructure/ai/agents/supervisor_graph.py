@@ -70,6 +70,17 @@ def _split_task_for_request(request: str) -> str | None:
     return f"create an equal split for the transaction just recorded with participants {names}"
 
 
+def _is_elaboration_followup(message: str) -> bool:
+    return bool(
+        re.search(
+            r"^(?:please\s+)?(?:elaborate(?:\s+more)?|explain(?:\s+more)?|expand(?:\s+on\s+that)?|"
+            r"tell\s+me\s+more|break\s+(?:it|that)\s+down|more\s+details)(?:[.!?\s]|$)",
+            message.strip(),
+            flags=re.IGNORECASE,
+        )
+    )
+
+
 def _explicit_action_clauses(request: str) -> list[str]:
     """Preserve separate actions when the model omits one from its first task list."""
     clauses = [part.strip() for part in re.split(r"\s+and\s+", request, flags=re.IGNORECASE)]
@@ -474,6 +485,8 @@ class AgentGraphState(TypedDict, total=False):
     next_specialist: str | None
     handoff: dict[str, Any]
     results: list[dict[str, Any]]
+    prior_results: list[dict[str, Any]]
+    contextual_followup: bool
     reroutes: int
     specialist_steps: int
     final_response: str | None
@@ -597,6 +610,8 @@ class AgenticSupervisorGraph:
             return await self.graph.ainvoke(
                 Command(resume=message, update={"messages": [HumanMessage(content=message)]}), config=config
             )
+        prior_results = snapshot.values.get("results", []) if snapshot.values else []
+        contextual_followup = bool(prior_results and _is_elaboration_followup(message))
         return await self.graph.ainvoke(
             {
                 "messages": [HumanMessage(content=message)],
@@ -606,12 +621,14 @@ class AgenticSupervisorGraph:
                 # survives an interrupt; the newest message is only its
                 # clarification answer, not a replacement task.
                 "task_request": message,
-                "task_queue": [],
+                "task_queue": ["elaborate on the prior verified answer"] if contextual_followup else [],
                 "completed_tasks": [],
                 "created_transaction_ids": [],
                 "tasks_completed": False,
                 "show_completion_popup": False,
                 "results": [],
+                "prior_results": prior_results[-3:] if contextual_followup else [],
+                "contextual_followup": contextual_followup,
                 "reroutes": 0,
                 "final_response": None,
                 "next_specialist": None,
@@ -669,9 +686,19 @@ class AgenticSupervisorGraph:
                 "created_transaction_ids": state.get("created_transaction_ids", []),
                 "last_transaction_window": state.get("last_transaction_window"),
                 "original_request": state.get("task_request"),
+                "prior_specialist_results": state.get("prior_results", []),
             },
         )
         decision = await self._supervisor.decide(context, state.get("results", []))
+        prior_results = state.get("prior_results") or []
+        if state.get("contextual_followup") and not state.get("results") and prior_results:
+            prior_specialist = prior_results[-1].get("specialist")
+            if prior_specialist in self._specialists:
+                decision = SupervisorDecision(
+                    action="route",
+                    specialist=prior_specialist,
+                    handoff={"contextual_followup": True, "reuse_prior_results": True},
+                )
         if not task_queue and not state.get("completed_tasks"):
             task_queue = [task.strip() for task in (decision.tasks or []) if task.strip()]
             explicit_clauses = _explicit_action_clauses(state.get("task_request", ""))
@@ -708,6 +735,8 @@ class AgenticSupervisorGraph:
                 available_categories=available_categories,
                 verify_categories=latest_result.get("specialist") == "category",
             )
+            if state.get("contextual_followup") and latest_result.get("status") == "success":
+                remaining_tasks, satisfied_tasks = [], list(task_queue)
             if (
                 latest_result.get("specialist") == "formatting"
                 and latest_result.get("status") == "success"
@@ -901,6 +930,7 @@ class AgenticSupervisorGraph:
             timezone=state.get("timezone", "UTC"),
             constraints={
                 "specialist_results": state.get("results", []),
+                "prior_specialist_results": state.get("prior_results", []),
                 "completed_tasks": state.get("completed_tasks", []),
                 "supervisor_handoff": handoff,
                 "latest_user_reply": str(state["messages"][-1].content),
