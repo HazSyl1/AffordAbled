@@ -149,6 +149,7 @@ export function SplitsPage() {
   const [showValidation, setShowValidation] = useState(false);
   const [repayments, setRepayments] = useState<Record<string, string>>({});
   const [editingSplitId, setEditingSplitId] = useState<string | null>(null);
+  const totalOwedPaise = splits.reduce((total, split) => total + split.outstanding_paise, 0);
 
   useEffect(() => {
     if (focusedSplitId && splits.some((split) => split.id === focusedSplitId)) {
@@ -244,11 +245,17 @@ export function SplitsPage() {
   }
 
   return <div className='mx-auto w-full max-w-[900px] space-y-5 px-4 py-4 md:px-6 md:py-6'>
-    <header className='flex items-start justify-between gap-4'>
-      <div><h1 className='text-xl font-bold text-[var(--text-primary)]'>Splits</h1>
-        <p className='text-sm text-[var(--text-muted)]'>Track who owes you for shared expenses.</p></div>
-      <Button className='w-auto' onClick={() => { setOpen(true); setReview(null); }}>New split</Button>
+    <header>
+      <h1 className='text-xl font-bold text-[var(--text-primary)]'>Splits</h1>
+      <p className='text-sm text-[var(--text-muted)]'>Track who owes you for shared expenses.</p>
     </header>
+    <div className='flex items-center justify-between gap-4 rounded-2xl border border-[var(--bg-border)] bg-[var(--bg-card)] p-4'>
+      <div aria-live='polite'>
+        <p className='text-xs text-[var(--text-muted)]'>Amount owed to you</p>
+        <p className='text-2xl font-bold text-[var(--positive)]'>{isLoading ? '…' : formatPaiseAsInr(totalOwedPaise)}</p>
+      </div>
+      <Button className='w-auto shrink-0' onClick={() => { setOpen(true); setReview(null); }}>New split</Button>
+    </div>
     {error && <p role='alert' className='rounded-xl bg-red-500/10 p-3 text-sm text-red-300'>{error}</p>}
     {open && <Card className='space-y-4 p-5'>
       <h2 className='font-semibold text-[var(--text-primary)]'>Share a recorded expense</h2>
