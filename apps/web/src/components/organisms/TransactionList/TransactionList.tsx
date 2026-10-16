@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom';
 
 import { useListAccountsQuery } from '../../../features/accounts/accountsApi';
 import { useListCategoriesQuery } from '../../../features/categories/categoriesApi';
+import { useListSplitsQuery } from '../../../features/splits/splitsApi';
 import { useListTransactionsQuery } from '../../../features/transactions/transactionsApi';
 import type { Transaction, TransactionType } from '../../../features/transactions/transactionsApi';
 import { TRANSACTION_UI_TEXT } from '../../../constants';
@@ -108,6 +109,7 @@ export function TransactionList({ onTransactionSelect }: TransactionListProps) {
   const { data: transactions, isLoading, isError } = useListTransactionsQuery();
   const { data: accounts } = useListAccountsQuery();
   const { data: categories } = useListCategoriesQuery();
+  const { data: splits } = useListSplitsQuery();
 
   const accountNameById = useMemo(() => {
     return new Map((accounts ?? []).map((account) => [account.id, account.name]));
@@ -116,6 +118,10 @@ export function TransactionList({ onTransactionSelect }: TransactionListProps) {
   const categoryNameById = useMemo(() => {
     return new Map((categories ?? []).map((category) => [category.id, category.name]));
   }, [categories]);
+
+  const splitByTransactionId = useMemo(() => {
+    return new Map((splits ?? []).map((split) => [split.transaction_id, split]));
+  }, [splits]);
 
   const visibleTransactions = useMemo(() => {
     return (transactions ?? [])
@@ -156,6 +162,7 @@ export function TransactionList({ onTransactionSelect }: TransactionListProps) {
             {group.items.map((transaction) => {
               const accountName = accountNameById.get(transaction.account_id) ?? 'Unknown account';
               const categoryName = transaction.category_id ? categoryNameById.get(transaction.category_id) : null;
+              const split = splitByTransactionId.get(transaction.id);
 
               return (
                 <li key={transaction.id}>
@@ -202,25 +209,25 @@ export function TransactionList({ onTransactionSelect }: TransactionListProps) {
                           <span className='text-xs text-[var(--text-muted)]'>{formatTime(transaction.occurred_at)}</span>
                           <Badge tone={getBadgeTone(transaction.type)}>{TYPE_LABEL[transaction.type]}</Badge>
                         </div>
-                        <div className='mt-2 flex flex-col items-end gap-1.5'>
-                          {onTransactionSelect ? (
-                            <span className='inline-flex items-center rounded-full border border-[color:rgba(168,85,247,0.7)] bg-[color:rgba(168,85,247,0.2)] px-2.5 py-1 text-[11px] font-semibold text-[var(--brand-primary)] shadow-[0_3px_12px_rgba(168,85,247,0.2)] transition-colors group-hover:bg-[color:rgba(168,85,247,0.3)]'>{TRANSACTION_UI_TEXT.editHintLabel}</span>
-                          ) : null}
-                          <Link
-                            to={`/chat?transaction_id=${transaction.id}`}
-                            className='inline-flex items-center gap-1 rounded-full border border-[color:rgba(168,85,247,0.55)] bg-[color:rgba(168,85,247,0.16)] px-2.5 py-1 text-xs font-semibold text-[var(--brand-primary)] shadow-[0_6px_14px_rgba(168,85,247,0.2)] transition-colors hover:bg-[color:rgba(168,85,247,0.24)]'
-                            onClick={(event) => {
-                              event.stopPropagation();
-                            }}
-                            onKeyDown={(event) => {
-                              event.stopPropagation();
-                            }}
-                          >
-                            <MessageCircle className='h-3.5 w-3.5' aria-hidden='true' />
-                            {TRANSACTION_UI_TEXT.chatAboutLabel}
-                          </Link>
-                        </div>
                       </div>
+                    </div>
+                    <div className='mt-3 flex flex-wrap items-center justify-end gap-2'>
+                      {onTransactionSelect && <span className='inline-flex items-center rounded-full border border-[color:rgba(168,85,247,0.7)] bg-[color:rgba(168,85,247,0.2)] px-2.5 py-1 text-[11px] font-semibold text-[var(--brand-primary)] shadow-[0_3px_12px_rgba(168,85,247,0.2)] transition-colors group-hover:bg-[color:rgba(168,85,247,0.3)]'>
+                        {split ? 'Click to edit' : TRANSACTION_UI_TEXT.editHintLabel}
+                      </span>}
+                      {split && <Link to={`/splits?splitId=${split.id}`}
+                        className='inline-flex items-center rounded-full border border-[color:rgba(168,85,247,0.55)] bg-[color:rgba(168,85,247,0.16)] px-2.5 py-1 text-xs font-semibold text-[var(--brand-primary)] transition-colors hover:bg-[color:rgba(168,85,247,0.24)]'
+                        onClick={(event) => event.stopPropagation()}
+                        onKeyDown={(event) => event.stopPropagation()}>Go to split</Link>}
+                      <Link
+                        to={`/chat?transaction_id=${transaction.id}`}
+                        className='inline-flex items-center gap-1 rounded-full border border-[color:rgba(168,85,247,0.55)] bg-[color:rgba(168,85,247,0.16)] px-2.5 py-1 text-xs font-semibold text-[var(--brand-primary)] shadow-[0_6px_14px_rgba(168,85,247,0.2)] transition-colors hover:bg-[color:rgba(168,85,247,0.24)]'
+                        onClick={(event) => event.stopPropagation()}
+                        onKeyDown={(event) => event.stopPropagation()}
+                      >
+                        <MessageCircle className='h-3.5 w-3.5' aria-hidden='true' />
+                        {TRANSACTION_UI_TEXT.chatAboutLabel}
+                      </Link>
                     </div>
                   </Card>
                 </li>

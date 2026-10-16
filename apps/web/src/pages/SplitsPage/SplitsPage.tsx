@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 
 import { Button } from '../../components/atoms/Button';
@@ -32,6 +32,7 @@ export function SplitsPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const [searchParams] = useSearchParams();
+  const focusedSplitId = searchParams.get('splitId');
   const { data: splits = [], isLoading } = useListSplitsQuery();
   const { data: transactions = [] } = useListTransactionsQuery();
   const { data: contacts = [] } = useListSplitContactsQuery();
@@ -48,6 +49,12 @@ export function SplitsPage() {
   const [error, setError] = useState('');
   const [showValidation, setShowValidation] = useState(false);
   const [repayments, setRepayments] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    if (focusedSplitId && splits.some((split) => split.id === focusedSplitId)) {
+      document.getElementById(`split-${focusedSplitId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, [focusedSplitId, splits]);
 
   const expenses = useMemo(() => transactions.filter((transaction) =>
     transaction.type === 'expense' && !transaction.deleted_at &&
@@ -228,7 +235,8 @@ export function SplitsPage() {
     <section className='space-y-3'><h2 className='font-semibold text-[var(--text-primary)]'>Your split tracker</h2>
       {isLoading ? <p className='text-sm text-[var(--text-muted)]'>Loading splits…</p> : splits.length === 0 ?
         <Card className='p-5 text-sm text-[var(--text-muted)]'>No splits yet.</Card> : splits.map((split) =>
-          <Card key={split.id} className='space-y-3 p-5'>
+          <Card key={split.id} id={`split-${split.id}`}
+            className={`scroll-mt-6 space-y-3 p-5 ${focusedSplitId === split.id ? 'ring-2 ring-[var(--brand-primary)]' : ''}`}>
             <div className='flex justify-between gap-3'><div><h3 className='font-semibold text-[var(--text-primary)]'>{split.title}</h3>
               <p className='text-xs text-[var(--text-muted)]'>Total {formatPaiseAsInr(split.total_paise)} · Your share {formatPaiseAsInr(split.owner_share_paise)}</p></div>
               <div className='text-right'><span className='text-sm font-semibold text-[var(--text-primary)]'>{formatPaiseAsInr(split.outstanding_paise)} due</span>
