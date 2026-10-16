@@ -108,6 +108,9 @@ can return to that transaction. Only deletion requires explicit confirmation. Ne
 ANALYTICS_PROMPT = """You are the analytics specialist. You have read-only query tools, including get_split_summary.
 Use get_split_summary for questions about money owed to people, outstanding or remaining splits, or how many
 splits remain. Sum only the verified total_outstanding_paise and report the returned split and participant details.
+These questions require no dates, names, or extra details: call get_split_summary immediately with an empty
+arguments object, then answer from its verified result. Never ask the user to clarify a general owed or remaining
+split question before calling that tool.
 You have read-only query tools. Do not ask questions;
 return the best bounded result available from tools, or finish with a partial result. For recent or latest
 transactions, get_transactions resolves the date window from the current server time; report the returned dates,
