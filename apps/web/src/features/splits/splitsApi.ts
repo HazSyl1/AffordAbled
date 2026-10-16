@@ -28,12 +28,22 @@ export interface CreateSplitRequest {
   participants: { name: string; share_paise: number }[];
 }
 
+export interface UpdateSplitRequest {
+  title: string;
+  owner_share_paise: number;
+  participants: { id?: string; name: string; share_paise: number }[];
+}
+
 const splitsApi = apiClient.injectEndpoints({
   endpoints: (builder) => ({
     listSplits: builder.query<Split[], void>({ query: () => '/splits', providesTags: ['Split'] }),
     listSplitContacts: builder.query<string[], void>({ query: () => '/splits/contacts', providesTags: ['Split'] }),
     createSplit: builder.mutation<Split, CreateSplitRequest>({
       query: (body) => ({ url: '/splits', method: 'POST', body }), invalidatesTags: ['Split'],
+    }),
+    updateSplit: builder.mutation<Split, { splitId: string; body: UpdateSplitRequest }>({
+      query: ({ splitId, body }) => ({ url: `/splits/${splitId}`, method: 'PATCH', body }),
+      invalidatesTags: ['Split'],
     }),
     settleSplitParticipant: builder.mutation<Split, { splitId: string; participantId: string; repaymentTransactionId: string }>({
       query: ({ splitId, participantId, repaymentTransactionId }) => ({
@@ -51,5 +61,5 @@ const splitsApi = apiClient.injectEndpoints({
 
 export const {
   useListSplitsQuery, useListSplitContactsQuery, useCreateSplitMutation, useSettleSplitParticipantMutation,
-  useDeleteSplitMutation,
+  useDeleteSplitMutation, useUpdateSplitMutation,
 } = splitsApi;

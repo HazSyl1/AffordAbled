@@ -5,11 +5,16 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.application.services.split_service import ParticipantShare, SplitService
+from app.application.services.split_service import ParticipantEditShare, ParticipantShare, SplitService
 from app.core.dependencies import get_current_user, get_db
 from app.domain.entities import User
 from app.infrastructure.database.repositories.sqlalchemy_split_repository import SqlAlchemySplitRepository
-from app.presentation.schemas.split import CreateSplitRequest, SettleParticipantRequest, SplitResponse
+from app.presentation.schemas.split import (
+    CreateSplitRequest,
+    SettleParticipantRequest,
+    SplitResponse,
+    UpdateSplitRequest,
+)
 
 router = APIRouter(prefix='/splits', tags=['splits'])
 
@@ -57,6 +62,25 @@ async def get_split(
     current_user: User = Depends(get_current_user), service: SplitService = Depends(get_split_service),
 ) -> SplitResponse:
     split = await service.get_for_user(current_user.id, split_id)
+    if split is None:
+        raise HTTPException(status_code=404, detail='Split not found.')
+    return SplitResponse.from_model(split)
+
+
+@router.patch('/{split_id}', response_model=SplitResponse)
+async def update_split(
+    split_id: uuid.UUID, payload: UpdateSplitRequest,
+    current_user: User = Depends(get_current_user), service: SplitService = Depends(get_split_service),
+) -> SplitResponse:
+    try:
+        split = await service.update(
+            current_user.id, split_id, payload.title, payload.owner_share_paise,
+            [ParticipantEditShare(person.id, person.name, person.share_paise) for person in payload.participants],
+        )
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
     if split is None:
         raise HTTPException(status_code=404, detail='Split not found.')
     return SplitResponse.from_model(split)

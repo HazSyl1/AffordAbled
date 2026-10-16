@@ -23,6 +23,18 @@ class CreateSplitRequest(BaseModel):
     participants: list[ParticipantRequest] = Field(min_length=1, max_length=20)
 
 
+class UpdateParticipantRequest(BaseModel):
+    id: uuid.UUID | None = None
+    name: str = Field(min_length=1, max_length=100)
+    share_paise: int = Field(gt=0)
+
+
+class UpdateSplitRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=255)
+    owner_share_paise: int = Field(ge=0)
+    participants: list[UpdateParticipantRequest] = Field(min_length=1, max_length=20)
+
+
 class ParticipantResponse(BaseModel):
     id: uuid.UUID
     name: str

@@ -11,6 +11,13 @@ class ParticipantShare:
     share_paise: int
 
 
+@dataclass(frozen=True)
+class ParticipantEditShare:
+    id: uuid.UUID | None
+    name: str
+    share_paise: int
+
+
 class SplitStore(Protocol):
     async def create(
         self, user_id: uuid.UUID, transaction_id: uuid.UUID, title: str,
@@ -20,6 +27,11 @@ class SplitStore(Protocol):
     async def list_for_user(self, user_id: uuid.UUID): ...
 
     async def get_for_user(self, user_id: uuid.UUID, split_id: uuid.UUID): ...
+
+    async def update(
+        self, user_id: uuid.UUID, split_id: uuid.UUID, title: str,
+        owner_share_paise: int, participants: list[ParticipantEditShare],
+    ): ...
 
     async def settle(
         self, user_id: uuid.UUID, split_id: uuid.UUID,
@@ -75,6 +87,29 @@ class SplitService:
 
     async def get_for_user(self, user_id: uuid.UUID, split_id: uuid.UUID):
         return await self.store.get_for_user(user_id, split_id)
+
+    async def update(
+        self, user_id: uuid.UUID, split_id: uuid.UUID, title: str,
+        owner_share_paise: int, participants: list[ParticipantEditShare],
+    ):
+        clean_title = title.strip()
+        if not clean_title or len(clean_title) > 255:
+            raise ValueError('Enter a split title (up to 255 characters).')
+        if owner_share_paise < 0:
+            raise ValueError('Your share cannot be negative.')
+        if not 1 <= len(participants) <= 20:
+            raise ValueError('Add between 1 and 20 people.')
+        names = [person.name.strip() for person in participants]
+        if any(not name or len(name) > 100 for name in names) or len({name.casefold() for name in names}) != len(names):
+            raise ValueError('Participant names must be unique and between 1 and 100 characters.')
+        if any(person.share_paise <= 0 for person in participants):
+            raise ValueError('Each person must have a positive share.')
+        ids = [person.id for person in participants if person.id is not None]
+        if len(ids) != len(set(ids)):
+            raise ValueError('Each existing person may only appear once.')
+        cleaned = [ParticipantEditShare(person.id, name, person.share_paise)
+                   for person, name in zip(participants, names, strict=True)]
+        return await self.store.update(user_id, split_id, clean_title, owner_share_paise, cleaned)
 
     async def settle(
         self, user_id: uuid.UUID, split_id: uuid.UUID,

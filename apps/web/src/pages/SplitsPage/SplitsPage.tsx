@@ -6,7 +6,8 @@ import { Card } from '../../components/atoms/Card';
 import { ThemedSelect } from '../../components/molecules/ThemedSelect';
 import {
   useCreateSplitMutation, useListSplitContactsQuery, useListSplitsQuery,
-  useSettleSplitParticipantMutation, useDeleteSplitMutation, type CreateSplitRequest,
+  useSettleSplitParticipantMutation, useDeleteSplitMutation, useUpdateSplitMutation,
+  type CreateSplitRequest, type Split,
 } from '../../features/splits/splitsApi';
 import { useListTransactionsQuery } from '../../features/transactions/transactionsApi';
 import { formatPaiseAsInr } from '../../lib/money';
@@ -26,6 +27,104 @@ function detail(error: unknown): string {
     if (typeof data?.detail === 'string') return data.detail;
   }
   return 'Please try again.';
+}
+
+type EditPerson = { id?: string; name: string; amount: string; hasRepayment: boolean };
+
+function EditSplitForm({ split, onCancel }: { split: Split; onCancel: () => void }) {
+  const [updateSplit, { isLoading: saving }] = useUpdateSplitMutation();
+  const [title, setTitle] = useState(split.title);
+  const [ownerAmount, setOwnerAmount] = useState((split.owner_share_paise / 100).toFixed(2));
+  const [people, setPeople] = useState<EditPerson[]>(() => split.participants.map((person) => ({
+    id: person.id, name: person.name, amount: (person.share_paise / 100).toFixed(2),
+    hasRepayment: person.repayment_transaction_id !== null || person.settled_paise > 0,
+  })));
+  const [showValidation, setShowValidation] = useState(false);
+  const [error, setError] = useState('');
+  const ownShare = paise(ownerAmount);
+  const shares = people.map((person) => paise(person.amount));
+  const allocatedPaise = (ownShare ?? 0) + shares.reduce<number>((sum, share) => sum + (share ?? 0), 0);
+  const remainingPaise = split.total_paise - allocatedPaise;
+  const invalidAmounts = ownShare === null || shares.some((share) => share === null || share <= 0) || remainingPaise !== 0;
+  const names = people.map((person) => person.name.trim());
+  const invalidNames = names.map((name, index) => !name ||
+    names.some((other, row) => row !== index && other.toLowerCase() === name.toLowerCase()));
+
+  function updatePerson(index: number, change: Partial<EditPerson>) {
+    setPeople((current) => current.map((person, row) => row === index ? { ...person, ...change } : person));
+    setError('');
+  }
+
+  async function save(event: FormEvent) {
+    event.preventDefault();
+    setShowValidation(true);
+    setError('');
+    if (!title.trim()) { setError('Enter a split title.'); return; }
+    if (invalidNames.some(Boolean)) { setError('Enter a different name for each person.'); return; }
+    if (invalidAmounts) { setError('Shares, including yours, must add up to the expense exactly.'); return; }
+    try {
+      await updateSplit({
+        splitId: split.id,
+        body: {
+          title: title.trim(), owner_share_paise: ownShare!,
+          participants: people.map((person, index) => ({
+            ...(person.id ? { id: person.id } : {}), name: person.name.trim(), share_paise: shares[index]!,
+          })),
+        },
+      }).unwrap();
+      onCancel();
+    } catch (failure) { setError(detail(failure)); }
+  }
+
+  return <form onSubmit={save} noValidate className='space-y-3 border-t border-[var(--bg-border)] pt-3'>
+    <p className='text-xs text-[var(--text-muted)]'>Adjust unpaid shares before saving. Shares with linked repayments stay fixed.</p>
+    <label className='block space-y-1 text-sm text-[var(--text-secondary)]'>Title
+      <input className={`${inputClass} ${showValidation && !title.trim() ? 'border-red-400/70' : ''}`}
+        maxLength={255} value={title} onChange={(event) => { setTitle(event.target.value); setError(''); }} />
+    </label>
+    <label className='block space-y-1 text-sm text-[var(--text-secondary)]'>Your share (₹)
+      <input className={`${inputClass} ${showValidation && ownShare === null ? 'border-red-400/70' : ''}`}
+        inputMode='decimal' aria-invalid={showValidation && ownShare === null}
+        value={ownerAmount} onChange={(event) => { setOwnerAmount(event.target.value); setError(''); }} />
+    </label>
+    <div className='space-y-2'>
+      <p className='text-sm text-[var(--text-secondary)]'>People who owe you</p>
+      {people.map((person, index) => <div key={person.id ?? `new-${index}`}
+        className='grid gap-2 rounded-lg border border-[var(--bg-border)] p-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] sm:items-end'>
+        <label className='block space-y-1 text-xs text-[var(--text-secondary)]'>Name
+          <input className={`${inputClass} ${showValidation && invalidNames[index] ? 'border-red-400/70' : ''}`}
+            maxLength={100} aria-invalid={showValidation && invalidNames[index]}
+            value={person.name} onChange={(event) => updatePerson(index, { name: event.target.value })} />
+        </label>
+        <label className='block space-y-1 text-xs text-[var(--text-secondary)]'>Share (₹)
+          <input className={`${inputClass} ${showValidation && (shares[index] === null || shares[index] <= 0) ? 'border-red-400/70' : ''}`}
+            inputMode='decimal' disabled={person.hasRepayment}
+            aria-invalid={showValidation && (shares[index] === null || shares[index] <= 0)}
+            value={person.amount} onChange={(event) => updatePerson(index, { amount: event.target.value })} />
+        </label>
+        {person.hasRepayment ? <span className='text-xs text-[var(--text-muted)]'>Repayment linked</span> :
+          <button type='button' disabled={people.length === 1}
+            className='text-left text-xs text-[var(--text-muted)] disabled:opacity-50 sm:pb-3'
+            onClick={() => { setPeople((current) => current.filter((_, row) => row !== index)); setError(''); }}>Remove</button>}
+      </div>)}
+      {people.length < 20 && <button type='button' className='text-sm text-[var(--brand-primary)]'
+        onClick={() => {
+          setPeople((current) => [...current, {
+            name: '', amount: remainingPaise > 0 ? (remainingPaise / 100).toFixed(2) : '', hasRepayment: false,
+          }]);
+          setError('');
+        }}>+ Add person</button>}
+    </div>
+    <div role='status' className='rounded-lg border border-[var(--bg-border)] p-3 text-sm text-[var(--text-secondary)]'>
+      <p>Total: {formatPaiseAsInr(split.total_paise)}</p>
+      <p>Allocated: {formatPaiseAsInr(allocatedPaise)}</p>
+      <p className={`font-semibold ${invalidAmounts ? 'text-red-400' : ''}`}>Remaining: {formatPaiseAsInr(remainingPaise)}</p>
+      {invalidAmounts && <p className='mt-1 text-xs text-red-400'>Enter valid shares that add up to the total.</p>}
+    </div>
+    {error && <p role='alert' className='text-sm text-red-400'>{error}</p>}
+    <div className='flex gap-2'><Button type='submit' isLoading={saving}>Save split</Button>
+      <Button type='button' variant='secondary' onClick={onCancel}>Cancel</Button></div>
+  </form>;
 }
 
 export function SplitsPage() {
@@ -49,6 +148,7 @@ export function SplitsPage() {
   const [error, setError] = useState('');
   const [showValidation, setShowValidation] = useState(false);
   const [repayments, setRepayments] = useState<Record<string, string>>({});
+  const [editingSplitId, setEditingSplitId] = useState<string | null>(null);
 
   useEffect(() => {
     if (focusedSplitId && splits.some((split) => split.id === focusedSplitId)) {
@@ -240,7 +340,15 @@ export function SplitsPage() {
             <div className='flex justify-between gap-3'><div><h3 className='font-semibold text-[var(--text-primary)]'>{split.title}</h3>
               <p className='text-xs text-[var(--text-muted)]'>Total {formatPaiseAsInr(split.total_paise)} · Your share {formatPaiseAsInr(split.owner_share_paise)}</p></div>
               <div className='text-right'><span className='text-sm font-semibold text-[var(--text-primary)]'>{formatPaiseAsInr(split.outstanding_paise)} due</span>
-                <button className='block text-xs text-[var(--text-muted)]' disabled={deleting} onClick={() => removeSplit(split.id)}>Remove split</button></div></div>
+                <div className='flex justify-end gap-3'>
+                  <button type='button' className='text-xs text-[var(--brand-primary)]'
+                    onClick={() => setEditingSplitId(editingSplitId === split.id ? null : split.id)}>
+                    {editingSplitId === split.id ? 'Close edit' : 'Edit split'}
+                  </button>
+                  <button type='button' className='text-xs text-[var(--text-muted)]' disabled={deleting}
+                    onClick={() => removeSplit(split.id)}>Remove split</button>
+                </div></div></div>
+            {editingSplitId === split.id ? <EditSplitForm key={split.id} split={split} onCancel={() => setEditingSplitId(null)} /> : <>
             {split.participants.map((person) => <div key={person.id} className='flex items-center justify-between gap-3 border-t border-[var(--bg-border)] pt-2 text-sm'>
               <span className='text-[var(--text-primary)]'>{person.name} · {formatPaiseAsInr(person.share_paise)}</span>
               {person.settled_paise === person.share_paise ? <span className='text-green-400'>Settled</span> :
@@ -260,6 +368,7 @@ export function SplitsPage() {
                 </div>}
             </div>)}
             {split.outstanding_paise > 0 && <button className='text-xs text-[var(--text-muted)]' onClick={() => navigate('/transactions')}>Record a repayment in Transactions first</button>}
+            </>}
           </Card>)}
     </section>
   </div>;

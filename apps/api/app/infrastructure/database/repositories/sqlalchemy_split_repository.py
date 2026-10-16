@@ -7,7 +7,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.application.services.split_service import ParticipantShare
+from app.application.services.split_service import ParticipantEditShare, ParticipantShare
 from app.infrastructure.database.models import SplitModel, SplitParticipantModel, TransactionModel
 
 
@@ -83,6 +83,69 @@ class SqlAlchemySplitRepository:
             select(SplitModel).where(SplitModel.id == split_id, SplitModel.user_id == user_id)
             .options(selectinload(SplitModel.participants))
         )
+
+    async def update(
+        self, user_id: uuid.UUID, split_id: uuid.UUID, title: str,
+        owner_share_paise: int, participants: list[ParticipantEditShare],
+    ) -> SplitModel | None:
+        split = await self.get_for_user(user_id, split_id)
+        if split is None:
+            return None
+        amount_paise = await self.session.scalar(
+            select(TransactionModel.amount_paise).where(
+                TransactionModel.id == split.transaction_id,
+                TransactionModel.user_id == user_id,
+                TransactionModel.deleted_at.is_(None),
+                TransactionModel.type == 'expense',
+            )
+        )
+        if amount_paise is None:
+            raise LookupError('Expense transaction was not found.')
+        if owner_share_paise + sum(person.share_paise for person in participants) != amount_paise:
+            raise ValueError('Split shares must match the current expense amount.')
+
+        existing = {person.id: person for person in split.participants}
+        requested_ids = {person.id for person in participants if person.id is not None}
+        if requested_ids - existing.keys():
+            raise ValueError('A participant does not belong to this split.')
+        requested = {person.id: person for person in participants if person.id is not None}
+        for person in split.participants:
+            if person.repayment_transaction_id is not None or person.settled_paise > 0:
+                updated = requested.get(person.id)
+                if updated is None or updated.share_paise != person.share_paise:
+                    raise ValueError('A person with a linked repayment cannot be removed or have their share changed.')
+
+        try:
+            for person in list(split.participants):
+                if person.id not in requested_ids:
+                    split.participants.remove(person)
+            await self.session.flush()
+
+            renamed = [person for person in participants if person.id is not None and
+                       existing[person.id].name != person.name]
+            for person in renamed:
+                existing[person.id].name = f'__edit_{uuid.uuid4().hex}'
+            if renamed:
+                await self.session.flush()
+
+            split.title = title
+            split.owner_share_paise = owner_share_paise
+            for person in participants:
+                if person.id is None:
+                    split.participants.append(SplitParticipantModel(
+                        id=uuid.uuid4(), name=person.name, share_paise=person.share_paise, settled_paise=0,
+                    ))
+                else:
+                    existing[person.id].name = person.name
+                    existing[person.id].share_paise = person.share_paise
+            await self.session.commit()
+        except IntegrityError as error:
+            await self.session.rollback()
+            raise ValueError('Participant names must be unique within the split.') from error
+        except Exception:
+            await self.session.rollback()
+            raise
+        return await self.get_for_user(user_id, split_id)
 
     async def settle(
         self, user_id: uuid.UUID, split_id: uuid.UUID,
