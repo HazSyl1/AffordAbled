@@ -362,6 +362,7 @@ class ToolBoundSpecialistRuntime:
                 "list_transactions",
                 "delete_transaction",
                 "restore_transaction",
+                "create_split",
                 "get_account_balances",
                 "get_transactions",
                 "get_spending_summary",

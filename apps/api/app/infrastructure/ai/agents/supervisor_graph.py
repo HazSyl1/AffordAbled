@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.services.account_service import AccountService
 from app.application.services.category_service import CategoryService
+from app.application.services.split_service import SplitService
 from app.application.services.transaction_service import TransactionService
 from app.domain.ports import ChatTurnResult, GuardrailDecision, SemanticGuardrail
 from app.infrastructure.ai.agents.account import AccountToolset
@@ -28,10 +29,12 @@ from app.infrastructure.ai.agents.prompts import (
     ANALYTICS_PROMPT,
     CATEGORY_PROMPT,
     FORMATTING_PROMPT,
+    SPLIT_PROMPT,
     SUPERVISOR_PROMPT,
     TRANSACTION_PROMPT,
 )
 from app.infrastructure.ai.agents.runtime import ToolBoundSpecialistRuntime
+from app.infrastructure.ai.agents.split import SplitToolset
 from app.infrastructure.ai.agents.transaction import TransactionToolset
 from app.infrastructure.ai.tools.transaction_query_tools import TransactionQueryTools
 
@@ -50,7 +53,21 @@ _MUTATION_TOOLS = {
     "update_transaction",
     "delete_transaction",
     "restore_transaction",
+    "create_split",
 }
+
+
+def _split_task_for_request(request: str) -> str | None:
+    normalized = request.casefold()
+    has_split_context = re.search(r"\b(?:split|shared|with)\b", normalized)
+    has_transaction = re.search(r"\b(?:spent|spend|paid|pay|expense|transaction)\b", normalized)
+    if not (has_split_context and has_transaction):
+        return None
+    if not re.search(r"\bwith\b", normalized) and "split" not in normalized:
+        return None
+    match = re.search(r"\bwith\s+(.+?)(?:\s+for\s+me)?(?:[.!?]|$)", request, re.IGNORECASE)
+    names = match.group(1).strip() if match else "the named people"
+    return f"create an equal split for the transaction just recorded with participants {names}"
 
 
 def _explicit_action_clauses(request: str) -> list[str]:
@@ -184,6 +201,12 @@ def _matches_observed_action(task: str, action: dict[str, Any]) -> bool:
         )
         task_mentions_merchant = bool(merchant and _mentions(task, merchant))
         return identified and (id_matches or not task_mentions_merchant or merchant_matches)
+    if tool == "create_split":
+        split = data.get("split") or {}
+        return "split" in normalized_task and (
+            _mentions(task, str(split.get("title") or ""))
+            or any(_mentions(task, str(person.get("name") or "")) for person in split.get("participants", []))
+        )
     if tool == "get_account_balances":
         return any(_mentions(task, word) for word in ("balance", "balances"))
     if tool == "get_transactions":
@@ -305,12 +328,17 @@ def _required_tools(task: str, specialist: str | None) -> set[str] | None:
             "withdrew",
         ):
             return {"create_transaction", "create_transaction_batch"}
+    if specialist == "split":
+        if says("split", "shared", "owe", "people", "participants"):
+            return {"create_split"}
     return None
 
 
 def _obvious_specialist(task: str) -> str | None:
     """Keep an actionable first turn from being finished before any tool runs."""
     normalized = task.casefold()
+    if "split" in normalized and not re.search(r"\b(?:spent|spend|paid|pay|record|log)\b", normalized):
+        return "split"
     if any(_mentions(task, word) for word in ("balance", "balances")):
         return "analytics"
     if re.search(r"\bcategor(?:y|ies)\b", normalized) and any(
@@ -461,6 +489,7 @@ class AgenticSupervisorGraph:
         account_service: AccountService,
         transaction_service: TransactionService,
         query_tools: TransactionQueryTools,
+        split_service: SplitService | None = None,
         db_session: AsyncSession | None = None,
     ) -> None:
         self._guardrail = guardrail
@@ -478,6 +507,7 @@ class AgenticSupervisorGraph:
         category_llm = model_for("category")
         account_llm = model_for("account")
         transaction_llm = model_for("transaction")
+        split_llm = model_for("split")
         analytics_llm = model_for("analytics")
         formatting_llm = model_for("formatting")
         self._supervisor = StructuredSupervisorBrain(llm=supervisor_llm, system_prompt=SUPERVISOR_PROMPT)
@@ -486,6 +516,7 @@ class AgenticSupervisorGraph:
         account_tools = AccountToolset(account_service).registry()
         transaction_tools = TransactionToolset(transaction_service, extraction_agent=extraction_agent).registry()
         analytics_tools = AnalyticsToolset(query_tools).registry()
+        split_tools = SplitToolset(split_service, transaction_service).registry() if split_service else {}
         tool_lock = asyncio.Lock()
         self._specialists = {
             "category": ToolBoundSpecialistRuntime(
@@ -513,6 +544,10 @@ class AgenticSupervisorGraph:
                 destructive_tools={"delete_transaction"},
                 db_session=db_session,
                 tool_lock=tool_lock,
+            ),
+            "split": ToolBoundSpecialistRuntime(
+                name="split", llm=split_llm, system_prompt=SPLIT_PROMPT,
+                tools=split_tools, db_session=db_session, tool_lock=tool_lock,
             ),
             "analytics": ToolBoundSpecialistRuntime(
                 name="analytics",
@@ -627,6 +662,7 @@ class AgenticSupervisorGraph:
                 "remaining_tasks": task_queue,
                 "available_categories": available_categories,
                 "available_accounts": available_accounts,
+                "created_transaction_ids": state.get("created_transaction_ids", []),
                 "last_transaction_window": state.get("last_transaction_window"),
                 "original_request": state.get("task_request"),
             },
@@ -637,6 +673,12 @@ class AgenticSupervisorGraph:
             explicit_clauses = _explicit_action_clauses(state.get("task_request", ""))
             if len(explicit_clauses) > len(task_queue):
                 task_queue = explicit_clauses
+            split_task = _split_task_for_request(state.get("task_request", ""))
+            if split_task:
+                if not any(_obvious_specialist(task) == "transaction" for task in task_queue):
+                    task_queue.insert(0, state.get("task_request") or str(state["messages"][-1].content))
+                if not any("split" in task.casefold() for task in task_queue):
+                    task_queue.append(split_task)
             if not task_queue:
                 task_queue = [state.get("task_request") or str(state["messages"][-1].content)]
         if not state.get("results") and (decision.action != "route" or decision.specialist is None):
@@ -860,6 +902,7 @@ class AgenticSupervisorGraph:
                 "latest_user_reply": str(state["messages"][-1].content),
                 "available_categories": state.get("available_categories", []),
                 "available_accounts": state.get("available_accounts", []),
+                "created_transaction_ids": state.get("created_transaction_ids", []),
                 "last_transaction_window": state.get("last_transaction_window"),
                 "original_request": state.get("task_request"),
             },

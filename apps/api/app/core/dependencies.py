@@ -22,6 +22,7 @@ from app.application.services.export_service import ExportService
 from app.application.services.image_service import ImageService
 from app.application.services.profile_summary_service import ProfileSummaryService
 from app.application.services.speech_service import SpeechService
+from app.application.services.split_service import SplitService
 from app.application.services.thread_service import ThreadService
 from app.application.services.transaction_service import TransactionService
 from app.core.config import Settings, get_settings
@@ -324,6 +325,7 @@ def get_chat_orchestrator(
             category_service=CategoryService(category_repository=category_repository),
             account_service=AccountService(account_repository=account_repository),
             transaction_service=transaction_service,
+            split_service=SplitService(SqlAlchemySplitRepository(db)),
             query_tools=transaction_query_tools,
             db_session=db,
         )

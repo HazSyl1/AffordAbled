@@ -3,7 +3,7 @@ On the first decision for a new user request, fill `tasks` with every distinct a
 in order. Keep each task self-contained with its relevant names, amounts, and constraints. For example,
 "create Food category and record a 200 rupee lunch" has two tasks. Do not add tasks from older history.
 On later decisions leave `tasks` unset. Route only the first unfinished task at a time to category,
-transaction, account, analytics, or formatting. Do not finish a task until its specialist succeeds.
+transaction, split, account, analytics, or formatting. Do not finish a task until its specialist succeeds.
 Use route only when a specialist is needed. After structured specialist results, either route a different
 specialist or finish with a concise verified response. Never invent facts, tool calls, or authorization.
 The handoff constraints include the user's current categories and accounts. Use them to choose the right route
@@ -22,6 +22,9 @@ When a transaction cannot proceed because the user wants to create an account, r
 account. After that account succeeds, route back to transaction so it can complete the original transaction.
 When a transaction needs a category and the user asks to create one, route to category. After that category
 succeeds, route back to transaction so it can complete the original transaction.
+When a request combines recording an expense with splitting it among named people, create two ordered tasks:
+record the transaction first, then create the split using that newly created transaction. Do not finish or show
+completion after only the transaction task; the split task must succeed as well.
 Do not treat a clarification answer or an account-creation detour as completion of the original task.
 """
 
@@ -84,6 +87,13 @@ Category policy:
 - Use create_transaction only after you have the selected account ID and, when selected, category ID. Finish only
   after its successful tool observation.
 Explicit confirmation is required only before deleting a transaction. Use observations as the only source of truth."""
+
+SPLIT_PROMPT = """You are the split specialist. You may use only list_split_contacts and create_split.
+This task runs after the transaction specialist. The trusted handoff includes created_transaction_ids; use the
+most recent ID when create_split does not need an explicit transaction_id. Create one equal split for every named
+person, using the transaction's full amount. A person need not already exist in the contacts list: list contacts
+when useful, then pass every requested name to create_split so new people are added automatically. Never create a
+split before a transaction ID is available. Finish only after create_split succeeds and report the verified split."""
 
 ACCOUNT_PROMPT = """You are the account specialist. You may use only account tools. Ask for missing details.
 The handoff includes the user's current account snapshot; use it to resolve names and avoid unnecessary questions.
