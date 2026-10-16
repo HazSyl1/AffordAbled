@@ -3,6 +3,7 @@ import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 
 import { Button } from '../../components/atoms/Button';
 import { Card } from '../../components/atoms/Card';
+import { ThemedSelect } from '../../components/molecules/ThemedSelect';
 import {
   useCreateSplitMutation, useListSplitContactsQuery, useListSplitsQuery,
   useSettleSplitParticipantMutation, useDeleteSplitMutation, type CreateSplitRequest,
@@ -10,7 +11,9 @@ import {
 import { useListTransactionsQuery } from '../../features/transactions/transactionsApi';
 import { formatPaiseAsInr } from '../../lib/money';
 
-type Person = { name: string; amount: string | null };
+type Person = { name: string; amount: string | null; isNew: boolean };
+const NEW_PERSON = '__new_person__';
+const newPerson = (): Person => ({ name: '', amount: null, isNew: false });
 const inputClass = 'w-full rounded-xl border border-[var(--bg-border)] bg-[var(--bg-elevated)] px-3 py-2 text-[var(--text-primary)]';
 
 function paise(value: string): number | null {
@@ -39,10 +42,11 @@ export function SplitsPage() {
   const [transactionId, setTransactionId] = useState(searchParams.get('transactionId') ?? '');
   const [title, setTitle] = useState('');
   const [mode, setMode] = useState<'equal' | 'custom'>('equal');
-  const [ownerAmount, setOwnerAmount] = useState('');
-  const [people, setPeople] = useState<Person[]>([{ name: '', amount: null }]);
+  const [ownerAmount, setOwnerAmount] = useState<string | null>(null);
+  const [people, setPeople] = useState<Person[]>([newPerson()]);
   const [review, setReview] = useState<CreateSplitRequest | null>(null);
   const [error, setError] = useState('');
+  const [showValidation, setShowValidation] = useState(false);
   const [repayments, setRepayments] = useState<Record<string, string>>({});
 
   const expenses = useMemo(() => transactions.filter((transaction) =>
@@ -51,29 +55,34 @@ export function SplitsPage() {
   const expense = expenses.find((item) => item.id === transactionId);
   const equalShare = expense ? Math.floor(expense.amount_paise / (people.length + 1)) : 0;
   const ownerEqualShare = expense ? equalShare + expense.amount_paise % (people.length + 1) : 0;
-  const ownCustomShare = paise(ownerAmount);
-  const earlierCustomShares = people.slice(0, -1).map((person) => paise(person.amount ?? ''));
-  const autoLastShare = expense && ownCustomShare !== null && earlierCustomShares.every((share) => share !== null)
-    ? expense.amount_paise - ownCustomShare - earlierCustomShares.reduce<number>((sum, share) => sum + (share ?? 0), 0)
-    : null;
-  const customShares = people.map((person, index) =>
-    index === people.length - 1 && person.amount === null ? autoLastShare : paise(person.amount ?? ''));
+  const displayedOwnerAmount = ownerAmount ?? (expense ? (ownerEqualShare / 100).toFixed(2) : '');
+  const ownCustomShare = paise(displayedOwnerAmount);
+  const displayedPersonAmount = (person: Person) => person.amount ?? (expense ? (equalShare / 100).toFixed(2) : '');
+  const customShares = people.map((person) => paise(displayedPersonAmount(person)));
+  const amountsValid = ownCustomShare !== null && ownCustomShare >= 0 &&
+    customShares.every((share) => share !== null && share > 0);
+  const allocatedPaise = (ownCustomShare ?? 0) + customShares.reduce<number>((sum, share) => sum + (share ?? 0), 0);
+  const remainingPaise = expense ? expense.amount_paise - allocatedPaise : 0;
+  const allocationError = mode === 'custom' && Boolean(expense) && (!amountsValid || remainingPaise !== 0);
+  const names = people.map((person) => person.name.trim());
+  const invalidNames = names.map((name, index) => !name || names.some((other, row) => row !== index && other.toLowerCase() === name.toLowerCase()));
+  const nameError = showValidation && invalidNames.some(Boolean);
 
   function updatePerson(index: number, change: Partial<Person>) {
     setPeople((current) => current.map((person, row) => row === index ? { ...person, ...change } : person));
     setReview(null);
+    setError('');
   }
 
   function prepare(event: FormEvent) {
     event.preventDefault();
     setError('');
+    setShowValidation(true);
     if (!expense) { setError('Choose an expense.'); return; }
-    const names = people.map((person) => person.name.trim());
-    if (names.some((name) => !name) || new Set(names.map((name) => name.toLowerCase())).size !== names.length) {
+    if (invalidNames.some(Boolean)) {
       setError('Enter a different name for each person.'); return;
     }
-    if (mode === 'custom' && (ownCustomShare === null || customShares.some((share) => share === null || share <= 0) ||
-      ownCustomShare + customShares.reduce<number>((sum, share) => sum + (share ?? 0), 0) !== expense.amount_paise)) {
+    if (allocationError) {
       setError('Custom shares, including yours, must add up to the expense exactly.'); return;
     }
     setReview({
@@ -91,7 +100,7 @@ export function SplitsPage() {
     try {
       await createSplit(review).unwrap();
       setOpen(false); setReview(null); setTransactionId(''); setTitle('');
-      setPeople([{ name: '', amount: null }]); setError(''); navigate('/splits');
+      setPeople([newPerson()]); setOwnerAmount(null); setShowValidation(false); setError(''); navigate('/splits');
     } catch (failure) { setError(detail(failure)); }
   }
 
@@ -120,9 +129,11 @@ export function SplitsPage() {
     {open && <Card className='space-y-4 p-5'>
       <h2 className='font-semibold text-[var(--text-primary)]'>Share a recorded expense</h2>
       <p className='text-xs text-[var(--text-muted)]'>The purchase is already in your account. Link each repayment to a recorded income or refund when it arrives.</p>
-      <form onSubmit={prepare} className='space-y-4'>
+      <form onSubmit={prepare} noValidate className='space-y-4'>
         <label className='block space-y-1 text-sm text-[var(--text-secondary)]'>Expense
-          <select className={inputClass} value={transactionId} onChange={(event) => { setTransactionId(event.target.value); setReview(null); }} required>
+          <select className={`${inputClass} ${showValidation && !expense ? 'border-red-500 bg-red-500/10' : ''}`}
+            aria-invalid={showValidation && !expense} value={transactionId}
+            onChange={(event) => { setTransactionId(event.target.value); setReview(null); setError(''); }} required>
             <option value=''>Choose an expense</option>
             {expenses.map((item) => <option key={item.id} value={item.id}>
               {item.merchant || item.note || 'Expense'} · {formatPaiseAsInr(item.amount_paise)} · {new Date(item.occurred_at).toLocaleDateString()}
@@ -134,28 +145,58 @@ export function SplitsPage() {
           <input className={inputClass} maxLength={255} value={title} onChange={(event) => { setTitle(event.target.value); setReview(null); }} placeholder='Dinner with friends' />
         </label>
         <div className='flex gap-4 text-sm text-[var(--text-primary)]'>
-          <label><input type='radio' checked={mode === 'equal'} onChange={() => { setMode('equal'); setReview(null); }} /> Equal</label>
-          <label><input type='radio' checked={mode === 'custom'} onChange={() => { setMode('custom'); setReview(null); }} /> Custom</label>
+          <label><input type='radio' checked={mode === 'equal'} onChange={() => { setMode('equal'); setReview(null); setError(''); }} /> Equal</label>
+          <label><input type='radio' checked={mode === 'custom'} onChange={() => { setMode('custom'); setReview(null); setError(''); }} /> Custom</label>
         </div>
-        {mode === 'custom' && <label className='block space-y-1 text-sm text-[var(--text-secondary)]'>Your share (₹)
-          <input className={inputClass} inputMode='decimal' value={ownerAmount} onChange={(event) => { setOwnerAmount(event.target.value); setReview(null); }} required />
-        </label>}
-        <div className='space-y-2'>
-          <p className='text-sm text-[var(--text-secondary)]'>People who owe you</p>
-          {people.map((person, index) => <div key={index} className='flex gap-2'>
-            <input className={inputClass} list='split-contacts' aria-label={`Person ${index + 1}`} placeholder='Name' value={person.name} onChange={(event) => updatePerson(index, { name: event.target.value })} required />
-            {mode === 'custom' && <input className={inputClass} inputMode='decimal' aria-label={`Amount for person ${index + 1} in rupees`} placeholder={index === people.length - 1 ? 'Remaining amount' : '₹'}
-              value={index === people.length - 1 && person.amount === null && autoLastShare !== null && autoLastShare >= 0
-                ? (autoLastShare / 100).toFixed(2) : person.amount ?? ''}
-              onFocus={(event) => { if (index === people.length - 1 && person.amount === null) event.currentTarget.select(); }}
-              onChange={(event) => updatePerson(index, { amount: event.target.value || null })} required />}
-            {people.length > 1 && <button type='button' className='text-sm text-[var(--text-muted)]' onClick={() => { setPeople((current) => current.filter((_, row) => row !== index)); setReview(null); }}>Remove</button>}
-          </div>)}
-          <datalist id='split-contacts'>{contacts.map((contact) => <option key={contact} value={contact} />)}</datalist>
-          {people.length < 20 && <button type='button' className='text-sm text-[var(--brand-primary)]' onClick={() => { setPeople((current) => [...current, { name: '', amount: null }]); setReview(null); }}>+ Add person</button>}
+        {mode === 'custom' && <p className='text-xs text-[var(--text-muted)]'>Shares start equally divided. Edit any amount; the remaining total updates as you type.</p>}
+        <div className={`space-y-3 rounded-xl border p-3 ${allocationError || nameError ? 'border-red-500 bg-red-500/10' : 'border-[var(--bg-border)]'}`}>
+          {mode === 'custom' && <label className='block space-y-1 text-sm text-[var(--text-secondary)]'>Your share (₹)
+            <input className={`${inputClass} ${ownCustomShare === null ? 'border-red-500 bg-red-500/10' : ''}`}
+              inputMode='decimal' aria-invalid={ownCustomShare === null} value={displayedOwnerAmount}
+              onFocus={(event) => { if (ownerAmount === null) event.currentTarget.select(); }}
+              onChange={(event) => { setOwnerAmount(event.target.value); setReview(null); setError(''); }} />
+          </label>}
+          <div className='space-y-2'>
+            <p className='text-sm text-[var(--text-secondary)]'>People who owe you</p>
+            {people.map((person, index) => <div key={index} className={`space-y-2 rounded-lg border p-2 ${showValidation && invalidNames[index] ? 'border-red-500 bg-red-500/10' : 'border-[var(--bg-border)]'}`}>
+              <div className='flex items-center gap-2'>
+                <div className='min-w-0 flex-1'>
+                  <ThemedSelect id={`split-person-${index}`} value={person.isNew ? NEW_PERSON : person.name}
+                    placeholder='Choose a person'
+                    invalid={showValidation && invalidNames[index]}
+                    options={[
+                      { value: NEW_PERSON, label: person.isNew && person.name ? `New: ${person.name}` : '+ Add new person' },
+                      ...contacts.filter((contact) => !people.some((other, row) => row !== index && other.name.toLowerCase() === contact.toLowerCase()))
+                        .map((contact) => ({ value: contact, label: contact })),
+                    ]}
+                    onChange={(value) => updatePerson(index, value === NEW_PERSON
+                      ? { name: '', isNew: true } : { name: value, isNew: false })} />
+                </div>
+                {people.length > 1 && <button type='button' className='text-sm text-[var(--text-muted)]' onClick={() => { setPeople((current) => current.filter((_, row) => row !== index)); setReview(null); setError(''); }}>Remove</button>}
+              </div>
+              {person.isNew && <input className={`${inputClass} ${showValidation && invalidNames[index] ? 'border-red-500 bg-red-500/10' : ''}`}
+                aria-label={`New person ${index + 1} name`} aria-invalid={showValidation && invalidNames[index]}
+                placeholder='Person name' maxLength={100} value={person.name}
+                onChange={(event) => updatePerson(index, { name: event.target.value })} />}
+              {mode === 'custom' && <label className='block space-y-1 text-xs text-[var(--text-secondary)]'>Share (₹)
+                <input className={`${inputClass} ${customShares[index] === null || (customShares[index] ?? 0) <= 0 ? 'border-red-500 bg-red-500/10' : ''}`}
+                  inputMode='decimal' aria-label={`Amount for person ${index + 1} in rupees`}
+                  aria-invalid={customShares[index] === null || (customShares[index] ?? 0) <= 0}
+                  value={displayedPersonAmount(person)}
+                  onFocus={(event) => { if (person.amount === null) event.currentTarget.select(); }}
+                  onChange={(event) => updatePerson(index, { amount: event.target.value })} />
+              </label>}
+            </div>)}
+            {people.length < 20 && <button type='button' className='text-sm text-[var(--brand-primary)]' onClick={() => { setPeople((current) => [...current, newPerson()]); setReview(null); setError(''); }}>+ Add person</button>}
+          </div>
+          {mode === 'equal' && expense && <p className='text-sm text-[var(--text-secondary)]'>Each person owes {formatPaiseAsInr(equalShare)}. Your share is {formatPaiseAsInr(ownerEqualShare)}.</p>}
+          {mode === 'custom' && expense && <div role='status' className={`rounded-lg border p-3 text-sm ${allocationError ? 'border-red-500 bg-red-500/10 text-red-300' : 'border-[var(--bg-border)] text-[var(--text-secondary)]'}`}>
+            <p>Total: {formatPaiseAsInr(expense.amount_paise)}</p>
+            <p>Allocated: {formatPaiseAsInr(allocatedPaise)}</p>
+            <p className='font-semibold'>Remaining: {formatPaiseAsInr(remainingPaise)}</p>
+            {allocationError && <p className='mt-1 text-xs'>Enter valid shares that add up to the total.</p>}
+          </div>}
         </div>
-        {mode === 'equal' && expense && <p className='text-sm text-[var(--text-secondary)]'>Each person owes {formatPaiseAsInr(equalShare)}. Your share is {formatPaiseAsInr(ownerEqualShare)}.</p>}
-        {mode === 'custom' && expense && <p className='text-xs text-[var(--text-muted)]'>The last person gets the remaining amount automatically. Enter earlier shares to recalculate it.</p>}
         <div className='flex gap-2'><Button type='submit' disabled={!expense}>Review split</Button>
           <Button type='button' variant='secondary' onClick={() => { setOpen(false); setReview(null); navigate('/splits'); }}>Cancel</Button></div>
       </form>
