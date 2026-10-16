@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from collections.abc import Awaitable, Callable
 from decimal import Decimal
@@ -445,6 +446,18 @@ class ToolBoundSpecialistRuntime:
                     ],
                     "specialist_steps": steps,
                 }
+            if self.name == "analytics" and "get_split_summary" in self.tools and steps == 0:
+                request = str(state.get("task_queue", [state.get("task_request", "")])[0]).casefold()
+                if re.search(r"\b(?:owe|owed|remaining|outstanding|unpaid|splits?)\b", request):
+                    return {
+                        "specialist_messages": [
+                            AIMessage(
+                                content="",
+                                tool_calls=[{"name": "get_split_summary", "args": {}, "id": "split-summary-intent"}],
+                            )
+                        ],
+                        "specialist_steps": steps + 1,
+                    }
             return {
                 "specialist_messages": [await model.ainvoke(state["specialist_messages"])],
                 "specialist_steps": steps + 1,
