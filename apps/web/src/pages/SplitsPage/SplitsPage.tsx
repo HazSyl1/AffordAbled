@@ -53,6 +53,10 @@ export function SplitsPage() {
     transaction.type === 'expense' && !transaction.deleted_at &&
     !splits.some((split) => split.transaction_id === transaction.id)), [transactions, splits]);
   const expense = expenses.find((item) => item.id === transactionId);
+  const recentExpenses = expenses.slice(0, 5);
+  const selectedOlderExpense = expense && !recentExpenses.some((item) => item.id === expense.id);
+  const displayedExpenses = selectedOlderExpense
+    ? [expense, ...recentExpenses.slice(0, 4)] : recentExpenses;
   const equalShare = expense ? Math.floor(expense.amount_paise / (people.length + 1)) : 0;
   const ownerEqualShare = expense ? equalShare + expense.amount_paise % (people.length + 1) : 0;
   const displayedOwnerAmount = ownerAmount ?? (expense ? (ownerEqualShare / 100).toFixed(2) : '');
@@ -148,11 +152,12 @@ export function SplitsPage() {
             aria-invalid={showValidation && !expense} value={transactionId}
             onChange={(event) => { setTransactionId(event.target.value); setReview(null); setError(''); }} required>
             <option value=''>Choose an expense</option>
-            {expenses.map((item) => <option key={item.id} value={item.id}>
+            {displayedExpenses.map((item) => <option key={item.id} value={item.id}>
               {item.merchant || item.note || 'Expense'} · {formatPaiseAsInr(item.amount_paise)} · {new Date(item.occurred_at).toLocaleDateString()}
             </option>)}
           </select>
         </label>
+        {expenses.length > 0 && <p className='text-xs text-[var(--text-muted)]'>{selectedOlderExpense ? 'Showing the selected expense and up to 4 recent expenses.' : 'Showing up to 5 recent expenses.'} To see more, <button type='button' className='text-[var(--brand-primary)] hover:underline' onClick={() => navigate('/transactions')}>go to Transactions</button> and select an expense to split.</p>}
         {expenses.length === 0 && <p className='text-sm text-[var(--text-muted)]'>Record an expense first to split it.</p>}
         <label className='block space-y-1 text-sm text-[var(--text-secondary)]'>Title
           <input className={inputClass} maxLength={255} value={title} onChange={(event) => { setTitle(event.target.value); setReview(null); }} placeholder='Dinner with friends' />
