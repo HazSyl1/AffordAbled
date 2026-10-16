@@ -72,10 +72,15 @@ class CreateTransactionToolInput(BaseModel):
     arguments: CreateTransactionArguments
 
 
+class EmptyArgumentsToolInput(BaseModel):
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
 _TOOL_SCHEMAS: dict[str, type[BaseModel]] = {
     "create_account": CreateAccountToolInput,
     "create_category": CreateCategoryToolInput,
     "create_transaction": CreateTransactionToolInput,
+    "get_split_summary": EmptyArgumentsToolInput,
 }
 
 _TOOL_DESCRIPTIONS = {
@@ -103,7 +108,7 @@ _TOOL_DESCRIPTIONS = {
     "get_spending_summary": "Read aggregate spending for a supplied date range, not individual transactions.",
     "get_spending_by_account": "Read spending grouped by account for a supplied date range.",
     "get_spending_comparison": "Compare two supported spending periods.",
-    "get_split_summary": "Read outstanding split balances for money-owed or remaining-split questions.",
+    "get_split_summary": "Read outstanding split balances for money-owed or remaining-split questions; no arguments are required.",
     "list_split_contacts": "Read names used in prior splits to help match people; new names are allowed.",
     "create_split": "Create a split after its expense exists, using its ID and requested participants.",
 }
