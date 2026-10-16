@@ -926,8 +926,9 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
           showHeading={false}
           initialValues={proposalInitialValues}
           prefillMode={proposalSheetMode}
+          enableSplit={proposalBatchTotal <= 1}
           submitLabel={proposalForSheet ? 'Confirm & Add' : 'Add transaction'}
-          onSuccess={() => {
+          onSuccess={(_transaction, splitRequested) => {
             if (proposalQueue.length > 1) {
               const remainingQueue = proposalQueue.slice(1);
               setProposalQueue(remainingQueue);
@@ -951,7 +952,7 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
             setProposalBatchCompleted(0);
             setProposalSheetMode('standard');
             setShowChatSheet(false);
-            navigate('/transactions');
+            if (!splitRequested) navigate('/transactions');
           }}
         />
       </BottomSheet>

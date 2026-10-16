@@ -2,6 +2,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { AlertCircle, ChevronDown } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useForm, useWatch } from 'react-hook-form';
+import { useNavigate } from 'react-router-dom';
 
 import {
   type AccountType,
@@ -17,7 +18,8 @@ import {
   useCreateTransactionMutation,
   useUpdateTransactionMutation,
 } from '../../../features/transactions/transactionsApi';
-import type { TransactionType } from '../../../features/transactions/transactionsApi';
+import type { Transaction, TransactionType } from '../../../features/transactions/transactionsApi';
+import { useListSplitsQuery } from '../../../features/splits/splitsApi';
 import { DASHBOARD_CHAT_UI_TEXT } from '../../../constants';
 import { Badge } from '../../atoms/Badge';
 import { Button } from '../../atoms/Button';
@@ -27,7 +29,7 @@ import { createTransactionSchema } from './CreateTransactionForm.schema';
 import type { CreateTransactionFormValues } from './CreateTransactionForm.schema';
 
 export interface CreateTransactionFormProps {
-  onSuccess?: () => void;
+  onSuccess?: (transaction: Transaction, splitRequested: boolean) => void;
   showHeading?: boolean;
   mode?: 'page' | 'sheet';
   initialValues?: Partial<CreateTransactionFormValues>;
@@ -35,6 +37,7 @@ export interface CreateTransactionFormProps {
   transactionId?: string;
   submitLabel?: string;
   prefillMode?: 'standard' | 'manual_low_confidence';
+  enableSplit?: boolean;
 }
 
 function getDefaultOccurredAt(): string {
@@ -221,15 +224,20 @@ export function CreateTransactionForm({
   transactionId,
   submitLabel = 'Add transaction',
   prefillMode = 'standard',
+  enableSplit = true,
 }: CreateTransactionFormProps) {
+  const navigate = useNavigate();
   const isSheetMode = mode === 'sheet';
   const isEditing = Boolean(transactionId);
+  const [splitAfterSave, setSplitAfterSave] = useState(false);
   const [createTransaction] = useCreateTransactionMutation();
   const [updateTransaction] = useUpdateTransactionMutation();
   const [createAccount, { isLoading: isCreatingAccount }] = useCreateAccountMutation();
   const [createCategory, { isLoading: isCreatingCategory }] = useCreateCategoryMutation();
   const { data: accounts } = useListAccountsQuery();
   const { data: categories } = useListCategoriesQuery();
+  const { data: splits, isSuccess: splitsReady } = useListSplitsQuery();
+  const hasSplit = Boolean(transactionId && splits?.some((split) => split.transaction_id === transactionId));
 
   const [formError, setFormError] = useState<string | null>(null);
   const [quickAccountName, setQuickAccountName] = useState('');
@@ -332,14 +340,17 @@ export function CreateTransactionForm({
     };
 
     try {
+      let savedTransaction: Transaction;
       if (transactionId) {
-        await updateTransaction({
+        savedTransaction = await updateTransaction({
           transactionId,
           body: payload,
         }).unwrap();
       } else {
-        await createTransaction(payload).unwrap();
+        savedTransaction = await createTransaction(payload).unwrap();
       }
+
+      const openSplit = enableSplit && splitsReady && splitAfterSave && values.type === 'expense' && !hasSplit;
 
       setShowQuickCategory(false);
       setQuickCategoryName('');
@@ -350,7 +361,11 @@ export function CreateTransactionForm({
       setQuickAccountError(null);
       setQuickAccountTarget('source');
       reset(resolveInitialValues(isEditing ? values : initialValues));
-      onSuccess?.();
+      setSplitAfterSave(false);
+      onSuccess?.(savedTransaction, openSplit);
+      if (openSplit) {
+        navigate(`/splits/new?transactionId=${savedTransaction.id}`);
+      }
     } catch {
       setFormError(isEditing ? 'Could not update the transaction.' : 'Could not create the transaction.');
     }
@@ -683,8 +698,21 @@ export function CreateTransactionForm({
         </p>
       ) : null}
 
+      {enableSplit && splitsReady && transactionType === 'expense' && !hasSplit ? (
+        <label className='mb-4 flex cursor-pointer items-start gap-3 rounded-xl border border-[var(--bg-border)] bg-[var(--bg-elevated)] p-3 text-sm text-[var(--text-primary)]'>
+          <input
+            type='checkbox'
+            className='mt-1'
+            checked={splitAfterSave}
+            onChange={(event) => setSplitAfterSave(event.target.checked)}
+          />
+          <span><span className='block font-semibold'>Split this expense</span>
+            <span className='block text-xs text-[var(--text-muted)]'>After saving, choose people and review their shares.</span></span>
+        </label>
+      ) : null}
+
       <Button type='submit' isLoading={isSubmitting}>
-        {submitLabel}
+        {splitAfterSave && transactionType === 'expense' ? 'Save and set up split' : submitLabel}
       </Button>
     </form>
   );

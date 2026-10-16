@@ -1,5 +1,5 @@
 import { useMemo, useState, type FormEvent } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 
 import { Button } from '../../components/atoms/Button';
 import { Card } from '../../components/atoms/Card';
@@ -28,6 +28,7 @@ function detail(error: unknown): string {
 export function SplitsPage() {
   const navigate = useNavigate();
   const location = useLocation();
+  const [searchParams] = useSearchParams();
   const { data: splits = [], isLoading } = useListSplitsQuery();
   const { data: transactions = [] } = useListTransactionsQuery();
   const { data: contacts = [] } = useListSplitContactsQuery();
@@ -35,7 +36,7 @@ export function SplitsPage() {
   const [settle, { isLoading: settling }] = useSettleSplitParticipantMutation();
   const [deleteSplit, { isLoading: deleting }] = useDeleteSplitMutation();
   const [open, setOpen] = useState(location.pathname.endsWith('/new'));
-  const [transactionId, setTransactionId] = useState('');
+  const [transactionId, setTransactionId] = useState(searchParams.get('transactionId') ?? '');
   const [title, setTitle] = useState('');
   const [mode, setMode] = useState<'equal' | 'custom'>('equal');
   const [ownerAmount, setOwnerAmount] = useState('');
