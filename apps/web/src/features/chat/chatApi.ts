@@ -83,10 +83,10 @@ const chatApi = apiClient.injectEndpoints({
         method: 'POST',
         body,
       }),
-      // A specialist can create/update categories, accounts, or transactions.
+      // A specialist can create/update categories, accounts, transactions, or splits.
       // Invalidate mounted domain lists after every completed chat turn so a
       // user never needs a browser refresh to see a chat-originated mutation.
-      invalidatesTags: ['Category', 'Transaction', 'Account'],
+      invalidatesTags: ['Category', 'Transaction', 'Account', 'Split'],
     }),
     getChatThread: builder.query<ChatThreadDetail, string>({
       query: (threadId) => `/threads/${encodeURIComponent(threadId)}`,
