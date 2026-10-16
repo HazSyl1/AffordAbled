@@ -368,6 +368,7 @@ class ToolBoundSpecialistRuntime:
                 "get_spending_summary",
                 "get_spending_by_account",
                 "get_spending_comparison",
+                "get_split_summary",
             }
         ]
         observed_actions.extend(

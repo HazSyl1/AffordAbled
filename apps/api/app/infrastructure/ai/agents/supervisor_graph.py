@@ -216,6 +216,8 @@ def _matches_observed_action(task: str, action: dict[str, Any]) -> bool:
         )
     if tool == "get_spending_comparison":
         return any(_mentions(task, word) for word in ("compare", "comparison", "versus", "vs"))
+    if tool == "get_split_summary":
+        return any(_mentions(task, word) for word in ("owe", "owed", "remaining", "outstanding", "split", "people"))
     if tool == "get_spending_by_account":
         return "account" in normalized_task and any(
             _mentions(task, word) for word in ("spending", "spent", "breakdown")
@@ -387,6 +389,8 @@ def _obvious_specialist(task: str) -> str | None:
         return "transaction"
     if any(_mentions(task, word) for word in ("balance", "balances", "history", "transactions", "spending")):
         return "analytics"
+    if any(_mentions(task, word) for word in ("owe", "owed", "remaining", "outstanding", "splits")):
+        return "analytics"
     if any(_mentions(task, word) for word in ("spend", "spent")) and any(
         _mentions(task, word) for word in ("how", "much", "compare", "total")
     ):
@@ -515,7 +519,7 @@ class AgenticSupervisorGraph:
         category_tools = CategoryToolset(category_service).registry()
         account_tools = AccountToolset(account_service).registry()
         transaction_tools = TransactionToolset(transaction_service, extraction_agent=extraction_agent).registry()
-        analytics_tools = AnalyticsToolset(query_tools).registry()
+        analytics_tools = AnalyticsToolset(query_tools, split_service=split_service).registry()
         split_tools = SplitToolset(split_service, transaction_service).registry() if split_service else {}
         tool_lock = asyncio.Lock()
         self._specialists = {

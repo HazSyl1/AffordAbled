@@ -4,13 +4,15 @@ import re
 from datetime import datetime, timedelta
 from typing import Any
 
+from app.application.services.split_service import SplitService
 from app.infrastructure.ai.agents.contracts import HandoffContext
 from app.infrastructure.ai.tools.transaction_query_tools import TransactionQueryTools
 
 
 class AnalyticsToolset:
-    def __init__(self, queries: TransactionQueryTools) -> None:
+    def __init__(self, queries: TransactionQueryTools, split_service: SplitService | None = None) -> None:
         self._queries = queries
+        self._splits = split_service
 
     def registry(self) -> dict[str, Any]:
         return {
@@ -19,6 +21,35 @@ class AnalyticsToolset:
             "get_spending_summary": self.get_spending_summary,
             "get_spending_by_account": self.get_spending_by_account,
             "get_spending_comparison": self.get_spending_comparison,
+            "get_split_summary": self.get_split_summary,
+        }
+
+    async def get_split_summary(self, context: HandoffContext, _args: dict[str, Any]) -> dict[str, Any]:
+        if self._splits is None:
+            raise RuntimeError("split analytics is unavailable")
+        splits = await self._splits.list_for_user(context.user_id)
+        summaries = []
+        total_outstanding = 0
+        for split in splits:
+            outstanding = sum(person.share_paise - person.settled_paise for person in split.participants)
+            total_outstanding += outstanding
+            summaries.append({
+                "id": str(split.id),
+                "title": split.title,
+                "transaction_id": str(split.transaction_id),
+                "total_paise": split.owner_share_paise + sum(person.share_paise for person in split.participants),
+                "outstanding_paise": outstanding,
+                "participants": [
+                    {"name": person.name, "share_paise": person.share_paise,
+                     "settled_paise": person.settled_paise}
+                    for person in split.participants
+                ],
+            })
+        return {
+            "split_count": len(summaries),
+            "remaining_split_count": sum(item["outstanding_paise"] > 0 for item in summaries),
+            "total_outstanding_paise": total_outstanding,
+            "splits": summaries,
         }
 
     async def get_account_balances(self, context: HandoffContext, args: dict[str, Any]) -> dict[str, Any]:
