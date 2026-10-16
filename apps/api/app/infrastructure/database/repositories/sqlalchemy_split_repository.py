@@ -233,11 +233,13 @@ class SqlAlchemySplitRepository:
             occurred_at=now, created_at=now, updated_at=now,
         )
         self.session.add(transaction)
-        account.balance_paise += participant.share_paise
-        account.updated_at = now
-        participant.settled_paise = participant.share_paise
-        participant.repayment_transaction_id = transaction.id
         try:
+            # The participant is an existing row. Insert its new FK target before updating the link.
+            await self.session.flush()
+            account.balance_paise += participant.share_paise
+            account.updated_at = now
+            participant.settled_paise = participant.share_paise
+            participant.repayment_transaction_id = transaction.id
             await self.session.commit()
         except Exception:
             await self.session.rollback()

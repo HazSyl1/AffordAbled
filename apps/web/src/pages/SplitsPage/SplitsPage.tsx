@@ -23,11 +23,18 @@ function paise(value: string): number | null {
 }
 
 function detail(error: unknown): string {
-  if (typeof error === 'object' && error !== null && 'data' in error) {
-    const data = (error as { data?: { detail?: string } }).data;
-    if (typeof data?.detail === 'string') return data.detail;
+  if (typeof error === 'object' && error !== null) {
+    if ('data' in error) {
+      const data = (error as { data?: { detail?: string } }).data;
+      if (typeof data?.detail === 'string') return data.detail;
+    }
+    if ('status' in error) {
+      const status = (error as { status: unknown }).status;
+      if (status === 'FETCH_ERROR') return 'Could not reach the API. Check that the server is running.';
+      if (typeof status === 'number') return `Request failed (${status}). Check the API logs for details.`;
+    }
   }
-  return 'Please try again.';
+  return 'Could not complete the request. Please try again.';
 }
 
 type EditPerson = { id?: string; name: string; amount: string; hasRepayment: boolean };

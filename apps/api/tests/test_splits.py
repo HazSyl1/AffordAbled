@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from httpx import AsyncClient
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from tests.helpers import auth_headers, register_and_get_token
 
@@ -179,7 +181,11 @@ async def test_edit_split_preserves_linked_repayments_and_participant_ids(client
     assert paid['repayment_transaction_id'] == repayment.json()['id']
 
 
-async def test_mark_repaid_creates_and_links_a_single_categorized_transaction(client: AsyncClient) -> None:
+async def test_mark_repaid_creates_and_links_a_single_categorized_transaction(
+    client: AsyncClient, db_session: AsyncSession,
+) -> None:
+    await db_session.execute(text('PRAGMA foreign_keys=ON'))
+    assert (await db_session.execute(text('PRAGMA foreign_keys'))).scalar_one() == 1
     owner = await register_and_get_token(client, 'split-repaid@example.com')
     other = await register_and_get_token(client, 'split-repaid-other@example.com')
     headers = auth_headers(owner)
