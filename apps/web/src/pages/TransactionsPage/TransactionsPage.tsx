@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 
 import { Button } from '../../components/atoms/Button';
 import { Card } from '../../components/atoms/Card';
@@ -25,9 +26,14 @@ function mapTransactionToFormValues(transaction: Transaction): Partial<CreateTra
 }
 
 export function TransactionsPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedTransactionId = searchParams.get('transactionId');
   const { data: transactions } = useListTransactionsQuery();
   const [isAddTransactionSheetOpen, setIsAddTransactionSheetOpen] = useState(false);
-  const [transactionBeingEdited, setTransactionBeingEdited] = useState<Transaction | null>(null);
+  const [selectedTransaction, setSelectedTransaction] = useState<Transaction | null>(null);
+  const transactionBeingEdited = requestedTransactionId
+    ? transactions?.find((item) => item.id === requestedTransactionId) ?? null
+    : selectedTransaction;
 
   const editInitialValues = useMemo(
     () => (transactionBeingEdited ? mapTransactionToFormValues(transactionBeingEdited) : undefined),
@@ -62,11 +68,18 @@ export function TransactionsPage() {
   }, [transactions]);
 
   const handleOpenEditSheet = (transaction: Transaction) => {
-    setTransactionBeingEdited(transaction);
+    setSelectedTransaction(transaction);
   };
 
   const handleCloseEditSheet = () => {
-    setTransactionBeingEdited(null);
+    setSelectedTransaction(null);
+    if (requestedTransactionId) {
+      setSearchParams((current) => {
+        const next = new URLSearchParams(current);
+        next.delete('transactionId');
+        return next;
+      }, { replace: true });
+    }
   };
 
   return (

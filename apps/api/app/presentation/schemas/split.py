@@ -47,6 +47,10 @@ class SettleParticipantRequest(BaseModel):
     repayment_transaction_id: uuid.UUID
 
 
+class RepayParticipantRequest(BaseModel):
+    account_id: uuid.UUID
+
+
 class SplitResponse(BaseModel):
     id: uuid.UUID
     transaction_id: uuid.UUID

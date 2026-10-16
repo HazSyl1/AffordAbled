@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -8,7 +9,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.application.services.split_service import ParticipantEditShare, ParticipantShare
-from app.infrastructure.database.models import SplitModel, SplitParticipantModel, TransactionModel
+from app.infrastructure.database.models import (
+    AccountModel,
+    CategoryModel,
+    SplitModel,
+    SplitParticipantModel,
+    TransactionModel,
+    UserModel,
+)
+
+SPLIT_REPAYMENT_CATEGORY = 'Split repayment'
 
 
 class SqlAlchemySplitRepository:
@@ -185,6 +195,53 @@ class SqlAlchemySplitRepository:
         except IntegrityError as error:
             await self.session.rollback()
             raise ValueError('That repayment is already linked to a split.') from error
+        return await self.get_for_user(user_id, split_id)
+
+    async def repay(
+        self, user_id: uuid.UUID, split_id: uuid.UUID,
+        participant_id: uuid.UUID, account_id: uuid.UUID,
+    ) -> SplitModel | None:
+        # Serialize repayments for this user, including first-time category creation.
+        await self.session.scalar(select(UserModel.id).where(UserModel.id == user_id).with_for_update())
+        split = await self.get_for_user(user_id, split_id)
+        if split is None:
+            return None
+        participant = next((person for person in split.participants if person.id == participant_id), None)
+        if participant is None:
+            return None
+        if participant.settled_paise == participant.share_paise or participant.repayment_transaction_id is not None:
+            raise ValueError('This person is already repaid.')
+        account = await self.session.scalar(select(AccountModel).where(
+            AccountModel.id == account_id, AccountModel.user_id == user_id, AccountModel.is_active.is_(True),
+        ))
+        if account is None:
+            raise LookupError('Receiving account was not found or is inactive.')
+        category = await self.session.scalar(select(CategoryModel).where(
+            CategoryModel.user_id == user_id, CategoryModel.type == 'income',
+            CategoryModel.name == SPLIT_REPAYMENT_CATEGORY,
+        ))
+        now = datetime.now(UTC)
+        if category is None:
+            category = CategoryModel(
+                id=uuid.uuid4(), user_id=user_id, name=SPLIT_REPAYMENT_CATEGORY, type='income',
+            )
+            self.session.add(category)
+        transaction = TransactionModel(
+            id=uuid.uuid4(), user_id=user_id, account_id=account_id,
+            category_id=category.id, type='income', amount_paise=participant.share_paise,
+            merchant=participant.name, note=f'Repayment for split: {split.title}',
+            occurred_at=now, created_at=now, updated_at=now,
+        )
+        self.session.add(transaction)
+        account.balance_paise += participant.share_paise
+        account.updated_at = now
+        participant.settled_paise = participant.share_paise
+        participant.repayment_transaction_id = transaction.id
+        try:
+            await self.session.commit()
+        except Exception:
+            await self.session.rollback()
+            raise
         return await self.get_for_user(user_id, split_id)
 
     async def delete(self, user_id: uuid.UUID, split_id: uuid.UUID) -> bool:

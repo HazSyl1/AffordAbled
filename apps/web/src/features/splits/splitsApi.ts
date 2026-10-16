@@ -52,6 +52,13 @@ const splitsApi = apiClient.injectEndpoints({
       }),
       invalidatesTags: ['Split'],
     }),
+    repaySplitParticipant: builder.mutation<Split, { splitId: string; participantId: string; accountId: string }>({
+      query: ({ splitId, participantId, accountId }) => ({
+        url: `/splits/${splitId}/participants/${participantId}/repay`, method: 'POST',
+        body: { account_id: accountId },
+      }),
+      invalidatesTags: ['Split', 'Transaction', 'Account', 'Category'],
+    }),
     deleteSplit: builder.mutation<void, string>({
       query: (splitId) => ({ url: `/splits/${splitId}`, method: 'DELETE' }),
       invalidatesTags: ['Split'],
@@ -61,5 +68,5 @@ const splitsApi = apiClient.injectEndpoints({
 
 export const {
   useListSplitsQuery, useListSplitContactsQuery, useCreateSplitMutation, useSettleSplitParticipantMutation,
-  useDeleteSplitMutation, useUpdateSplitMutation,
+  useDeleteSplitMutation, useUpdateSplitMutation, useRepaySplitParticipantMutation,
 } = splitsApi;

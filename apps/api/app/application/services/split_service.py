@@ -38,6 +38,11 @@ class SplitStore(Protocol):
         participant_id: uuid.UUID, repayment_transaction_id: uuid.UUID,
     ): ...
 
+    async def repay(
+        self, user_id: uuid.UUID, split_id: uuid.UUID,
+        participant_id: uuid.UUID, account_id: uuid.UUID,
+    ): ...
+
     async def delete(self, user_id: uuid.UUID, split_id: uuid.UUID) -> bool: ...
 
     async def contact_names(self, user_id: uuid.UUID) -> list[str]: ...
@@ -116,6 +121,12 @@ class SplitService:
         participant_id: uuid.UUID, repayment_transaction_id: uuid.UUID,
     ):
         return await self.store.settle(user_id, split_id, participant_id, repayment_transaction_id)
+
+    async def repay(
+        self, user_id: uuid.UUID, split_id: uuid.UUID,
+        participant_id: uuid.UUID, account_id: uuid.UUID,
+    ):
+        return await self.store.repay(user_id, split_id, participant_id, account_id)
 
     async def delete(self, user_id: uuid.UUID, split_id: uuid.UUID) -> bool:
         return await self.store.delete(user_id, split_id)

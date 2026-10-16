@@ -4,9 +4,10 @@ import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { Button } from '../../components/atoms/Button';
 import { Card } from '../../components/atoms/Card';
 import { ThemedSelect } from '../../components/molecules/ThemedSelect';
+import { useListAccountsQuery } from '../../features/accounts/accountsApi';
 import {
   useCreateSplitMutation, useListSplitContactsQuery, useListSplitsQuery,
-  useSettleSplitParticipantMutation, useDeleteSplitMutation, useUpdateSplitMutation,
+  useRepaySplitParticipantMutation, useDeleteSplitMutation, useUpdateSplitMutation,
   type CreateSplitRequest, type Split,
 } from '../../features/splits/splitsApi';
 import { useListTransactionsQuery } from '../../features/transactions/transactionsApi';
@@ -134,9 +135,10 @@ export function SplitsPage() {
   const focusedSplitId = searchParams.get('splitId');
   const { data: splits = [], isLoading } = useListSplitsQuery();
   const { data: transactions = [] } = useListTransactionsQuery();
+  const { data: accounts = [] } = useListAccountsQuery();
   const { data: contacts = [] } = useListSplitContactsQuery();
   const [createSplit, { isLoading: creating }] = useCreateSplitMutation();
-  const [settle, { isLoading: settling }] = useSettleSplitParticipantMutation();
+  const [repay, { isLoading: repaying }] = useRepaySplitParticipantMutation();
   const [deleteSplit, { isLoading: deleting }] = useDeleteSplitMutation();
   const [open, setOpen] = useState(location.pathname.endsWith('/new'));
   const [transactionId, setTransactionId] = useState(searchParams.get('transactionId') ?? '');
@@ -147,9 +149,11 @@ export function SplitsPage() {
   const [review, setReview] = useState<CreateSplitRequest | null>(null);
   const [error, setError] = useState('');
   const [showValidation, setShowValidation] = useState(false);
-  const [repayments, setRepayments] = useState<Record<string, string>>({});
+  const [repaymentAccounts, setRepaymentAccounts] = useState<Record<string, string>>({});
   const [editingSplitId, setEditingSplitId] = useState<string | null>(null);
   const totalOwedPaise = splits.reduce((total, split) => total + split.outstanding_paise, 0);
+  const activeAccounts = accounts.filter((account) => account.is_active);
+  const defaultAccountId = activeAccounts.find((account) => account.is_default)?.id ?? activeAccounts[0]?.id ?? '';
 
   useEffect(() => {
     if (focusedSplitId && splits.some((split) => split.id === focusedSplitId)) {
@@ -230,10 +234,10 @@ export function SplitsPage() {
   }
 
   async function markRepaid(splitId: string, participantId: string) {
-    const repaymentTransactionId = repayments[participantId];
-    if (!repaymentTransactionId) { setError('Choose a recorded repayment first.'); return; }
+    const accountId = repaymentAccounts[participantId] ?? defaultAccountId;
+    if (!accountId) { setError('Choose the account that received the repayment.'); return; }
     setError('');
-    try { await settle({ splitId, participantId, repaymentTransactionId }).unwrap(); }
+    try { await repay({ splitId, participantId, accountId }).unwrap(); }
     catch (failure) { setError(detail(failure)); }
   }
 
@@ -259,7 +263,7 @@ export function SplitsPage() {
     {error && <p role='alert' className='rounded-xl bg-red-500/10 p-3 text-sm text-red-300'>{error}</p>}
     {open && <Card className='space-y-4 p-5'>
       <h2 className='font-semibold text-[var(--text-primary)]'>Share a recorded expense</h2>
-      <p className='text-xs text-[var(--text-muted)]'>The purchase is already in your account. Link each repayment to a recorded income or refund when it arrives.</p>
+      <p className='text-xs text-[var(--text-muted)]'>The purchase is already in your account. Mark each person repaid when their share reaches you.</p>
       <form onSubmit={prepare} noValidate className='space-y-4'>
         <div className='space-y-1 text-sm text-[var(--text-secondary)]'>
           <label htmlFor='split-expense'>Expense</label>
@@ -347,7 +351,9 @@ export function SplitsPage() {
             <div className='flex justify-between gap-3'><div><h3 className='font-semibold text-[var(--text-primary)]'>{split.title}</h3>
               <p className='text-xs text-[var(--text-muted)]'>Total {formatPaiseAsInr(split.total_paise)} · Your share {formatPaiseAsInr(split.owner_share_paise)}</p></div>
               <div className='text-right'><span className='text-sm font-semibold text-[var(--text-primary)]'>{formatPaiseAsInr(split.outstanding_paise)} due</span>
-                <div className='flex justify-end gap-3'>
+                <div className='flex flex-wrap justify-end gap-3'>
+                  <button type='button' className='text-xs text-[var(--brand-primary)]'
+                    onClick={() => navigate(`/transactions?transactionId=${split.transaction_id}`)}>View transaction</button>
                   <button type='button' className='text-xs text-[var(--brand-primary)]'
                     onClick={() => setEditingSplitId(editingSplitId === split.id ? null : split.id)}>
                     {editingSplitId === split.id ? 'Close edit' : 'Edit split'}
@@ -358,23 +364,27 @@ export function SplitsPage() {
             {editingSplitId === split.id ? <EditSplitForm key={split.id} split={split} onCancel={() => setEditingSplitId(null)} /> : <>
             {split.participants.map((person) => <div key={person.id} className='flex items-center justify-between gap-3 border-t border-[var(--bg-border)] pt-2 text-sm'>
               <span className='text-[var(--text-primary)]'>{person.name} · {formatPaiseAsInr(person.share_paise)}</span>
-              {person.settled_paise === person.share_paise ? <span className='text-green-400'>Settled</span> :
+              {person.settled_paise === person.share_paise ? <div className='flex flex-col items-end gap-1'>
+                <span className='text-green-400'>Repaid</span>
+                {person.repayment_transaction_id && <button type='button' className='text-xs text-[var(--brand-primary)]'
+                  onClick={() => navigate(`/transactions?transactionId=${person.repayment_transaction_id}`)}>View repayment</button>}
+              </div> :
                 <div className='flex flex-col items-end gap-1'>
-                  <select aria-label={`Repayment for ${person.name}`} className='max-w-40 rounded-lg border border-[var(--bg-border)] bg-[var(--bg-elevated)] p-1 text-xs text-[var(--text-primary)]'
-                    value={repayments[person.id] ?? ''} onChange={(event) => setRepayments((current) => ({ ...current, [person.id]: event.target.value }))}>
-                    <option value=''>Choose repayment</option>
-                    {transactions.filter((transaction) =>
-                      (transaction.type === 'income' || transaction.type === 'refund') &&
-                      !transaction.deleted_at && transaction.amount_paise === person.share_paise &&
-                      !splits.some((item) => item.participants.some((linked) => linked.repayment_transaction_id === transaction.id)))
-                      .map((transaction) => <option key={transaction.id} value={transaction.id}>
-                        {transaction.merchant || transaction.note || 'Repayment'} · {new Date(transaction.occurred_at).toLocaleDateString()}
-                      </option>)}
-                  </select>
-                  <button disabled={settling || !repayments[person.id]} className='text-[var(--brand-primary)] disabled:opacity-50' onClick={() => markRepaid(split.id, person.id)}>Link repayment</button>
+                  <label className='space-y-1 text-xs text-[var(--text-muted)]'>Received in
+                    <select aria-label={`Account receiving repayment from ${person.name}`}
+                      className='block w-full max-w-40 rounded-lg border border-[var(--bg-border)] bg-[var(--bg-elevated)] p-1 text-xs text-[var(--text-primary)]'
+                      value={repaymentAccounts[person.id] ?? defaultAccountId}
+                      onChange={(event) => setRepaymentAccounts((current) => ({ ...current, [person.id]: event.target.value }))}>
+                      {activeAccounts.length === 0 && <option value=''>Choose account</option>}
+                      {activeAccounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}
+                    </select>
+                  </label>
+                  <button type='button' disabled={repaying || !defaultAccountId}
+                    className='rounded-lg bg-[var(--brand-primary)] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[var(--brand-hover)] disabled:opacity-50'
+                    onClick={() => markRepaid(split.id, person.id)}>Mark repaid</button>
                 </div>}
             </div>)}
-            {split.outstanding_paise > 0 && <button className='text-xs text-[var(--text-muted)]' onClick={() => navigate('/transactions')}>Record a repayment in Transactions first</button>}
+            {split.outstanding_paise > 0 && <p className='text-xs text-[var(--text-muted)]'>Mark repaid records a Split repayment income transaction in the selected account.</p>}
             </>}
           </Card>)}
     </section>

@@ -11,6 +11,7 @@ from app.domain.entities import User
 from app.infrastructure.database.repositories.sqlalchemy_split_repository import SqlAlchemySplitRepository
 from app.presentation.schemas.split import (
     CreateSplitRequest,
+    RepayParticipantRequest,
     SettleParticipantRequest,
     SplitResponse,
     UpdateSplitRequest,
@@ -94,6 +95,22 @@ async def settle_split_participant(
 ) -> SplitResponse:
     try:
         split = await service.settle(current_user.id, split_id, participant_id, payload.repayment_transaction_id)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    if split is None:
+        raise HTTPException(status_code=404, detail='Split participant not found.')
+    return SplitResponse.from_model(split)
+
+
+@router.post('/{split_id}/participants/{participant_id}/repay', response_model=SplitResponse)
+async def repay_split_participant(
+    split_id: uuid.UUID, participant_id: uuid.UUID, payload: RepayParticipantRequest,
+    current_user: User = Depends(get_current_user), service: SplitService = Depends(get_split_service),
+) -> SplitResponse:
+    try:
+        split = await service.repay(current_user.id, split_id, participant_id, payload.account_id)
     except LookupError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     except ValueError as error:

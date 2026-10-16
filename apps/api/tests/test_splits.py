@@ -177,3 +177,50 @@ async def test_edit_split_preserves_linked_repayments_and_participant_ids(client
     paid = next(person for person in current['participants'] if person['id'] == people['A'])
     assert paid['share_paise'] == paid['settled_paise'] == 500
     assert paid['repayment_transaction_id'] == repayment.json()['id']
+
+
+async def test_mark_repaid_creates_and_links_a_single_categorized_transaction(client: AsyncClient) -> None:
+    owner = await register_and_get_token(client, 'split-repaid@example.com')
+    other = await register_and_get_token(client, 'split-repaid-other@example.com')
+    headers = auth_headers(owner)
+    account_id, transaction_id = await _expense(client, owner, amount=1000)
+    other_account_id, _ = await _expense(client, other)
+    created = await client.post('/api/v1/splits', json={
+        'transaction_id': transaction_id, 'title': 'Shared taxi', 'amount_paise': 1000,
+        'mode': 'custom', 'owner_share_paise': 200,
+        'participants': [{'name': 'Isha', 'share_paise': 800}],
+    }, headers=headers)
+    assert created.status_code == 201, created.text
+    split = created.json()
+    path = f"/api/v1/splits/{split['id']}/participants/{split['participants'][0]['id']}/repay"
+    initial_balance = (await client.get(f'/api/v1/accounts/{account_id}', headers=headers)).json()['balance_paise']
+
+    assert (await client.post(path, json={'account_id': other_account_id}, headers=headers)).status_code == 404
+    assert (await client.post(path, json={'account_id': account_id},
+                              headers=auth_headers(other))).status_code == 404
+    assert len((await client.get('/api/v1/transactions', headers=headers)).json()) == 1
+
+    repaid = await client.post(path, json={'account_id': account_id}, headers=headers)
+    assert repaid.status_code == 200, repaid.text
+    assert repaid.json()['outstanding_paise'] == 0
+    person = repaid.json()['participants'][0]
+    assert person['settled_paise'] == 800
+    repayment_id = person['repayment_transaction_id']
+    transactions = (await client.get('/api/v1/transactions', headers=headers)).json()
+    repayment = next(transaction for transaction in transactions if transaction['id'] == repayment_id)
+    assert len(transactions) == 2
+    assert repayment['type'] == 'income'
+    assert repayment['amount_paise'] == 800
+    assert repayment['account_id'] == account_id
+    categories = (await client.get('/api/v1/categories', headers=headers)).json()
+    repayment_category = next(category for category in categories if category['id'] == repayment['category_id'])
+    assert repayment_category['name'] == 'Split repayment'
+    assert repayment_category['type'] == 'income'
+    assert (await client.get(f'/api/v1/accounts/{account_id}', headers=headers)).json()['balance_paise'] == (
+        initial_balance + 800
+    )
+    assert (await client.patch(f'/api/v1/transactions/{repayment_id}',
+                               json={'amount_paise': 900}, headers=headers)).status_code == 400
+    assert (await client.delete(f'/api/v1/transactions/{repayment_id}', headers=headers)).status_code == 400
+    assert (await client.post(path, json={'account_id': account_id}, headers=headers)).status_code == 422
+    assert len((await client.get('/api/v1/transactions', headers=headers)).json()) == 2
