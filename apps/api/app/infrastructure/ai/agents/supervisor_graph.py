@@ -7,7 +7,7 @@ from collections import Counter
 from collections.abc import Mapping
 from typing import Annotated, Any, Literal, TypedDict
 
-from langchain_core.messages import BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import REMOVE_ALL_MESSAGES, RemoveMessage, add_messages
 from langgraph.types import Command
@@ -627,7 +627,9 @@ class AgenticSupervisorGraph:
                 "tasks_completed": False,
                 "show_completion_popup": False,
                 "results": [],
-                "prior_results": prior_results[-3:] if contextual_followup else [],
+                # Keep a bounded window of the previous turn's structured tool
+                # observations available to every new task, not only follow-ups.
+                "prior_results": prior_results[-5:],
                 "contextual_followup": contextual_followup,
                 "reroutes": 0,
                 "final_response": None,
@@ -974,6 +976,14 @@ class AgenticChatOrchestrator:
             )
         else:
             reply = str(result.get("final_response") or "I could not complete that request.")
+        if not interrupts:
+            # The application transcript stores this reply separately. Also
+            # put it in graph thread state so later turns can resolve references
+            # such as "elaborate" against what the assistant actually said.
+            await self._graph.graph.aupdate_state(
+                {"configurable": {"thread_id": f"{user_id}:{thread_id}"}},
+                {"messages": [AIMessage(content=reply)]},
+            )
         transaction_id: str | None = (result.get("created_transaction_ids") or [None])[-1]
         for specialist_result in reversed(result.get("results") or []):
             if specialist_result.get("specialist") != "transaction":
