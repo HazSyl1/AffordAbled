@@ -74,6 +74,20 @@ export function SplitsPage() {
     setError('');
   }
 
+  function addPerson() {
+    if (mode === 'custom' && (ownerAmount !== null || people.some((person) => person.amount !== null))) {
+      setOwnerAmount(displayedOwnerAmount);
+      setPeople([
+        ...people.map((person) => ({ ...person, amount: displayedPersonAmount(person) })),
+        { ...newPerson(), amount: amountsValid && remainingPaise > 0 ? (remainingPaise / 100).toFixed(2) : '' },
+      ]);
+    } else {
+      setPeople((current) => [...current, newPerson()]);
+    }
+    setReview(null);
+    setError('');
+  }
+
   function prepare(event: FormEvent) {
     event.preventDefault();
     setError('');
@@ -148,7 +162,7 @@ export function SplitsPage() {
           <label><input type='radio' checked={mode === 'equal'} onChange={() => { setMode('equal'); setReview(null); setError(''); }} /> Equal</label>
           <label><input type='radio' checked={mode === 'custom'} onChange={() => { setMode('custom'); setReview(null); setError(''); }} /> Custom</label>
         </div>
-        {mode === 'custom' && <p className='text-xs text-[var(--text-muted)]'>Shares start equally divided. Edit any amount; the remaining total updates as you type.</p>}
+        {mode === 'custom' && <p className='text-xs text-[var(--text-muted)]'>Shares start equally divided. After you edit a share, new people receive the remaining amount.</p>}
         <div className={`space-y-3 rounded-xl border p-3 ${allocationError || nameError ? 'border-red-500 bg-red-500/10' : 'border-[var(--bg-border)]'}`}>
           {mode === 'custom' && <label className='block space-y-1 text-sm text-[var(--text-secondary)]'>Your share (₹)
             <input className={`${inputClass} ${ownCustomShare === null ? 'border-red-500 bg-red-500/10' : ''}`}
@@ -187,7 +201,7 @@ export function SplitsPage() {
                   onChange={(event) => updatePerson(index, { amount: event.target.value })} />
               </label>}
             </div>)}
-            {people.length < 20 && <button type='button' className='text-sm text-[var(--brand-primary)]' onClick={() => { setPeople((current) => [...current, newPerson()]); setReview(null); setError(''); }}>+ Add person</button>}
+            {people.length < 20 && <button type='button' className='text-sm text-[var(--brand-primary)]' onClick={addPerson}>+ Add person</button>}
           </div>
           {mode === 'equal' && expense && <p className='text-sm text-[var(--text-secondary)]'>Each person owes {formatPaiseAsInr(equalShare)}. Your share is {formatPaiseAsInr(ownerEqualShare)}.</p>}
           {mode === 'custom' && expense && <div role='status' className={`rounded-lg border p-3 text-sm ${allocationError ? 'border-red-500 bg-red-500/10 text-red-300' : 'border-[var(--bg-border)] text-[var(--text-secondary)]'}`}>
