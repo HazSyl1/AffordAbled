@@ -163,7 +163,7 @@ export function TransactionList({ onTransactionSelect }: TransactionListProps) {
                     className={[
                       'p-4 active:scale-[0.98]',
                       onTransactionSelect
-                        ? 'cursor-pointer transition-colors hover:border-[color:rgba(168,85,247,0.5)] hover:bg-[color:rgba(168,85,247,0.08)]'
+                        ? 'group cursor-pointer transition-colors hover:border-[color:rgba(168,85,247,0.5)] hover:bg-[color:rgba(168,85,247,0.08)]'
                         : '',
                     ].join(' ')}
                     role={onTransactionSelect ? 'button' : undefined}
@@ -202,9 +202,9 @@ export function TransactionList({ onTransactionSelect }: TransactionListProps) {
                           <span className='text-xs text-[var(--text-muted)]'>{formatTime(transaction.occurred_at)}</span>
                           <Badge tone={getBadgeTone(transaction.type)}>{TYPE_LABEL[transaction.type]}</Badge>
                         </div>
-                        <div className='mt-2 flex items-center justify-end gap-2'>
+                        <div className='mt-2 flex flex-col items-end gap-1.5'>
                           {onTransactionSelect ? (
-                            <span className='text-[11px] font-medium text-[var(--text-muted)]'>{TRANSACTION_UI_TEXT.editHintLabel}</span>
+                            <span className='inline-flex items-center rounded-full border border-[color:rgba(168,85,247,0.7)] bg-[color:rgba(168,85,247,0.2)] px-2.5 py-1 text-[11px] font-semibold text-[var(--brand-primary)] shadow-[0_3px_12px_rgba(168,85,247,0.2)] transition-colors group-hover:bg-[color:rgba(168,85,247,0.3)]'>{TRANSACTION_UI_TEXT.editHintLabel}</span>
                           ) : null}
                           <Link
                             to={`/chat?transaction_id=${transaction.id}`}

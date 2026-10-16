@@ -122,7 +122,7 @@ export const DASHBOARD_CHAT_UI_TEXT = {
 
 export const TRANSACTION_UI_TEXT = {
   chatAboutLabel: 'Chat about this transaction',
-  editHintLabel: 'Click to edit',
+  editHintLabel: 'Click to edit or add Splits',
 } as const;
 
 export const SHEET_TITLES = {

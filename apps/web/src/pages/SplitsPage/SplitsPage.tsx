@@ -147,16 +147,16 @@ export function SplitsPage() {
       <h2 className='font-semibold text-[var(--text-primary)]'>Share a recorded expense</h2>
       <p className='text-xs text-[var(--text-muted)]'>The purchase is already in your account. Link each repayment to a recorded income or refund when it arrives.</p>
       <form onSubmit={prepare} noValidate className='space-y-4'>
-        <label className='block space-y-1 text-sm text-[var(--text-secondary)]'>Expense
-          <select className={`${inputClass} ${showValidation && !expense ? 'border-red-500 bg-red-500/10' : ''}`}
-            aria-invalid={showValidation && !expense} value={transactionId}
-            onChange={(event) => { setTransactionId(event.target.value); setReview(null); setError(''); }} required>
-            <option value=''>Choose an expense</option>
-            {displayedExpenses.map((item) => <option key={item.id} value={item.id}>
-              {item.merchant || item.note || 'Expense'} · {formatPaiseAsInr(item.amount_paise)} · {new Date(item.occurred_at).toLocaleDateString()}
-            </option>)}
-          </select>
-        </label>
+        <div className='space-y-1 text-sm text-[var(--text-secondary)]'>
+          <label htmlFor='split-expense'>Expense</label>
+          <ThemedSelect id='split-expense' value={transactionId} placeholder='Choose an expense'
+            invalid={showValidation && !expense}
+            options={displayedExpenses.map((item) => ({
+              value: item.id,
+              label: `${item.merchant || item.note || 'Expense'} · ${formatPaiseAsInr(item.amount_paise)} · ${new Date(item.occurred_at).toLocaleDateString()}`,
+            }))}
+            onChange={(value) => { setTransactionId(value); setReview(null); setError(''); }} />
+        </div>
         {expenses.length > 0 && <p className='text-xs text-[var(--text-muted)]'>{selectedOlderExpense ? 'Showing the selected expense and up to 4 recent expenses.' : 'Showing up to 5 recent expenses.'} To see more, <button type='button' className='text-[var(--brand-primary)] hover:underline' onClick={() => navigate('/transactions')}>go to Transactions</button> and select an expense to split.</p>}
         {expenses.length === 0 && <p className='text-sm text-[var(--text-muted)]'>Record an expense first to split it.</p>}
         <label className='block space-y-1 text-sm text-[var(--text-secondary)]'>Title

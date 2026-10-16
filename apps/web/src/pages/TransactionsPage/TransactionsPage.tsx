@@ -75,7 +75,7 @@ export function TransactionsPage() {
         <div className='flex items-start justify-between gap-3'>
           <div>
             <h1 className='text-xl font-bold text-[var(--text-primary)]'>Transactions</h1>
-            <p className='text-xs text-[var(--text-secondary)]'>Review spending, income, and transfers in one place. Click a transaction to edit it or split an expense.</p>
+            <p className='text-xs text-[var(--text-secondary)]'>Review spending, income, and transfers in one place. Click a transaction to edit it or add a split.</p>
           </div>
 
           <div className='flex gap-2'>
