@@ -36,6 +36,30 @@ class StubAccountRepository:
         return [account for account in self.accounts if account.user_id == user_id]
 
 
+class OptimizedTransactionRepository:
+    def __init__(self) -> None:
+        self.list_called = False
+        self.window_called = False
+        self.aggregate_called = False
+        self.account_aggregate_called = False
+
+    async def list_for_user(self, _user_id: uuid.UUID) -> list[Transaction]:
+        self.list_called = True
+        raise AssertionError('full history must not be loaded')
+
+    async def list_for_user_window(self, _user_id: uuid.UUID, **_kwargs: object) -> tuple[list[Transaction], int]:
+        self.window_called = True
+        return [], 5000
+
+    async def spending_summary_for_user(self, _user_id: uuid.UUID, **_kwargs: object) -> dict[str, object]:
+        self.aggregate_called = True
+        return {'total_spent_paise': 12345, 'transaction_count': 77, 'by_category': []}
+
+    async def spending_by_account_for_user(self, _user_id: uuid.UUID, **_kwargs: object) -> list[dict[str, object]]:
+        self.account_aggregate_called = True
+        return []
+
+
 def test_this_week_window_starts_monday_and_ends_at_now() -> None:
     now = datetime(2026, 10, 14, 8, 30, tzinfo=UTC)  # Wednesday
 
@@ -109,6 +133,31 @@ def test_spending_comparison_rejects_unsupported_period_pair() -> None:
 
 def test_large_paise_amount_formats_without_float_precision_loss() -> None:
     assert TransactionQueryTools._format_paise(90_071_992_547_409_939) == 'INR 900,719,925,474,099.39'
+
+
+@pytest.mark.asyncio
+async def test_analytics_uses_database_window_and_aggregate_methods() -> None:
+    user_id = uuid.uuid4()
+    repository = OptimizedTransactionRepository()
+    tools = TransactionQueryTools(
+        transaction_repository=repository,  # type: ignore[arg-type]
+        account_repository=StubAccountRepository(),
+        category_repository=StubCategoryRepository([]),
+    )
+    date_from = datetime(2026, 10, 1, tzinfo=UTC)
+    date_to = datetime(2026, 10, 31, tzinfo=UTC)
+
+    assert await tools.get_transactions(user_id=user_id, date_from=date_from, date_to=date_to, limit=10) == []
+    summary = await tools.get_spending_summary(user_id=user_id, date_from=date_from, date_to=date_to)
+    breakdown = await tools.get_spending_by_account(user_id=user_id, date_from=date_from, date_to=date_to)
+
+    assert summary['total_spent_paise'] == 12345
+    assert summary['transaction_count'] == 77
+    assert breakdown['accounts'] == []
+    assert repository.window_called is True
+    assert repository.aggregate_called is True
+    assert repository.account_aggregate_called is True
+    assert repository.list_called is False
 
 
 @pytest.mark.asyncio

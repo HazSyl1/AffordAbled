@@ -43,35 +43,14 @@ class _EmptyTransactionRepository:
         return []
 
 
-def _build_optional_extraction_llm(settings: Any) -> Any | None:
-    try:
-        from langchain_openai import AzureChatOpenAI
-    except ImportError:
-        return None
-
-    deployment = settings.azure_openai_extraction_deployment or settings.azure_openai_deployment
-    if not settings.azure_openai_endpoint or not settings.azure_openai_api_key or not deployment:
-        return None
-
-    return AzureChatOpenAI(
-        azure_endpoint=settings.azure_openai_endpoint,
-        api_key=settings.azure_openai_api_key,
-        azure_deployment=deployment,
-        api_version=settings.azure_openai_api_version,
-        temperature=0,
-        timeout=20,
-        max_retries=1,
-    )
-
-
 def main() -> None:
     _bootstrap_import_path()
 
-    from app.core.config import get_settings
-    from app.infrastructure.ai.intent_classifier import KeywordIntentClassifier
-    from app.infrastructure.ai.langgraph_chat_orchestrator import LangGraphChatOrchestrator
+    from app.application.services.account_service import AccountService
+    from app.application.services.category_service import CategoryService
+    from app.infrastructure.ai.agents.supervisor_graph import AgenticSupervisorGraph
     from app.infrastructure.ai.semantic_guardrail import KeywordSemanticGuardrail
-    from app.infrastructure.ai.tools import CategoryTools, TransactionQueryTools
+    from app.infrastructure.ai.tools import TransactionQueryTools
 
     parser = argparse.ArgumentParser(description='Export LangGraph chat workflow diagram.')
     parser.add_argument(
@@ -81,26 +60,33 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    settings = get_settings()
-    extraction_llm = _build_optional_extraction_llm(settings)
+    class DiagramLlm:
+        def with_structured_output(self, schema: Any, **_kwargs: Any) -> Any:
+            from langchain_core.runnables import RunnableLambda
 
-    orchestrator = LangGraphChatOrchestrator(
+            return RunnableLambda(lambda _input: schema.model_construct())
+
+    account_repository = _EmptyAccountRepository()
+    category_repository = _EmptyCategoryRepository()
+    graph = AgenticSupervisorGraph(
         checkpointer=InMemorySaver(),
-        semantic_guardrail=KeywordSemanticGuardrail(),
-        intent_classifier=KeywordIntentClassifier(),
+        guardrail=KeywordSemanticGuardrail(),
+        llm=DiagramLlm(),
+        category_service=CategoryService(category_repository=category_repository),
+        account_service=AccountService(account_repository=account_repository),
         transaction_service=_NoopTransactionService(),
-        account_repository=_EmptyAccountRepository(),
-        category_repository=_EmptyCategoryRepository(),
-        category_tools=CategoryTools(category_repository=_EmptyCategoryRepository()),
-        transaction_query_tools=TransactionQueryTools(
+        query_tools=TransactionQueryTools(
             transaction_repository=_EmptyTransactionRepository(),
-            account_repository=_EmptyAccountRepository(),
-            category_repository=_EmptyCategoryRepository(),
+            account_repository=account_repository,
+            category_repository=category_repository,
         ),
-        extraction_llm=extraction_llm,
     )
 
-    mermaid_path, png_path = orchestrator.save_graph_assets(_api_root() / args.output_dir)
+    output_dir = _api_root() / args.output_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
+    mermaid_path = output_dir / 'agentic_chat_langgraph.mmd'
+    mermaid_path.write_text(graph.graph.get_graph().draw_mermaid(), encoding='utf-8')
+    png_path = None
     print(f'Mermaid diagram: {mermaid_path}')
     if png_path is not None:
         print(f'PNG diagram: {png_path}')

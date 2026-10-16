@@ -1,4 +1,4 @@
-import { ImagePlus, Mic } from 'lucide-react';
+import { ImagePlus, LoaderCircle, Mic } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 
@@ -7,6 +7,7 @@ import { BottomSheet } from '../../components/molecules/BottomSheet';
 import { AssistantReplyIndicator } from '../../components/molecules/AssistantReplyIndicator';
 import { AssistantMessageContent } from '../../components/molecules/AssistantMessageContent';
 import { VoiceCaptureModal } from '../../components/molecules/VoiceCaptureModal';
+import { TransactionSuccessOverlay } from '../../components/molecules/TransactionSuccessOverlay/TransactionSuccessOverlay';
 import { CreateTransactionForm } from '../../components/organisms/CreateTransactionForm';
 import { Card } from '../../components/atoms/Card';
 import { CollapseToggle } from '../../components/atoms/CollapseToggle';
@@ -14,6 +15,7 @@ import { Input } from '../../components/atoms/Input';
 import { DASHBOARD_CHAT_UI_TEXT, SHEET_TITLES, VOICE_CAPTURE_EVENT_NAME } from '../../constants';
 import {
   useAnalyzeImageMutation,
+  useLazyGetChatThreadQuery,
   type ChatTransactionProposal,
   useSendChatMessageMutation,
   useTranscribeVoiceMutation,
@@ -79,6 +81,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
   const navigate = useNavigate();
   const location = useLocation();
   const [sendChatMessage, { isLoading: isSendingChatMessage }] = useSendChatMessageMutation();
+  const [getChatThread] = useLazyGetChatThreadQuery();
   const [transcribeVoice, { isLoading: isTranscribingVoice }] = useTranscribeVoiceMutation();
   const [analyzeImage, { isLoading: isAnalyzingImage }] = useAnalyzeImageMutation();
   const [drafts, setDrafts] = useState<ChatDraft[]>(() => listChatDrafts(userId));
@@ -93,7 +96,11 @@ function ChatWorkspace({ userId }: { userId: string }) {
   const [proposalBatchTotal, setProposalBatchTotal] = useState(0);
   const [proposalBatchCompleted, setProposalBatchCompleted] = useState(0);
   const [proposalSheetMode, setProposalSheetMode] = useState<'standard' | 'manual_low_confidence'>('standard');
+  const [taskSuccess, setTaskSuccess] = useState<{ message: string; expiresAt: number } | null>(null);
   const imageFileInputRef = useRef<HTMLInputElement | null>(null);
+  const chatMessagesRef = useRef<HTMLDivElement | null>(null);
+  const transactionRedirectTimerRef = useRef<number | null>(null);
+  const selectedThreadRequestRef = useRef(0);
   const [openingGreeting] = useState(() => {
     const options = DASHBOARD_CHAT_UI_TEXT.rotatingGreetings;
     const selectedGreeting = options[Math.floor(Math.random() * options.length)];
@@ -109,7 +116,10 @@ function ChatWorkspace({ userId }: { userId: string }) {
 
   const groupedDrafts = useMemo(() => {
     return {
-      financeChats: scopedDrafts.filter((draft) => draft.lifecycle === 'conversation' && draft.kind === 'general'),
+      // Transaction-specific threads are reached from that transaction's
+      // “Chat about this transaction” action, rather than cluttering the
+      // general finance-chat list.
+      financeChats: scopedDrafts.filter((draft) => draft.kind === 'general' && draft.lifecycle === 'conversation'),
       draftChats: scopedDrafts.filter((draft) => draft.lifecycle === 'draft'),
     };
   }, [scopedDrafts]);
@@ -151,6 +161,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
   };
 
   const handleCreateNewChat = () => {
+    selectedThreadRequestRef.current += 1;
     setSelectedDraftId(null);
     setActiveFilter('finance');
     setChatInput('');
@@ -158,9 +169,72 @@ function ChatWorkspace({ userId }: { userId: string }) {
   };
 
   const handleDeleteDraft = (draftId: string) => {
+    if (selectedDraftId === draftId) {
+      selectedThreadRequestRef.current += 1;
+    }
     deleteChatDraft(userId, draftId);
     refreshDrafts(selectedDraftId === draftId ? null : selectedDraftId);
     setChatError(null);
+  };
+
+  const clearTaskSuccessTimer = () => {
+    if (transactionRedirectTimerRef.current !== null) {
+      window.clearTimeout(transactionRedirectTimerRef.current);
+      transactionRedirectTimerRef.current = null;
+    }
+  };
+
+  const closeTaskSuccess = () => {
+    clearTaskSuccessTimer();
+    setTaskSuccess(null);
+    navigate('/');
+  };
+
+  const continueChatting = () => {
+    clearTaskSuccessTimer();
+    setTaskSuccess(null);
+  };
+
+  const handleSelectDraft = async (draft: ChatDraft) => {
+    const requestId = selectedThreadRequestRef.current + 1;
+    selectedThreadRequestRef.current = requestId;
+    setSelectedDraftId(draft.id);
+    setChatError(null);
+
+    if (!draft.thread_id) {
+      return;
+    }
+
+    try {
+      const detail = await getChatThread(draft.thread_id).unwrap();
+      if (selectedThreadRequestRef.current !== requestId) {
+        return;
+      }
+
+      const messages: ChatDraftMessage[] = detail.messages.map((message) => ({
+        id: message.id,
+        role: message.role,
+        content: message.content,
+      }));
+      const hydratedDraft = saveChatDraft({
+        userId,
+        draftId: draft.id,
+        kind: draft.kind,
+        lifecycle: draft.lifecycle,
+        transactionId: draft.transaction_id,
+        threadId: draft.thread_id,
+        messages: messages.length > 0 ? messages : draft.messages,
+        expiresAt: draft.expires_at,
+        title: detail.thread.title ?? draft.title,
+        preserveUpdatedAt: true,
+      });
+
+      setDrafts(listChatDrafts(userId));
+      setSelectedDraftId(hydratedDraft.id);
+    } catch {
+      // A locally stored conversation remains usable if server history is
+      // unavailable (for example, when the user disabled storage).
+    }
   };
 
   const persistDraftMessages = (
@@ -224,12 +298,6 @@ function ChatWorkspace({ userId }: { userId: string }) {
         content: insightSummary ? `${response.message}\n${insightSummary}` : response.message,
       };
 
-      if (optimisticDraft.lifecycle === 'draft' && response.transaction_logged) {
-        deleteChatDraft(userId, optimisticDraft.id);
-        refreshDrafts(null);
-        return;
-      }
-
       if (response.pending_transaction_proposal || response.manual_transaction_input_required) {
         const proposalBatch = response.pending_transaction_proposals ?? [];
         setProposalQueue(proposalBatch);
@@ -243,12 +311,40 @@ function ChatWorkspace({ userId }: { userId: string }) {
       const nextLifecycle: ChatDraftLifecycle =
         optimisticDraft.lifecycle === 'draft' ? 'conversation' : optimisticDraft.lifecycle;
 
-      persistDraftMessages(
-        optimisticDraft,
-        [...optimisticMessages, assistantMessage],
-        response.thread_id,
-        nextLifecycle,
-      );
+      const completedMessages = [...optimisticMessages, assistantMessage];
+      if (response.tasks_completed) {
+        // Keep the server-backed thread, but move its local entry from the
+        // general chat list to the created transaction. It can be reopened
+        // from that transaction's dedicated chat action.
+        let savedDraft: ChatDraft;
+        if (response.transaction_logged && response.created_transaction_id) {
+          deleteChatDraft(userId, optimisticDraft.id);
+          savedDraft = saveChatDraft({
+            userId,
+            kind: 'transaction',
+            lifecycle: 'conversation',
+            transactionId: response.created_transaction_id,
+            threadId: response.thread_id,
+            messages: completedMessages,
+          });
+        } else {
+          savedDraft = persistDraftMessages(optimisticDraft, completedMessages, response.thread_id, nextLifecycle);
+        }
+        refreshDrafts(savedDraft.id);
+        setActiveFilter('finance');
+        if (response.show_completion_popup) {
+          clearTaskSuccessTimer();
+          setTaskSuccess({ message: assistantMessage.content, expiresAt: Date.now() + 8_000 });
+          transactionRedirectTimerRef.current = window.setTimeout(() => {
+            transactionRedirectTimerRef.current = null;
+            setTaskSuccess(null);
+            navigate('/');
+          }, 8_000);
+        }
+        return;
+      }
+
+      persistDraftMessages(optimisticDraft, completedMessages, response.thread_id, nextLifecycle);
 
       if (nextLifecycle === 'conversation') {
         setActiveFilter('finance');
@@ -303,6 +399,21 @@ function ChatWorkspace({ userId }: { userId: string }) {
   });
 
   useEffect(() => {
+    return () => {
+      if (transactionRedirectTimerRef.current !== null) {
+        window.clearTimeout(transactionRedirectTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    const container = chatMessagesRef.current;
+    if (container) {
+      container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
+    }
+  }, [messageList.length, isAssistantResponding]);
+
+  useEffect(() => {
     const handleVoiceCaptureRequest = (event: Event) => {
       const customEvent = event as CustomEvent<{ handled?: boolean }>;
       if (customEvent.detail) {
@@ -339,6 +450,39 @@ function ChatWorkspace({ userId }: { userId: string }) {
       { replace: true },
     );
   }, [isVoiceCaptureOpen, isVoiceCaptureProcessing, location.search, navigate, startCapture]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const transactionId = params.get('transaction_id')?.trim();
+    if (!transactionId) {
+      return;
+    }
+
+    const existingDraft = listChatDrafts(userId).find(
+      (draft) => draft.kind === 'transaction' && draft.transaction_id === transactionId,
+    );
+    const transactionDraft =
+      existingDraft ?? createChatDraft(userId, 'transaction', transactionId, { lifecycle: 'conversation' });
+    const nextDrafts = listChatDrafts(userId);
+
+    queueMicrotask(() => {
+      setDrafts(nextDrafts);
+      setSelectedDraftId(transactionDraft.id);
+      setActiveFilter('finance');
+      setChatInput('');
+      setChatError(null);
+    });
+
+    params.delete('transaction_id');
+    const nextSearch = params.toString();
+    navigate(
+      {
+        pathname: '/chat',
+        search: nextSearch ? `?${nextSearch}` : '',
+      },
+      { replace: true },
+    );
+  }, [location.search, navigate, userId]);
 
   const handleImageFileSelected = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const imageFile = event.target.files?.[0];
@@ -457,7 +601,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
                               <button
                                 type='button'
                                 onClick={() => {
-                                  setSelectedDraftId(draft.id);
+                                  void handleSelectDraft(draft);
                                 }}
                                 className='min-w-0 flex-1 text-left'
                               >
@@ -538,7 +682,10 @@ function ChatWorkspace({ userId }: { userId: string }) {
             ) : null}
           </div>
 
-              <div className='mb-3 min-h-0 flex-1 space-y-2 overflow-y-auto rounded-2xl border border-[var(--bg-border)] bg-[var(--bg-elevated)] p-3'>
+              <div
+                ref={chatMessagesRef}
+                className='mb-3 min-h-0 flex-1 space-y-2 overflow-y-auto rounded-2xl border border-[var(--bg-border)] bg-[var(--bg-elevated)] p-3'
+              >
                 {messageList.length === 0 ? (
                   <div className='flex h-full flex-col items-center justify-center px-5 text-center'>
                     <p className='mb-2 text-base font-semibold text-[var(--text-primary)]'>{openingGreeting}</p>
@@ -591,7 +738,11 @@ function ChatWorkspace({ userId }: { userId: string }) {
               disabled={isSendingChatMessage || isAnalyzingImage}
               onClick={() => imageFileInputRef.current?.click()}
             >
-              <ImagePlus className='h-4 w-4' strokeWidth={2.2} aria-hidden='true' />
+              {isAnalyzingImage ? (
+                <LoaderCircle className='h-4 w-4 animate-spin' strokeWidth={2.2} aria-hidden='true' />
+              ) : (
+                <ImagePlus className='h-4 w-4' strokeWidth={2.2} aria-hidden='true' />
+              )}
             </button>
             <Input
               value={chatInput}
@@ -640,6 +791,15 @@ function ChatWorkspace({ userId }: { userId: string }) {
         processingLabel={DASHBOARD_CHAT_UI_TEXT.voiceRecordingProcessingLabel}
         stopLabel={DASHBOARD_CHAT_UI_TEXT.voiceRecordingStopButton}
       />
+
+      {taskSuccess ? (
+        <TransactionSuccessOverlay
+          message={taskSuccess.message}
+          expiresAt={taskSuccess.expiresAt}
+          onClose={closeTaskSuccess}
+          onContinue={continueChatting}
+        />
+      ) : null}
 
       <BottomSheet
         isOpen={showProposalSheet}

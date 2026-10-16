@@ -1,4 +1,4 @@
-﻿"""Ports for capabilities the domain/application layers need but do not
+"""Ports for capabilities the domain/application layers need but do not
 implement themselves (password hashing, tokens, external identity providers).
 Infrastructure adapts these ports; nothing here imports a framework."""
 
@@ -47,29 +47,29 @@ class ImageToTextClient(Protocol):
 
 
 class GuardrailDecision(str, Enum):
-    ALLOW = 'allow'
-    BLOCK = 'block'
-    NEEDS_CLASSIFICATION = 'needs_classification'
+    ALLOW = "allow"
+    BLOCK = "block"
+    NEEDS_CLASSIFICATION = "needs_classification"
 
 
 @dataclass
 class GuardrailAssessment:
     decision: GuardrailDecision
     confidence: float = 0.0
-    layer: str = 'semantic'
+    layer: str = "semantic"
 
 
 class DetectedIntent(str, Enum):
-    LOG_TRANSACTION = 'log_transaction'
-    QUERY_SPENDING = 'query_spending'
-    CATEGORY_MANAGEMENT = 'category_management'
-    ACCOUNT_MANAGEMENT = 'account_management'  # Create, rename, set default, deactivate
-    TRANSACTION_MANAGEMENT = 'transaction_management'  # Edit, delete transactions
-    SPLIT_REQUEST = 'split_request'
-    GENERATE_REPORT = 'generate_report'
-    ACCOUNT_QUERY = 'account_query'  # Balance queries
-    MEMORY_RELATED = 'memory_related'
-    OFF_TOPIC = 'off_topic'
+    LOG_TRANSACTION = "log_transaction"
+    QUERY_SPENDING = "query_spending"
+    CATEGORY_MANAGEMENT = "category_management"
+    ACCOUNT_MANAGEMENT = "account_management"  # Create, rename, set default, deactivate
+    TRANSACTION_MANAGEMENT = "transaction_management"  # Edit, delete transactions
+    SPLIT_REQUEST = "split_request"
+    GENERATE_REPORT = "generate_report"
+    ACCOUNT_QUERY = "account_query"  # Balance queries
+    MEMORY_RELATED = "memory_related"
+    OFF_TOPIC = "off_topic"
 
 
 class SemanticGuardrail(Protocol):
@@ -97,14 +97,17 @@ class PendingTransactionProposal:
 @dataclass
 class ChatTurnResult:
     message: str
+    tasks_completed: bool = False
+    show_completion_popup: bool = False
     pending_transaction_proposal: PendingTransactionProposal | None = None
     pending_transaction_proposals: list[PendingTransactionProposal] | None = None
     transaction_logged: bool = False
+    created_transaction_id: str | None = None
     manual_transaction_input_required: bool = False
     intent: str | None = None
     guardrail_decision: str = GuardrailDecision.ALLOW.value
     guardrail_confidence: float = 1.0
-    guardrail_layer: str = 'semantic'
+    guardrail_layer: str = "semantic"
     insights: list[dict[str, str]] | None = None
     agent_correction: dict[str, Any] | None = None
 

@@ -1,18 +1,14 @@
 import { useMemo, useState } from 'react';
 
-import { useAppDispatch } from '../../app/hooks';
 import { Button } from '../../components/atoms/Button';
 import { Card } from '../../components/atoms/Card';
 import { BottomSheet } from '../../components/molecules/BottomSheet';
 import { CreateTransactionForm } from '../../components/organisms/CreateTransactionForm';
 import type { CreateTransactionFormValues } from '../../components/organisms/CreateTransactionForm/CreateTransactionForm.schema';
 import { TransactionList } from '../../components/organisms/TransactionList';
-import { useLogoutMutation } from '../../features/auth/authApi';
-import { clearCredentials } from '../../features/auth/authSlice';
 import { useListTransactionsQuery } from '../../features/transactions/transactionsApi';
 import type { Transaction } from '../../features/transactions/transactionsApi';
 import { SHEET_TITLES } from '../../constants';
-import { apiClient } from '../../lib/apiClient';
 import { formatPaiseAsInr } from '../../lib/money';
 
 function mapTransactionToFormValues(transaction: Transaction): Partial<CreateTransactionFormValues> {
@@ -29,8 +25,6 @@ function mapTransactionToFormValues(transaction: Transaction): Partial<CreateTra
 }
 
 export function TransactionsPage() {
-  const dispatch = useAppDispatch();
-  const [logout] = useLogoutMutation();
   const { data: transactions } = useListTransactionsQuery();
   const [isAddTransactionSheetOpen, setIsAddTransactionSheetOpen] = useState(false);
   const [transactionBeingEdited, setTransactionBeingEdited] = useState<Transaction | null>(null);
@@ -67,15 +61,6 @@ export function TransactionsPage() {
     };
   }, [transactions]);
 
-  const handleLogout = async () => {
-    try {
-      await logout().unwrap();
-    } finally {
-      dispatch(clearCredentials());
-      dispatch(apiClient.util.resetApiState());
-    }
-  };
-
   const handleOpenEditSheet = (transaction: Transaction) => {
     setTransactionBeingEdited(transaction);
   };
@@ -96,9 +81,6 @@ export function TransactionsPage() {
           <div className='flex gap-2'>
             <Button type='button' className='w-auto px-3 lg:hidden' onClick={() => setIsAddTransactionSheetOpen(true)}>
               + Add
-            </Button>
-            <Button type='button' variant='secondary' className='w-auto px-3' onClick={handleLogout}>
-              Log out
             </Button>
           </div>
         </div>

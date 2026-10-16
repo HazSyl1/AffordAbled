@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import date
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -38,6 +39,16 @@ class SqlAlchemyUserRepository:
             conversation_storage_enabled=user.conversation_storage_enabled,
         )
         self._session.add(model)
+        await self._session.commit()
+        await self._session.refresh(model)
+        return self._to_entity(model)
+
+    async def update_profile(self, user_id: uuid.UUID, *, name: str, date_of_birth: date | None) -> User | None:
+        model = await self._session.get(UserModel, user_id)
+        if model is None:
+            return None
+        model.name = name
+        model.date_of_birth = date_of_birth
         await self._session.commit()
         await self._session.refresh(model)
         return self._to_entity(model)

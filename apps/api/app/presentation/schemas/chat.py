@@ -1,4 +1,4 @@
-﻿from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field
 
 
 class ChatRequest(BaseModel):
@@ -28,9 +28,12 @@ class ChatInsightResponse(BaseModel):
 class ChatResponse(BaseModel):
     thread_id: str
     message: str
+    tasks_completed: bool = False
+    show_completion_popup: bool = False
     pending_transaction_proposal: PendingTransactionProposalResponse | None = None
     pending_transaction_proposals: list[PendingTransactionProposalResponse] | None = None
     transaction_logged: bool = False
+    created_transaction_id: str | None = None
     manual_transaction_input_required: bool = False
     insights: list[ChatInsightResponse] | None = None
 

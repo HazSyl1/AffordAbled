@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from app.application.dto import LoginInput, RegisterUserInput, TokenPair
 from app.domain.entities import RefreshSession, User
@@ -75,6 +75,9 @@ class AuthService:
         except InvalidTokenError:
             return
         await self.refresh_session_repository.revoke(jti)
+
+    async def update_profile(self, user_id: uuid.UUID, *, name: str, date_of_birth: date | None) -> User | None:
+        return await self.user_repository.update_profile(user_id, name=name, date_of_birth=date_of_birth)
 
     async def _issue_tokens(self, user_id: uuid.UUID) -> TokenPair:
         access_token = self.token_service.create_access_token(user_id)

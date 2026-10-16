@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import logging
 import uuid
@@ -20,6 +20,7 @@ from app.application.services.category_service import CategoryService
 from app.application.services.chat_service import ChatService
 from app.application.services.export_service import ExportService
 from app.application.services.image_service import ImageService
+from app.application.services.profile_summary_service import ProfileSummaryService
 from app.application.services.speech_service import SpeechService
 from app.application.services.thread_service import ThreadService
 from app.application.services.transaction_service import TransactionService
@@ -27,8 +28,8 @@ from app.core.config import Settings, get_settings
 from app.domain.entities import User
 from app.domain.exceptions import InvalidTokenError
 from app.domain.ports import ChatOrchestrator, IntentClassifier, SemanticGuardrail
+from app.infrastructure.ai.agents.supervisor_graph import AgenticChatOrchestrator, AgenticSupervisorGraph
 from app.infrastructure.ai.intent_classifier import KeywordIntentClassifier, LlmIntentClassifier
-from app.infrastructure.ai.langgraph_chat_orchestrator import LangGraphChatOrchestrator
 from app.infrastructure.ai.nemo_semantic_guardrail import NemoSemanticGuardrail
 from app.infrastructure.ai.tools import CategoryTools, TransactionQueryTools
 from app.infrastructure.audio.ffmpeg_audio_transcoder import FFmpegAudioTranscoder
@@ -163,9 +164,9 @@ def get_semantic_guardrail(
     settings: Settings = Depends(get_settings_dependency),
     guardrail_llm: Any | None = Depends(get_guardrail_llm),
 ) -> SemanticGuardrail:
-    if settings.chat_guardrail_provider != 'nemo':
+    if settings.chat_guardrail_provider != "nemo":
         logger.warning(
-            'CHAT_GUARDRAIL_PROVIDER=%s is unsupported. Using NeMo guardrails.',
+            "CHAT_GUARDRAIL_PROVIDER=%s is unsupported. Using NeMo guardrails.",
             settings.chat_guardrail_provider,
         )
 
@@ -183,20 +184,20 @@ def get_intent_classifier(
     intent_llm: Any | None = Depends(get_guardrail_llm),
 ) -> IntentClassifier:
     keyword_classifier = KeywordIntentClassifier()
-    if settings.chat_intent_provider == 'keyword':
+    if settings.chat_intent_provider == "keyword":
         return keyword_classifier
 
     if intent_llm is None:
-        logger.warning('LLM intent classification requested but Azure OpenAI is unavailable; using keyword fallback.')
+        logger.warning("LLM intent classification requested but Azure OpenAI is unavailable; using keyword fallback.")
         return keyword_classifier
 
     return LlmIntentClassifier(intent_llm, fallback=keyword_classifier)
 
 
 def get_langgraph_checkpointer(request: Request) -> Any:
-    checkpointer = getattr(request.app.state, 'langgraph_checkpointer', None)
+    checkpointer = getattr(request.app.state, "langgraph_checkpointer", None)
     if checkpointer is None:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail='Chat runtime is not initialized')
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Chat runtime is not initialized")
     return checkpointer
 
 
@@ -294,6 +295,7 @@ def get_transaction_query_tools(
 
 
 def get_chat_orchestrator(
+    db: AsyncSession = Depends(get_db),
     checkpointer: Any = Depends(get_langgraph_checkpointer),
     settings: Settings = Depends(get_settings_dependency),
     semantic_guardrail: SemanticGuardrail = Depends(get_semantic_guardrail),
@@ -305,19 +307,33 @@ def get_chat_orchestrator(
     transaction_query_tools: TransactionQueryTools = Depends(get_transaction_query_tools),
     extraction_llm: Any | None = Depends(get_transaction_extraction_llm),
 ) -> ChatOrchestrator:
-    return LangGraphChatOrchestrator(
-        checkpointer=checkpointer,
-        semantic_guardrail=semantic_guardrail,
-        intent_classifier=intent_classifier,
-        transaction_service=transaction_service,
-        account_repository=account_repository,
+    del intent_classifier, category_tools, settings
+    if extraction_llm is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='Agentic chat requires a configured LLM deployment.',
+        )
+    return AgenticChatOrchestrator(
+        AgenticSupervisorGraph(
+            checkpointer=checkpointer,
+            llm=extraction_llm,
+            guardrail=semantic_guardrail,
+            category_service=CategoryService(category_repository=category_repository),
+            account_service=AccountService(account_repository=account_repository),
+            transaction_service=transaction_service,
+            query_tools=transaction_query_tools,
+            db_session=db,
+        )
+    )
+
+
+def get_profile_summary_service(
+    transaction_repository: SqlAlchemyTransactionRepository = Depends(get_transaction_repository),
+    category_repository: SqlAlchemyCategoryRepository = Depends(get_category_repository),
+) -> ProfileSummaryService:
+    return ProfileSummaryService(
+        transaction_repository=transaction_repository,
         category_repository=category_repository,
-        category_tools=category_tools,
-        transaction_query_tools=transaction_query_tools,
-        extraction_llm=extraction_llm,
-        proposal_confidence_threshold=settings.chat_proposal_confidence_threshold,
-        hitl_max_turns=settings.chat_hitl_max_turns,
-        deterministic_transaction_first=settings.chat_deterministic_transaction_first,
     )
 
 
@@ -361,18 +377,18 @@ async def get_current_user(
     user_repository: SqlAlchemyUserRepository = Depends(get_user_repository),
 ) -> User:
     if credentials is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Not authenticated')
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
 
     token = credentials.credentials
     if not token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Not authenticated')
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
 
     try:
         user_id: uuid.UUID = token_service.decode_access_token(token)
     except InvalidTokenError as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid or expired token') from exc
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token") from exc
 
     user = await user_repository.get_by_id(user_id)
     if user is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid or expired token')
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
     return user

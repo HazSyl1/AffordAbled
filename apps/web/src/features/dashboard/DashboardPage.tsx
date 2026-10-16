@@ -1,4 +1,4 @@
-import { ImagePlus, Mic } from 'lucide-react';
+import { ImagePlus, LoaderCircle, Mic } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
@@ -12,6 +12,7 @@ import { AssistantReplyIndicator } from '../../components/molecules/AssistantRep
 import { AssistantMessageContent } from '../../components/molecules/AssistantMessageContent';
 import { BottomSheet } from '../../components/molecules/BottomSheet';
 import { VoiceCaptureModal } from '../../components/molecules/VoiceCaptureModal';
+import { TransactionSuccessOverlay } from '../../components/molecules/TransactionSuccessOverlay/TransactionSuccessOverlay';
 import { CreateTransactionForm } from '../../components/organisms/CreateTransactionForm';
 import { useListAccountsQuery } from '../accounts/accountsApi';
 import { useListCategoriesQuery } from '../categories/categoriesApi';
@@ -83,6 +84,7 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
   const [analyzeImage, { isLoading: isAnalyzingImage }] = useAnalyzeImageMutation();
   const [showAddSheet, setShowAddSheet] = useState(false);
   const [showChatSheet, setShowChatSheet] = useState(false);
+  const [isImageProcessing, setIsImageProcessing] = useState(false);
   const [showSaveDraftPrompt, setShowSaveDraftPrompt] = useState(false);
   const [proposalForSheet, setProposalForSheet] = useState<ChatTransactionProposal | null>(null);
   const [proposalQueue, setProposalQueue] = useState<ChatTransactionProposal[]>([]);
@@ -92,9 +94,12 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
   const [chatInput, setChatInput] = useState('');
   const [chatThreadId, setChatThreadId] = useState<string | null>(null);
   const [chatDraftId, setChatDraftId] = useState<string | null>(null);
+  const [chatTransactionId, setChatTransactionId] = useState<string | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatError, setChatError] = useState<string | null>(null);
+  const [transactionSuccess, setTransactionSuccess] = useState<{ message: string; expiresAt: number } | null>(null);
   const imageFileInputRef = useRef<HTMLInputElement | null>(null);
+  const transactionRedirectTimerRef = useRef<number | null>(null);
   const [openingGreeting] = useState(() => {
     const options = DASHBOARD_CHAT_UI_TEXT.rotatingGreetings;
     return options[Math.floor(Math.random() * options.length)] ?? DASHBOARD_CHAT_UI_TEXT.emptyState;
@@ -181,6 +186,14 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
     return () => window.clearInterval(intervalId);
   }, []);
 
+  useEffect(() => {
+    return () => {
+      if (transactionRedirectTimerRef.current !== null) {
+        window.clearTimeout(transactionRedirectTimerRef.current);
+      }
+    };
+  }, []);
+
   const persistGeneralDraft = (
     messages: ChatMessage[],
     threadId: string | null,
@@ -193,8 +206,9 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
     const savedDraft = saveChatDraft({
       userId: currentUser.id,
       draftId: draftIdOverride,
-      kind: 'general',
-      lifecycle: 'draft',
+      kind: chatTransactionId ? 'transaction' : 'general',
+      lifecycle: chatTransactionId ? 'conversation' : 'draft',
+      transactionId: chatTransactionId,
       threadId,
       messages,
     });
@@ -213,9 +227,30 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
     setProposalSheetMode('standard');
     setChatInput('');
     setChatDraftId(null);
+    setChatTransactionId(null);
     setChatThreadId(null);
     setChatMessages([]);
     setChatError(null);
+  };
+
+  const clearTransactionRedirectTimer = () => {
+    if (transactionRedirectTimerRef.current !== null) {
+      window.clearTimeout(transactionRedirectTimerRef.current);
+      transactionRedirectTimerRef.current = null;
+    }
+  };
+
+  const closeTransactionSuccess = () => {
+    clearTransactionRedirectTimer();
+    setTransactionSuccess(null);
+    resetChatSession();
+    navigate('/');
+  };
+
+  const continueChatting = () => {
+    clearTransactionRedirectTimer();
+    setTransactionSuccess(null);
+    setShowChatSheet(true);
   };
 
   const sendMessageToAssistant = async (messageText: string) => {
@@ -250,10 +285,36 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
       setChatMessages(fullMessageList);
 
       if (response.transaction_logged) {
-        if (currentDraftId && currentUser?.id) {
+        if (response.created_transaction_id && currentDraftId && currentUser?.id) {
           deleteChatDraft(currentUser.id, currentDraftId);
         }
-        setChatDraftId(null);
+        if (currentUser?.id && response.created_transaction_id) {
+          const savedDraft = saveChatDraft({
+            userId: currentUser.id,
+            kind: 'transaction',
+            lifecycle: 'conversation',
+            transactionId: response.created_transaction_id,
+            threadId: response.thread_id,
+            messages: fullMessageList,
+          });
+          setChatDraftId(savedDraft.id);
+          setChatTransactionId(response.created_transaction_id);
+        } else {
+          persistGeneralDraft(fullMessageList, response.thread_id, currentDraftId);
+        }
+      } else {
+        persistGeneralDraft(fullMessageList, response.thread_id, currentDraftId);
+      }
+
+      if (response.show_completion_popup) {
+        clearTransactionRedirectTimer();
+        setTransactionSuccess({ message: assistantMessage.content, expiresAt: Date.now() + 8_000 });
+        transactionRedirectTimerRef.current = window.setTimeout(() => {
+          transactionRedirectTimerRef.current = null;
+          setTransactionSuccess(null);
+          resetChatSession();
+          navigate('/');
+        }, 8_000);
         return;
       }
 
@@ -266,8 +327,6 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
         setProposalSheetMode(response.manual_transaction_input_required ? 'manual_low_confidence' : 'standard');
         setShowAddSheet(true);
       }
-
-      persistGeneralDraft(fullMessageList, response.thread_id, currentDraftId);
     } catch {
       setChatError(DASHBOARD_CHAT_UI_TEXT.assistantError);
     }
@@ -360,6 +419,7 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
     }
 
     try {
+      setIsImageProcessing(true);
       setChatError(null);
       const analysis = await analyzeImage({ image: imageFile }).unwrap();
       const imagePrompt = analysis.prompt.trim();
@@ -369,10 +429,13 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
         return;
       }
 
+      setIsImageProcessing(false);
       setShowChatSheet(true);
       await sendMessageToAssistant(imagePrompt);
     } catch {
       setChatError(DASHBOARD_CHAT_UI_TEXT.imageError);
+    } finally {
+      setIsImageProcessing(false);
     }
   };
 
@@ -481,7 +544,11 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
           disabled={isSendingChatMessage || isAnalyzingImage}
           onClick={() => imageFileInputRef.current?.click()}
         >
-          <ImagePlus className='h-4 w-4' strokeWidth={2.2} aria-hidden='true' />
+          {isAnalyzingImage ? (
+            <LoaderCircle className='h-4 w-4 animate-spin' strokeWidth={2.2} aria-hidden='true' />
+          ) : (
+            <ImagePlus className='h-4 w-4' strokeWidth={2.2} aria-hidden='true' />
+          )}
         </button>
         <Input
           value={chatInput}
@@ -785,6 +852,21 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
         stopLabel={DASHBOARD_CHAT_UI_TEXT.voiceRecordingStopButton}
       />
 
+      {isImageProcessing ? (
+        <div
+          className='fixed inset-0 z-[70] flex items-center justify-center bg-black/35 px-6 backdrop-blur-[2px]'
+          role='status'
+          aria-live='polite'
+          aria-label='Processing uploaded image'
+        >
+          <div className='flex w-full max-w-xs flex-col items-center gap-3 rounded-2xl border border-[var(--bg-border)] bg-[var(--bg-card)] px-6 py-7 text-center shadow-2xl'>
+            <LoaderCircle className='h-8 w-8 animate-spin text-[var(--brand-primary)]' aria-hidden='true' />
+            <p className='text-sm font-semibold text-[var(--text-primary)]'>Processing image…</p>
+            <p className='text-xs text-[var(--text-muted)]'>Reading the receipt before opening chat.</p>
+          </div>
+        </div>
+      ) : null}
+
       <BottomSheet
         isOpen={showChatSheet}
         onClose={handleCloseChat}
@@ -792,6 +874,15 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
       >
         {renderChatAssistantContent()}
       </BottomSheet>
+
+      {transactionSuccess ? (
+        <TransactionSuccessOverlay
+          message={transactionSuccess.message}
+          expiresAt={transactionSuccess.expiresAt}
+          onClose={closeTransactionSuccess}
+          onContinue={continueChatting}
+        />
+      ) : null}
 
       <BottomSheet
         isOpen={showAddSheet}

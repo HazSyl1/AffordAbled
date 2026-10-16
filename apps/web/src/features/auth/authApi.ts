@@ -18,6 +18,16 @@ export interface LoginRequest {
   password: string;
 }
 
+export interface UpdateProfileRequest {
+  name: string;
+  date_of_birth: string | null;
+}
+
+export interface ProfileTransactionSummary {
+  message: string;
+  transaction_count: number;
+}
+
 const authApi = apiClient.injectEndpoints({
   endpoints: (builder) => ({
     register: builder.mutation<AccessTokenResponse, RegisterRequest>({
@@ -35,6 +45,13 @@ const authApi = apiClient.injectEndpoints({
     getMe: builder.query<AuthUser, void>({
       query: () => '/auth/me',
     }),
+    updateProfile: builder.mutation<AuthUser, UpdateProfileRequest>({
+      query: (body) => ({ url: '/auth/me', method: 'PATCH', body }),
+    }),
+    getProfileTransactionSummary: builder.query<ProfileTransactionSummary, void>({
+      query: () => '/auth/me/transaction-summary',
+      providesTags: ['Transaction'],
+    }),
   }),
 });
 
@@ -44,4 +61,6 @@ export const {
   useLogoutMutation,
   useRefreshSessionMutation,
   useLazyGetMeQuery,
+  useUpdateProfileMutation,
+  useLazyGetProfileTransactionSummaryQuery,
 } = authApi;

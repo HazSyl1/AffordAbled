@@ -29,6 +29,7 @@ interface SaveChatDraftInput {
   messages: ChatDraftMessage[];
   expiresAt?: string | null;
   title?: string | null;
+  preserveUpdatedAt?: boolean;
 }
 
 interface CreateChatDraftOptions {
@@ -396,7 +397,7 @@ export function saveChatDraft(input: SaveChatDraftInput): ChatDraft {
     thread_id: threadId,
     title: nextTitle,
     messages: normalizedMessages,
-    updated_at: nowIso,
+    updated_at: input.preserveUpdatedAt && existingDraft ? existingDraft.updated_at : nowIso,
     expires_at: expiresAt,
   };
 

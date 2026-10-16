@@ -29,31 +29,40 @@ class TransactionQueryTools:
         transaction_type: TransactionType | None = None,
         category_id: uuid.UUID | None = None,
     ) -> list[dict[str, Any]]:
-        transactions = await self.transaction_repository.list_for_user(user_id)
         account_names = await self._account_names_for_user(user_id)
         category_names = await self._category_names_for_user(user_id)
 
         normalized_date_from = self._to_utc_datetime(date_from)
         normalized_date_to = self._to_utc_datetime(date_to)
 
-        scoped_transactions = [
-            transaction
-            for transaction in transactions
-            if normalized_date_from <= self._to_utc_datetime(transaction.occurred_at) <= normalized_date_to
-            and (transaction_type is None or transaction.type == transaction_type)
-            and (category_id is None or transaction.category_id == category_id)
-        ]
-        scoped_transactions.sort(
-            key=lambda transaction: (
-                self._to_utc_datetime(transaction.occurred_at),
-                self._to_utc_datetime(transaction.created_at),
-                str(transaction.id),
-            ),
-            reverse=True,
-        )
-
         capped_limit = max(1, min(limit, 25))
-        selected_transactions = scoped_transactions[:capped_limit]
+        if hasattr(self.transaction_repository, 'list_for_user_window'):
+            selected_transactions, _total_count = await self.transaction_repository.list_for_user_window(
+                user_id,
+                date_from=normalized_date_from,
+                date_to=normalized_date_to,
+                limit=capped_limit,
+                transaction_type=transaction_type,
+                category_id=category_id,
+            )
+        else:
+            transactions = await self.transaction_repository.list_for_user(user_id)
+            scoped_transactions = [
+                transaction
+                for transaction in transactions
+                if normalized_date_from <= self._to_utc_datetime(transaction.occurred_at) <= normalized_date_to
+                and (transaction_type is None or transaction.type == transaction_type)
+                and (category_id is None or transaction.category_id == category_id)
+            ]
+            scoped_transactions.sort(
+                key=lambda transaction: (
+                    self._to_utc_datetime(transaction.occurred_at),
+                    self._to_utc_datetime(transaction.created_at),
+                    str(transaction.id),
+                ),
+                reverse=True,
+            )
+            selected_transactions = scoped_transactions[:capped_limit]
         return [
             {
                 'id': str(transaction.id),
@@ -133,7 +142,6 @@ class TransactionQueryTools:
         date_to: datetime,
         category_id: uuid.UUID | None = None,
     ) -> dict[str, Any]:
-        transactions = await self.transaction_repository.list_for_user(user_id)
         categories = await self.category_repository.list_for_user(user_id)
         expense_category_names = {
             str(category.id): category.name
@@ -144,28 +152,42 @@ class TransactionQueryTools:
         normalized_date_from = self._to_utc_datetime(date_from)
         normalized_date_to = self._to_utc_datetime(date_to)
 
-        relevant_transactions = [
-            transaction
-            for transaction in transactions
-            if normalized_date_from <= self._to_utc_datetime(transaction.occurred_at) <= normalized_date_to
-            and transaction.type == TransactionType.EXPENSE
-            and (category_id is None or transaction.category_id == category_id)
-        ]
-
-        total_spent_paise = sum(transaction.amount_paise for transaction in relevant_transactions)
-        by_category: dict[str, int] = {}
-        for transaction in relevant_transactions:
-            category_label = (
-                expense_category_names.get(str(transaction.category_id), 'Uncategorized')
-                if transaction.category_id is not None
-                else 'Uncategorized'
+        if hasattr(self.transaction_repository, 'spending_summary_for_user'):
+            aggregate = await self.transaction_repository.spending_summary_for_user(
+                user_id, date_from=normalized_date_from, date_to=normalized_date_to, category_id=category_id
             )
-            by_category[category_label] = by_category.get(category_label, 0) + transaction.amount_paise
+            total_spent_paise = int(aggregate['total_spent_paise'])
+            transaction_count = int(aggregate['transaction_count'])
+            by_category = {
+                expense_category_names.get(str(category_key), 'Uncategorized')
+                if category_key is not None
+                else 'Uncategorized': amount
+                for category_key, amount in aggregate['by_category']
+            }
+        else:
+            transactions = await self.transaction_repository.list_for_user(user_id)
+            relevant_transactions = [
+                transaction
+                for transaction in transactions
+                if normalized_date_from <= self._to_utc_datetime(transaction.occurred_at) <= normalized_date_to
+                and transaction.type == TransactionType.EXPENSE
+                and (category_id is None or transaction.category_id == category_id)
+            ]
+            total_spent_paise = sum(transaction.amount_paise for transaction in relevant_transactions)
+            transaction_count = len(relevant_transactions)
+            by_category = {}
+            for transaction in relevant_transactions:
+                category_label = (
+                    expense_category_names.get(str(transaction.category_id), 'Uncategorized')
+                    if transaction.category_id is not None
+                    else 'Uncategorized'
+                )
+                by_category[category_label] = by_category.get(category_label, 0) + transaction.amount_paise
 
         sorted_categories = sorted(by_category.items(), key=lambda item: item[1], reverse=True)
         return {
             'total_spent_paise': total_spent_paise,
-            'transaction_count': len(relevant_transactions),
+            'transaction_count': transaction_count,
             'top_categories': [
                 {'category_name': category_name, 'amount_paise': amount_paise}
                 for category_name, amount_paise in sorted_categories[:5]
@@ -187,31 +209,46 @@ class TransactionQueryTools:
     ) -> dict[str, Any]:
         accounts = [account for account in await self.account_repository.list_for_user(user_id) if account.is_active]
         account_names = {account.id: account.name for account in accounts}
-        transactions = await self.transaction_repository.list_for_user(user_id)
         start = self._to_utc_datetime(date_from)
         end = self._to_utc_datetime(date_to)
-        grouped: dict[uuid.UUID, dict[str, int]] = {}
-        for transaction in transactions:
-            if (
-                transaction.type != TransactionType.EXPENSE
-                or transaction.account_id not in account_names
-                or not start <= self._to_utc_datetime(transaction.occurred_at) <= end
-                or (category_id is not None and transaction.category_id != category_id)
-            ):
-                continue
-            totals = grouped.setdefault(transaction.account_id, {'total_spent_paise': 0, 'transaction_count': 0})
-            totals['total_spent_paise'] += int(transaction.amount_paise)
-            totals['transaction_count'] += 1
-
-        breakdowns = [
-            {
-                'account_id': str(account_id),
-                'account_name': account_names[account_id],
-                **totals,
-                'total_spent_display': self._format_paise(totals['total_spent_paise']),
-            }
-            for account_id, totals in grouped.items()
-        ]
+        if hasattr(self.transaction_repository, 'spending_by_account_for_user'):
+            grouped_rows = await self.transaction_repository.spending_by_account_for_user(
+                user_id, date_from=start, date_to=end, category_id=category_id
+            )
+            breakdowns = [
+                {
+                    'account_id': str(row['account_id']),
+                    'account_name': account_names.get(row['account_id'], 'Unknown account'),
+                    'total_spent_paise': int(row['total_spent_paise']),
+                    'transaction_count': int(row['transaction_count']),
+                    'total_spent_display': self._format_paise(int(row['total_spent_paise'])),
+                }
+                for row in grouped_rows
+                if row['account_id'] in account_names
+            ]
+        else:
+            transactions = await self.transaction_repository.list_for_user(user_id)
+            grouped: dict[uuid.UUID, dict[str, int]] = {}
+            for transaction in transactions:
+                if (
+                    transaction.type != TransactionType.EXPENSE
+                    or transaction.account_id not in account_names
+                    or not start <= self._to_utc_datetime(transaction.occurred_at) <= end
+                    or (category_id is not None and transaction.category_id != category_id)
+                ):
+                    continue
+                totals = grouped.setdefault(transaction.account_id, {'total_spent_paise': 0, 'transaction_count': 0})
+                totals['total_spent_paise'] += int(transaction.amount_paise)
+                totals['transaction_count'] += 1
+            breakdowns = [
+                {
+                    'account_id': str(account_id),
+                    'account_name': account_names[account_id],
+                    **totals,
+                    'total_spent_display': self._format_paise(totals['total_spent_paise']),
+                }
+                for account_id, totals in grouped.items()
+            ]
         breakdowns.sort(key=lambda item: (-item['total_spent_paise'], item['account_name'].casefold()))
         bounded_limit = max(1, min(int(limit), 10))
         total_spent_paise = sum(item['total_spent_paise'] for item in breakdowns)

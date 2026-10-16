@@ -4,15 +4,23 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
 from app.application.dto import LoginInput, RegisterUserInput
 from app.application.services.auth_service import AuthService
+from app.application.services.profile_summary_service import ProfileSummaryService
 from app.core.config import Settings
-from app.core.dependencies import get_auth_service, get_current_user, get_settings_dependency
+from app.core.dependencies import (
+    get_auth_service,
+    get_current_user,
+    get_profile_summary_service,
+    get_settings_dependency,
+)
 from app.core.security import REFRESH_TOKEN_COOKIE_NAME
 from app.domain.entities import User
 from app.presentation.schemas.auth import (
     AccessTokenResponse,
     GoogleLoginRequest,
     LoginRequest,
+    ProfileTransactionSummaryResponse,
     RegisterRequest,
+    UpdateProfileRequest,
     UserResponse,
 )
 
@@ -113,3 +121,30 @@ async def me(current_user: User = Depends(get_current_user)) -> UserResponse:
         name=current_user.name,
         date_of_birth=current_user.date_of_birth,
     )
+
+
+@router.patch('/me', response_model=UserResponse)
+async def update_me(
+    payload: UpdateProfileRequest,
+    current_user: User = Depends(get_current_user),
+    auth_service: AuthService = Depends(get_auth_service),
+) -> UserResponse:
+    updated = await auth_service.update_profile(
+        current_user.id, name=payload.name, date_of_birth=payload.date_of_birth
+    )
+    if updated is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='User not found')
+    return UserResponse(
+        id=str(updated.id), email=updated.email, name=updated.name, date_of_birth=updated.date_of_birth
+    )
+
+
+@router.get('/me/transaction-summary', response_model=ProfileTransactionSummaryResponse)
+async def profile_transaction_summary(
+    response: Response,
+    current_user: User = Depends(get_current_user),
+    summary_service: ProfileSummaryService = Depends(get_profile_summary_service),
+) -> ProfileTransactionSummaryResponse:
+    response.headers['Cache-Control'] = 'private, no-store'
+    message, transaction_count = await summary_service.summarize_latest(current_user.id)
+    return ProfileTransactionSummaryResponse(message=message, transaction_count=transaction_count)

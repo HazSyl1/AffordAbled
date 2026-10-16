@@ -28,11 +28,32 @@ export interface ChatInsight {
 export interface ChatResponse {
   thread_id: string;
   message: string;
+  tasks_completed: boolean;
+  show_completion_popup: boolean;
   pending_transaction_proposal?: ChatTransactionProposal | null;
   pending_transaction_proposals?: ChatTransactionProposal[] | null;
   transaction_logged?: boolean;
+  created_transaction_id?: string | null;
   manual_transaction_input_required?: boolean;
   insights?: ChatInsight[] | null;
+}
+
+export interface ChatThreadMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  created_at: string;
+}
+
+export interface ChatThreadDetail {
+  thread: {
+    thread_id: string;
+    title: string | null;
+    created_at: string;
+    updated_at: string;
+    message_count: number;
+  };
+  messages: ChatThreadMessage[];
 }
 
 export interface VoiceTranscriptionRequest {
@@ -62,7 +83,13 @@ const chatApi = apiClient.injectEndpoints({
         method: 'POST',
         body,
       }),
-      invalidatesTags: (result) => (result?.pending_transaction_proposal ? ['Category'] : []),
+      // A specialist can create/update categories, accounts, or transactions.
+      // Invalidate mounted domain lists after every completed chat turn so a
+      // user never needs a browser refresh to see a chat-originated mutation.
+      invalidatesTags: ['Category', 'Transaction', 'Account'],
+    }),
+    getChatThread: builder.query<ChatThreadDetail, string>({
+      query: (threadId) => `/threads/${encodeURIComponent(threadId)}`,
     }),
     transcribeVoice: builder.mutation<VoiceTranscriptionResponse, VoiceTranscriptionRequest>({
       query: ({ audio, locale = 'en-IN' }) => {
@@ -92,4 +119,9 @@ const chatApi = apiClient.injectEndpoints({
   }),
 });
 
-export const { useSendChatMessageMutation, useTranscribeVoiceMutation, useAnalyzeImageMutation } = chatApi;
+export const {
+  useSendChatMessageMutation,
+  useLazyGetChatThreadQuery,
+  useTranscribeVoiceMutation,
+  useAnalyzeImageMutation,
+} = chatApi;
