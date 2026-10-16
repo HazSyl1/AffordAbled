@@ -453,7 +453,13 @@ class ToolBoundSpecialistRuntime:
                         "specialist_messages": [
                             AIMessage(
                                 content="",
-                                tool_calls=[{"name": "get_split_summary", "args": {}, "id": "split-summary-intent"}],
+                                tool_calls=[
+                                    {
+                                        "name": "get_split_summary",
+                                        "args": {"arguments": {}},
+                                        "id": "split-summary-intent",
+                                    }
+                                ],
                             )
                         ],
                         "specialist_steps": steps + 1,
