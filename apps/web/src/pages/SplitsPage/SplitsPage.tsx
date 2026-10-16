@@ -10,7 +10,7 @@ import {
 import { useListTransactionsQuery } from '../../features/transactions/transactionsApi';
 import { formatPaiseAsInr } from '../../lib/money';
 
-type Person = { name: string; amount: string };
+type Person = { name: string; amount: string | null };
 const inputClass = 'w-full rounded-xl border border-[var(--bg-border)] bg-[var(--bg-elevated)] px-3 py-2 text-[var(--text-primary)]';
 
 function paise(value: string): number | null {
@@ -40,7 +40,7 @@ export function SplitsPage() {
   const [title, setTitle] = useState('');
   const [mode, setMode] = useState<'equal' | 'custom'>('equal');
   const [ownerAmount, setOwnerAmount] = useState('');
-  const [people, setPeople] = useState<Person[]>([{ name: '', amount: '' }]);
+  const [people, setPeople] = useState<Person[]>([{ name: '', amount: null }]);
   const [review, setReview] = useState<CreateSplitRequest | null>(null);
   const [error, setError] = useState('');
   const [repayments, setRepayments] = useState<Record<string, string>>({});
@@ -51,6 +51,13 @@ export function SplitsPage() {
   const expense = expenses.find((item) => item.id === transactionId);
   const equalShare = expense ? Math.floor(expense.amount_paise / (people.length + 1)) : 0;
   const ownerEqualShare = expense ? equalShare + expense.amount_paise % (people.length + 1) : 0;
+  const ownCustomShare = paise(ownerAmount);
+  const earlierCustomShares = people.slice(0, -1).map((person) => paise(person.amount ?? ''));
+  const autoLastShare = expense && ownCustomShare !== null && earlierCustomShares.every((share) => share !== null)
+    ? expense.amount_paise - ownCustomShare - earlierCustomShares.reduce<number>((sum, share) => sum + (share ?? 0), 0)
+    : null;
+  const customShares = people.map((person, index) =>
+    index === people.length - 1 && person.amount === null ? autoLastShare : paise(person.amount ?? ''));
 
   function updatePerson(index: number, change: Partial<Person>) {
     setPeople((current) => current.map((person, row) => row === index ? { ...person, ...change } : person));
@@ -65,18 +72,16 @@ export function SplitsPage() {
     if (names.some((name) => !name) || new Set(names.map((name) => name.toLowerCase())).size !== names.length) {
       setError('Enter a different name for each person.'); return;
     }
-    const shares = people.map((person) => paise(person.amount));
-    const own = paise(ownerAmount);
-    if (mode === 'custom' && (own === null || shares.some((share) => share === null || share <= 0) ||
-      own + shares.reduce<number>((sum, share) => sum + (share ?? 0), 0) !== expense.amount_paise)) {
+    if (mode === 'custom' && (ownCustomShare === null || customShares.some((share) => share === null || share <= 0) ||
+      ownCustomShare + customShares.reduce<number>((sum, share) => sum + (share ?? 0), 0) !== expense.amount_paise)) {
       setError('Custom shares, including yours, must add up to the expense exactly.'); return;
     }
     setReview({
       transaction_id: expense.id, title: title.trim() || expense.merchant || 'Shared expense',
       amount_paise: expense.amount_paise, mode,
-      owner_share_paise: mode === 'equal' ? ownerEqualShare : own ?? 0,
+      owner_share_paise: mode === 'equal' ? ownerEqualShare : ownCustomShare ?? 0,
       participants: people.map((person, index) => ({
-        name: person.name.trim(), share_paise: mode === 'equal' ? equalShare : shares[index] ?? 0,
+        name: person.name.trim(), share_paise: mode === 'equal' ? equalShare : customShares[index] ?? 0,
       })),
     });
   }
@@ -86,7 +91,7 @@ export function SplitsPage() {
     try {
       await createSplit(review).unwrap();
       setOpen(false); setReview(null); setTransactionId(''); setTitle('');
-      setPeople([{ name: '', amount: '' }]); setError(''); navigate('/splits');
+      setPeople([{ name: '', amount: null }]); setError(''); navigate('/splits');
     } catch (failure) { setError(detail(failure)); }
   }
 
@@ -139,13 +144,18 @@ export function SplitsPage() {
           <p className='text-sm text-[var(--text-secondary)]'>People who owe you</p>
           {people.map((person, index) => <div key={index} className='flex gap-2'>
             <input className={inputClass} list='split-contacts' aria-label={`Person ${index + 1}`} placeholder='Name' value={person.name} onChange={(event) => updatePerson(index, { name: event.target.value })} required />
-            {mode === 'custom' && <input className={inputClass} inputMode='decimal' aria-label={`Amount for person ${index + 1} in rupees`} placeholder='₹' value={person.amount} onChange={(event) => updatePerson(index, { amount: event.target.value })} required />}
+            {mode === 'custom' && <input className={inputClass} inputMode='decimal' aria-label={`Amount for person ${index + 1} in rupees`} placeholder={index === people.length - 1 ? 'Remaining amount' : '₹'}
+              value={index === people.length - 1 && person.amount === null && autoLastShare !== null && autoLastShare >= 0
+                ? (autoLastShare / 100).toFixed(2) : person.amount ?? ''}
+              onFocus={(event) => { if (index === people.length - 1 && person.amount === null) event.currentTarget.select(); }}
+              onChange={(event) => updatePerson(index, { amount: event.target.value || null })} required />}
             {people.length > 1 && <button type='button' className='text-sm text-[var(--text-muted)]' onClick={() => { setPeople((current) => current.filter((_, row) => row !== index)); setReview(null); }}>Remove</button>}
           </div>)}
           <datalist id='split-contacts'>{contacts.map((contact) => <option key={contact} value={contact} />)}</datalist>
-          {people.length < 20 && <button type='button' className='text-sm text-[var(--brand-primary)]' onClick={() => { setPeople((current) => [...current, { name: '', amount: '' }]); setReview(null); }}>+ Add person</button>}
+          {people.length < 20 && <button type='button' className='text-sm text-[var(--brand-primary)]' onClick={() => { setPeople((current) => [...current, { name: '', amount: null }]); setReview(null); }}>+ Add person</button>}
         </div>
         {mode === 'equal' && expense && <p className='text-sm text-[var(--text-secondary)]'>Each person owes {formatPaiseAsInr(equalShare)}. Your share is {formatPaiseAsInr(ownerEqualShare)}.</p>}
+        {mode === 'custom' && expense && <p className='text-xs text-[var(--text-muted)]'>The last person gets the remaining amount automatically. Enter earlier shares to recalculate it.</p>}
         <div className='flex gap-2'><Button type='submit' disabled={!expense}>Review split</Button>
           <Button type='button' variant='secondary' onClick={() => { setOpen(false); setReview(null); navigate('/splits'); }}>Cancel</Button></div>
       </form>
