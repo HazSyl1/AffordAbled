@@ -116,9 +116,8 @@ function ChatWorkspace({ userId }: { userId: string }) {
 
   const groupedDrafts = useMemo(() => {
     return {
-      // Transaction-specific threads are reached from that transaction's
-      // “Chat about this transaction” action, rather than cluttering the
-      // general finance-chat list.
+      // Transaction-specific chats are reopened from their transaction and
+      // stay out of the general chat list unless the user promotes them.
       financeChats: scopedDrafts.filter((draft) => draft.kind === 'general' && draft.lifecycle === 'conversation'),
       draftChats: scopedDrafts.filter((draft) => draft.lifecycle === 'draft'),
     };
@@ -334,12 +333,12 @@ function ChatWorkspace({ userId }: { userId: string }) {
         setActiveFilter('finance');
         if (response.show_completion_popup) {
           clearTaskSuccessTimer();
-          setTaskSuccess({ message: assistantMessage.content, expiresAt: Date.now() + 8_000 });
+          setTaskSuccess({ message: assistantMessage.content, expiresAt: Date.now() + 12_000 });
           transactionRedirectTimerRef.current = window.setTimeout(() => {
             transactionRedirectTimerRef.current = null;
             setTaskSuccess(null);
             navigate('/');
-          }, 8_000);
+          }, 12_000);
         }
         return;
       }
@@ -464,14 +463,54 @@ function ChatWorkspace({ userId }: { userId: string }) {
     const transactionDraft =
       existingDraft ?? createChatDraft(userId, 'transaction', transactionId, { lifecycle: 'conversation' });
     const nextDrafts = listChatDrafts(userId);
+    const requestId = selectedThreadRequestRef.current + 1;
+    selectedThreadRequestRef.current = requestId;
 
     queueMicrotask(() => {
+      if (selectedThreadRequestRef.current !== requestId) {
+        return;
+      }
+
       setDrafts(nextDrafts);
       setSelectedDraftId(transactionDraft.id);
       setActiveFilter('finance');
       setChatInput('');
       setChatError(null);
     });
+
+    if (transactionDraft.thread_id) {
+      void getChatThread(transactionDraft.thread_id)
+        .unwrap()
+        .then((detail) => {
+          if (selectedThreadRequestRef.current !== requestId) {
+            return;
+          }
+
+          const messages: ChatDraftMessage[] = detail.messages.map((message) => ({
+            id: message.id,
+            role: message.role,
+            content: message.content,
+          }));
+          const hydratedDraft = saveChatDraft({
+            userId,
+            draftId: transactionDraft.id,
+            kind: transactionDraft.kind,
+            lifecycle: transactionDraft.lifecycle,
+            transactionId: transactionDraft.transaction_id,
+            threadId: transactionDraft.thread_id,
+            messages: messages.length > 0 ? messages : transactionDraft.messages,
+            expiresAt: transactionDraft.expires_at,
+            title: detail.thread.title ?? transactionDraft.title,
+            preserveUpdatedAt: true,
+          });
+
+          setDrafts(listChatDrafts(userId));
+          setSelectedDraftId(hydratedDraft.id);
+        })
+        .catch(() => {
+          // Keep the locally saved transaction chat available if server history is unavailable.
+        });
+    }
 
     params.delete('transaction_id');
     const nextSearch = params.toString();
@@ -482,7 +521,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
       },
       { replace: true },
     );
-  }, [location.search, navigate, userId]);
+  }, [getChatThread, location.search, navigate, userId]);
 
   const handleImageFileSelected = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const imageFile = event.target.files?.[0];

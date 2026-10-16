@@ -37,6 +37,7 @@ class SpecialistDecision(BaseModel):
 class ToolObservation(BaseModel):
     tool: str
     ok: bool
+    arguments: dict[str, Any] = Field(default_factory=dict)
     data: dict[str, Any] = Field(default_factory=dict)
     error: str | None = Field(default=None, max_length=600)
 
@@ -49,6 +50,7 @@ class SpecialistResult(BaseModel):
     summary: str = Field(max_length=20_000)
     data: dict[str, Any] = Field(default_factory=dict)
     actions_taken: list[dict[str, Any]] = Field(default_factory=list)
+    tool_observations: list[dict[str, Any]] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
 
 

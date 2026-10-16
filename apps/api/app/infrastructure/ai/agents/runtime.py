@@ -6,6 +6,7 @@ import logging
 import re
 import time
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Annotated, Any, Literal, Protocol
 
@@ -108,7 +109,9 @@ _TOOL_DESCRIPTIONS = {
     "get_spending_summary": "Read aggregate spending for a supplied date range, not individual transactions.",
     "get_spending_by_account": "Read spending grouped by account for a supplied date range.",
     "get_spending_comparison": "Compare two supported spending periods.",
-    "get_split_summary": "Read outstanding split balances for money-owed or remaining-split questions; no arguments are required.",
+    "get_split_summary": (
+        "Read outstanding split balances for money-owed or remaining-split questions; no arguments are required."
+    ),
     "list_split_contacts": "Read names used in prior splits to help match people; new names are allowed.",
     "create_split": "Create a split after its expense exists, using its ID and requested participants.",
 }
@@ -257,7 +260,7 @@ class SpecialistRuntime:
                         "latency_ms": int((time.perf_counter() - started) * 1000),
                     },
                 )
-                return ToolObservation(tool=name, ok=True, data=data)
+                return ToolObservation(tool=name, ok=True, arguments=arguments, data=data)
             except Exception as exc:  # tool failures are observations, not graph crashes
                 if attempt == self.max_tool_retries:
                     return ToolObservation(tool=name, ok=False, error=_tool_error_message(exc))
@@ -329,20 +332,36 @@ class ToolBoundSpecialistRuntime:
                         return ToolObservation(
                             tool=name,
                             ok=False,
+                            arguments=arguments,
                             error=_tool_error_message(rollback_exc),
                         )
                 if attempt == self.max_tool_retries:
-                    return ToolObservation(tool=name, ok=False, error=_tool_error_message(exc))
+                    return ToolObservation(tool=name, ok=False, arguments=arguments, error=_tool_error_message(exc))
         raise AssertionError("unreachable")
 
     def _result_from_messages(self, messages: list[BaseMessage]) -> SpecialistResult:
         observations: list[ToolObservation] = []
+        calls_by_id = {
+            str(call.get("id")): call.get("args", {})
+            for message in messages
+            if isinstance(message, AIMessage)
+            for call in message.tool_calls
+        }
         for message in messages:
             if getattr(message, "type", "") != "tool":
                 continue
             try:
                 payload = json.loads(str(message.content))
-                observations.append(ToolObservation.model_validate({"tool": message.name, **payload}))
+                observations.append(
+                    ToolObservation.model_validate(
+                        {
+                            "tool": message.name,
+                            **payload,
+                            "arguments": payload.get("arguments")
+                            or calls_by_id.get(str(getattr(message, "tool_call_id", "")), {}),
+                        }
+                    )
+                )
             except Exception:
                 observations.append(ToolObservation(tool=message.name, ok=False, error="invalid_tool_observation"))
         errors = [item.error for item in observations if item.error]
@@ -420,6 +439,7 @@ class ToolBoundSpecialistRuntime:
             summary=summary.removeprefix("SPECIALIST_ITERATION_LIMIT:").removeprefix("NEEDS_INPUT:").strip(),
             data=data,
             actions_taken=[{"tool": item.tool, "ok": item.ok} for item in observations],
+            tool_observations=[item.model_dump() for item in observations],
             errors=[*(["iteration_limit"] if reached_limit else []), *[error for error in errors if error]],
         )
 
@@ -477,6 +497,20 @@ class ToolBoundSpecialistRuntime:
         async def finish(state: dict[str, Any]) -> dict[str, Any]:
             result = self._result_from_messages(state.get("specialist_messages", []))
             updates: dict[str, Any] = {"results": [*state.get("results", []), result.model_dump()]}
+            active_task = (state.get("task_queue") or [state.get("task_request", "")])[0]
+            prior_events = state.get("tool_event_history") or []
+            new_events = [
+                {
+                    **observation,
+                    "specialist": self.name,
+                    "task": active_task,
+                    "request": state.get("task_request", ""),
+                    "created_at": datetime.now(UTC).isoformat(),
+                }
+                for observation in result.tool_observations
+            ]
+            if new_events:
+                updates["tool_event_history"] = [*prior_events, *new_events][-100:]
             if self.name == "analytics" and result.data.get("transaction_query_window"):
                 updates["last_transaction_window"] = result.data["transaction_query_window"]
             return updates

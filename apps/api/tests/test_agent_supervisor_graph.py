@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Any
 
 import pytest
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableLambda
 from langgraph.checkpoint.memory import InMemorySaver
 
@@ -19,6 +19,7 @@ from app.infrastructure.ai.agents.supervisor_graph import (
     _category_creation_satisfied,
     _explicit_action_clauses,
     _obvious_specialist,
+    _pending_transaction_followup,
     _reconcile_task_queue,
     _remaining_after_observations,
     _required_tools,
@@ -104,6 +105,73 @@ async def test_supervisor_handoff_is_in_native_specialist_context() -> None:
         messages for messages in llm.bound_inputs if "Category specialist" in str(messages[0].content)
     )
     assert '"category_names":["Food"]' in str(category_messages[1].content)
+
+
+def test_new_category_reply_keeps_the_pending_expense_queued() -> None:
+    task_request, task_queue, resumes, creates_category = _pending_transaction_followup(
+        {
+            "task_request": "spent 99 on drugs",
+            "task_queue": ["spent 99 on drugs"],
+            "tasks_completed": False,
+            "final_response": (
+                "Which category should be used for the expense of 99 on drugs? Available categories are Food and Misc."
+            ),
+        },
+        "Create new category Medicines",
+    )
+
+    assert task_request == "spent 99 on drugs"
+    assert task_queue == ["spent 99 on drugs"]
+    assert resumes is True
+    assert creates_category is True
+
+
+def test_category_creation_verification_infers_expense_from_pending_transaction() -> None:
+    available_categories = [{"name": "Medicines", "type": "expense"}]
+    assert _category_creation_satisfied(
+        "Create new category Medicines",
+        "spent 99 on drugs",
+        "Create new category Medicines",
+        available_categories,
+    )
+    assert _category_creation_satisfied(
+        "Create new category Medicines",
+        "Create new category Medicines",
+        "Create new category Medicines",
+        available_categories,
+    )
+    assert not _category_creation_satisfied(
+        "Create new category Medicines",
+        "spent 99 on drugs",
+        "Create new category Medicines",
+        [{"name": "Medicines", "type": "income"}],
+    )
+
+
+@pytest.mark.asyncio
+async def test_supervisor_preserves_task_queue_when_transaction_needs_input() -> None:
+    graph = _graph()
+    graph._supervisor = ScriptedSupervisor([SupervisorDecision(action="finish")])  # type: ignore[assignment]
+    user_id = uuid.uuid4()
+    update = await graph._supervise(
+        {
+            "messages": [HumanMessage(content="spent 99 on drugs")],
+            "user_id": str(user_id),
+            "task_request": "spent 99 on drugs",
+            "task_queue": ["spent 99 on drugs"],
+            "results": [
+                {
+                    "specialist": "transaction",
+                    "status": "needs_input",
+                    "summary": "Which category should be used for the expense of 99 on drugs?",
+                }
+            ],
+        }
+    )
+
+    assert update["awaiting_user_input"] is True
+    assert update["task_queue"] == ["spent 99 on drugs"]
+    assert update["final_response"] == "Which category should be used for the expense of 99 on drugs?"
 
 
 @pytest.mark.asyncio

@@ -427,6 +427,15 @@ def _category_creation_satisfied(
     names = [name.strip() for name in quoted_names if _mentions(task, name.strip())]
     if not names:
         match = re.search(
+            r"\b(?:create|add)\s+(?:(?:a|an|the|new)\s+)*(?:(?:expense|income)\s+)?"
+            r"categor(?:y|ies)\s+(.+?)\s*$",
+            task,
+            flags=re.IGNORECASE,
+        )
+        if match:
+            names = [part.strip().strip('"') for part in re.split(r"\s+and\s+|,", match.group(1))]
+    if not names:
+        match = re.search(
             r"\b(?:create|add)\s+(.+?)\s+(?:(?:are|as)\s+)?(?:(?:an?|the)\s+)?"
             r"(?:(?:expense|income)\s+)?categor(?:y|ies)\b",
             task,
@@ -456,21 +465,68 @@ def _category_creation_satisfied(
         expense_requested, income_requested = reply_expense, reply_income
     else:
         expense_requested, income_requested = original_expense, original_income
-    if expense_requested == income_requested:
-        return False
-    category_type = "expense" if expense_requested else "income"
+    category_type: str | None
+    if expense_requested != income_requested:
+        category_type = "expense" if expense_requested else "income"
+    elif re.search(r"\b(?:spend|spent|pay|paid|purchase|purchased|buy|bought|expense)\b", original_request, re.I):
+        category_type = "expense"
+    elif re.search(r"\b(?:receive|received|earn|earned|deposit|deposited|income)\b", original_request, re.I):
+        category_type = "income"
+    else:
+        # If the user omitted a type and there is no transaction context to
+        # infer one from, an exact existing name is enough for idempotency.
+        category_type = None
     return all(
         any(
             str(category.get("name") or "").casefold() == name.casefold()
-            and str(category.get("type") or "").casefold() == category_type
+            and (category_type is None or str(category.get("type") or "").casefold() == category_type)
             for category in available_categories
         )
         for name in names
     )
 
 
+def _is_category_clarification(message: str) -> bool:
+    normalized = message.casefold()
+    return "categor" in normalized and any(
+        phrase in normalized for phrase in ("which", "what", "choose", "use", "available", "should i")
+    )
+
+
+def _last_assistant_reply(history: list[dict[str, str]]) -> str:
+    return next((item.get("content", "") for item in reversed(history) if item.get("role") == "assistant"), "")
+
+
+def _pending_transaction_followup(
+    prior_state: dict[str, Any], message: str
+) -> tuple[str, list[str], bool, bool]:
+    """Identify a category-create reply to a transaction that is waiting for its category."""
+    task_request = str(prior_state.get("task_request") or "")
+    task_queue = list(prior_state.get("task_queue") or [])
+    history = prior_state.get("conversation_history") or []
+    pending_question = str(prior_state.get("final_response") or _last_assistant_reply(history))
+    category_question = _is_category_clarification(pending_question) or bool(
+        prior_state.get("awaiting_user_input") and _required_tools(message, "category") == {"create_category"}
+    )
+    is_pending = bool(
+        not prior_state.get("tasks_completed")
+        and category_question
+        and _obvious_specialist(task_request) == "transaction"
+    )
+    if is_pending and not task_queue:
+        task_queue = [task_request]
+    is_category_create = bool(
+        is_pending
+        and task_queue
+        and _required_tools(message, "category") == {"create_category"}
+        and _obvious_specialist(message) == "category"
+    )
+    return task_request, task_queue, is_pending, is_category_create
+
+
 class AgentGraphState(TypedDict, total=False):
     messages: Annotated[list[BaseMessage], add_messages]
+    conversation_history: list[dict[str, str]]
     user_id: str
     timezone: str
     task_request: str
@@ -478,6 +534,7 @@ class AgentGraphState(TypedDict, total=False):
     completed_tasks: list[str]
     created_transaction_ids: list[str]
     tasks_completed: bool
+    awaiting_user_input: bool
     show_completion_popup: bool
     available_categories: list[dict[str, Any]]
     available_accounts: list[dict[str, Any]]
@@ -486,6 +543,7 @@ class AgentGraphState(TypedDict, total=False):
     handoff: dict[str, Any]
     results: list[dict[str, Any]]
     prior_results: list[dict[str, Any]]
+    tool_event_history: list[dict[str, Any]]
     contextual_followup: bool
     reroutes: int
     specialist_steps: int
@@ -606,30 +664,61 @@ class AgenticSupervisorGraph:
     ) -> dict[str, Any]:
         config = {"configurable": {"thread_id": f"{user_id}:{thread_id}"}}
         snapshot = await self.graph.aget_state(config)
+        prior_state = snapshot.values or {}
+        conversation_history = prior_state.get("conversation_history") or []
+        (
+            prior_task_request,
+            pending_queue,
+            resume_pending_transaction,
+            is_new_category_for_pending_transaction,
+        ) = _pending_transaction_followup(prior_state, message)
         if snapshot.interrupts:
+            resume_update: dict[str, Any] = {
+                "messages": [HumanMessage(content=message)],
+                "conversation_history": [*conversation_history, {"role": "user", "content": message}][-100:],
+            }
+            if is_new_category_for_pending_transaction:
+                resume_update["task_queue"] = [message, *pending_queue]
             return await self.graph.ainvoke(
-                Command(resume=message, update={"messages": [HumanMessage(content=message)]}), config=config
+                Command(resume=message, update=resume_update),
+                config=config,
             )
-        prior_results = snapshot.values.get("results", []) if snapshot.values else []
+        prior_results = prior_state.get("results") or []
+        tool_event_history = prior_state.get("tool_event_history") or []
         contextual_followup = bool(prior_results and _is_elaboration_followup(message))
+        task_queue = (
+            [message, *pending_queue]
+            if is_new_category_for_pending_transaction
+            else pending_queue if resume_pending_transaction else []
+        )
         return await self.graph.ainvoke(
             {
                 "messages": [HumanMessage(content=message)],
+                # Keep chat context separate from specialist working messages,
+                # which are intentionally cleared when handing off to a specialist.
+                "conversation_history": [
+                    *conversation_history,
+                    {"role": "user", "content": message},
+                ][-100:],
                 "user_id": str(user_id),
                 "timezone": timezone,
                 # This is the task the active specialist must complete. It
                 # survives an interrupt; the newest message is only its
                 # clarification answer, not a replacement task.
-                "task_request": message,
-                "task_queue": ["elaborate on the prior verified answer"] if contextual_followup else [],
-                "completed_tasks": [],
-                "created_transaction_ids": [],
+                "task_request": prior_task_request if resume_pending_transaction else message,
+                "task_queue": task_queue or (["elaborate on the prior verified answer"] if contextual_followup else []),
+                "completed_tasks": list(prior_state.get("completed_tasks") or []) if resume_pending_transaction else [],
+                "created_transaction_ids": (
+                    list(prior_state.get("created_transaction_ids") or []) if resume_pending_transaction else []
+                ),
                 "tasks_completed": False,
+                "awaiting_user_input": False,
                 "show_completion_popup": False,
                 "results": [],
                 # Keep a bounded window of the previous turn's structured tool
                 # observations available to every new task, not only follow-ups.
                 "prior_results": prior_results[-5:],
+                "tool_event_history": tool_event_history,
                 "contextual_followup": contextual_followup,
                 "reroutes": 0,
                 "final_response": None,
@@ -670,9 +759,7 @@ class AgenticSupervisorGraph:
             }
             for item in accounts
         ]
-        history = [
-            {"role": message.type, "content": str(message.content)} for message in state.get("messages", [])[-20:]
-        ]
+        history = (state.get("conversation_history") or [])[-20:]
         task_queue = state.get("task_queue") or []
         context = HandoffContext(
             user_id=uuid.UUID(state["user_id"]),
@@ -689,6 +776,7 @@ class AgenticSupervisorGraph:
                 "last_transaction_window": state.get("last_transaction_window"),
                 "original_request": state.get("task_request"),
                 "prior_specialist_results": state.get("prior_results", []),
+                "recent_tool_observations": state.get("tool_event_history", [])[-12:],
             },
         )
         decision = await self._supervisor.decide(context, state.get("results", []))
@@ -714,6 +802,22 @@ class AgenticSupervisorGraph:
                     task_queue.append(split_task)
             if not task_queue:
                 task_queue = [state.get("task_request") or str(state["messages"][-1].content)]
+        if not state.get("results"):
+            queued_specialist = _obvious_specialist(task_queue[0]) if task_queue else None
+            category_then_transaction = bool(
+                len(task_queue) > 1
+                and queued_specialist == "category"
+                and _obvious_specialist(task_queue[1]) == "transaction"
+            )
+            continuing_completed_work = bool(state.get("completed_tasks") and queued_specialist == "transaction")
+            if queued_specialist is not None and (category_then_transaction or continuing_completed_work) and (
+                decision.action != "route" or decision.specialist != queued_specialist
+            ):
+                decision = SupervisorDecision(
+                    action="route",
+                    specialist=queued_specialist,
+                    handoff={**decision.handoff, "queued_task": task_queue[0]},
+                )
         if not state.get("results") and (decision.action != "route" or decision.specialist is None):
             specialist = _obvious_specialist(task_queue[0]) or _obvious_specialist(state.get("task_request", ""))
             if specialist is None and state.get("last_transaction_window") and re.search(
@@ -727,6 +831,26 @@ class AgenticSupervisorGraph:
                     handoff={**decision.handoff, "original_request": state.get("task_request", "")},
                 )
         latest_result = (state.get("results") or [{}])[-1]
+        if (
+            task_queue
+            and _obvious_specialist(task_queue[0]) == "category"
+            and latest_result.get("specialist") == "transaction"
+            and latest_result.get("status") != "failed"
+        ):
+            return {
+                "results": [],
+                "next_specialist": "supervisor",
+                "task_queue": task_queue,
+                "awaiting_user_input": False,
+            }
+        if latest_result.get("status") == "needs_input":
+            return {
+                "final_response": latest_result.get("summary") or "I need one more detail to continue.",
+                "next_specialist": None,
+                "task_queue": task_queue,
+                "tasks_completed": False,
+                "awaiting_user_input": True,
+            }
         if latest_result.get("status") in {"success", "partial"}:
             observed_actions = (latest_result.get("data") or {}).get("observed_actions") or []
             remaining_tasks, satisfied_tasks = _reconcile_task_queue(
@@ -783,6 +907,7 @@ class AgenticSupervisorGraph:
                         "completed_tasks": completed_tasks,
                         "created_transaction_ids": created_transaction_ids,
                         "tasks_completed": True,
+                        "awaiting_user_input": False,
                         "show_completion_popup": show_completion_popup,
                     }
                 return {
@@ -858,6 +983,7 @@ class AgenticSupervisorGraph:
                     "task_queue": [],
                     "completed_tasks": completed_tasks,
                     "tasks_completed": True,
+                    "awaiting_user_input": False,
                     "show_completion_popup": True,
                 }
             if not satisfied_tasks and state.get("reroutes", 0) >= _MAX_REROUTES:
@@ -928,11 +1054,12 @@ class AgenticSupervisorGraph:
         context = HandoffContext(
             user_id=uuid.UUID(state["user_id"]),
             request=(state.get("task_queue") or [state.get("task_request") or str(state["messages"][-1].content)])[0],
-            history=[{"role": item.type, "content": str(item.content)} for item in state.get("messages", [])[-20:]],
+            history=(state.get("conversation_history") or [])[-20:],
             timezone=state.get("timezone", "UTC"),
             constraints={
                 "specialist_results": state.get("results", []),
                 "prior_specialist_results": state.get("prior_results", []),
+                "recent_tool_observations": state.get("tool_event_history", [])[-12:],
                 "completed_tasks": state.get("completed_tasks", []),
                 "supervisor_handoff": handoff,
                 "latest_user_reply": str(state["messages"][-1].content),
@@ -976,14 +1103,19 @@ class AgenticChatOrchestrator:
             )
         else:
             reply = str(result.get("final_response") or "I could not complete that request.")
-        if not interrupts:
-            # The application transcript stores this reply separately. Also
-            # put it in graph thread state so later turns can resolve references
-            # such as "elaborate" against what the assistant actually said.
-            await self._graph.graph.aupdate_state(
-                {"configurable": {"thread_id": f"{user_id}:{thread_id}"}},
-                {"messages": [AIMessage(content=reply)]},
-            )
+        # Preserve the user-facing transcript independently from the messages
+        # used by specialist subgraphs. Those working messages are cleared at
+        # handoff, while this bounded history remains available on later turns.
+        await self._graph.graph.aupdate_state(
+            {"configurable": {"thread_id": f"{user_id}:{thread_id}"}},
+            {
+                "messages": [AIMessage(content=reply)] if not interrupts else [],
+                "conversation_history": [
+                    *((result.get("conversation_history") or [])[-99:]),
+                    {"role": "assistant", "content": reply},
+                ],
+            },
+        )
         transaction_id: str | None = (result.get("created_transaction_ids") or [None])[-1]
         for specialist_result in reversed(result.get("results") or []):
             if specialist_result.get("specialist") != "transaction":

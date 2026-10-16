@@ -23,7 +23,12 @@ import {
   useTranscribeVoiceMutation,
 } from '../chat/chatApi';
 import { mapProposalToCreateTransactionValues } from '../chat/chatProposal';
-import { deleteChatDraft, deleteChatDraftByThreadId, saveChatDraft } from '../chat/chatDrafts';
+import {
+  deleteChatDraft,
+  deleteChatDraftByThreadId,
+  queueChatDraftTitleGeneration,
+  saveChatDraft,
+} from '../chat/chatDrafts';
 import { useVoiceCapture } from '../chat/useVoiceCapture';
 import { useListTransactionsQuery } from '../transactions/transactionsApi';
 import { useListSplitsQuery } from '../splits/splitsApi';
@@ -217,6 +222,9 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
     messages: ChatMessage[],
     threadId: string | null,
     draftIdOverride: string | null = chatDraftId,
+    lifecycle: 'conversation' | 'draft' = 'conversation',
+    kind: 'general' | 'transaction' = chatTransactionId ? 'transaction' : 'general',
+    transactionId: string | null = chatTransactionId,
   ): string | null => {
     if (messages.length === 0 || !currentUser?.id) {
       return draftIdOverride;
@@ -225,9 +233,11 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
     const savedDraft = saveChatDraft({
       userId: currentUser.id,
       draftId: draftIdOverride,
-      kind: chatTransactionId ? 'transaction' : 'general',
-      lifecycle: chatTransactionId ? 'conversation' : 'draft',
-      transactionId: chatTransactionId,
+      kind,
+      // A dashboard chat has been sent to the assistant, so keep it in the
+      // conversation list even when it is an analytics or split question.
+      lifecycle,
+      transactionId,
       threadId,
       messages,
     });
@@ -327,13 +337,13 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
 
       if (response.show_completion_popup) {
         clearTransactionRedirectTimer();
-        setTransactionSuccess({ message: assistantMessage.content, expiresAt: Date.now() + 8_000 });
+        setTransactionSuccess({ message: assistantMessage.content, expiresAt: Date.now() + 12_000 });
         transactionRedirectTimerRef.current = window.setTimeout(() => {
           transactionRedirectTimerRef.current = null;
           setTransactionSuccess(null);
           resetChatSession();
           navigate('/');
-        }, 8_000);
+        }, 12_000);
         return;
       }
 
@@ -468,7 +478,34 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
   };
 
   const handleSaveDraftAndClose = () => {
-    persistGeneralDraft(chatMessages, chatThreadId, chatDraftId);
+    persistGeneralDraft(chatMessages, chatThreadId, chatDraftId, 'draft');
+    setShowSaveDraftPrompt(false);
+    resetChatSession();
+  };
+
+  const handleAddChatAndClose = () => {
+    // Promotion is explicit: transaction-specific chats stay out of the main
+    // list unless the user chooses Add to Chats.
+    if (currentUser?.id && chatTransactionId) {
+      if (chatThreadId) {
+        deleteChatDraftByThreadId(currentUser.id, chatThreadId);
+      } else if (chatDraftId) {
+        deleteChatDraft(currentUser.id, chatDraftId);
+      }
+      const promotedDraftId = persistGeneralDraft(
+        chatMessages,
+        chatThreadId,
+        null,
+        'conversation',
+        'general',
+        null,
+      );
+      if (promotedDraftId) {
+        queueChatDraftTitleGeneration(currentUser.id, promotedDraftId);
+      }
+    } else {
+      persistGeneralDraft(chatMessages, chatThreadId, chatDraftId, 'conversation', 'general');
+    }
     setShowSaveDraftPrompt(false);
     resetChatSession();
   };
@@ -836,7 +873,7 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
         <div className='fixed inset-0 z-[70] flex items-center justify-center bg-black/60 px-4 py-6'>
           <div className='w-full max-w-md rounded-2xl border border-[var(--bg-border)] bg-[var(--bg-card)] p-5 shadow-[0_20px_50px_rgba(0,0,0,0.45)]'>
             <div className='flex items-start justify-between gap-2'>
-              <h3 className='text-lg font-semibold text-[var(--text-primary)]'>{DASHBOARD_CHAT_UI_TEXT.saveDraftBeforeCloseTitle}</h3>
+              <h3 className='text-lg font-semibold text-[var(--text-primary)]'>{DASHBOARD_CHAT_UI_TEXT.closeChatTitle}</h3>
               <button
                 type='button'
                 aria-label='Close'
@@ -846,14 +883,17 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
                 ×
               </button>
             </div>
-            <p className='mt-2 text-sm text-[var(--text-secondary)]'>{DASHBOARD_CHAT_UI_TEXT.saveDraftBeforeClosePrompt}</p>
+            <p className='mt-2 text-sm text-[var(--text-secondary)]'>{DASHBOARD_CHAT_UI_TEXT.closeChatPrompt}</p>
 
-            <div className='mt-4 grid grid-cols-2 gap-2'>
+            <div className='mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3'>
               <Button type='button' variant='secondary' onClick={handleDiscardDraftAndClose}>
-                {DASHBOARD_CHAT_UI_TEXT.saveDraftNoLabel}
+                {DASHBOARD_CHAT_UI_TEXT.discardAndCloseLabel}
+              </Button>
+              <Button type='button' variant='secondary' onClick={handleAddChatAndClose}>
+                {DASHBOARD_CHAT_UI_TEXT.addToChatsLabel}
               </Button>
               <Button type='button' onClick={handleSaveDraftAndClose}>
-                {DASHBOARD_CHAT_UI_TEXT.saveDraftYesLabel}
+                {DASHBOARD_CHAT_UI_TEXT.addToDraftsLabel}
               </Button>
             </div>
           </div>

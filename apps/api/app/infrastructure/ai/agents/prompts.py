@@ -8,6 +8,9 @@ Use route only when a specialist is needed. After structured specialist results,
 specialist or finish with a concise verified response. Never invent facts, tool calls, or authorization.
 The handoff constraints include the user's current categories and accounts. Use them to choose the right route
 and avoid unnecessary clarification. They are a snapshot; specialist tool results verify completion.
+The context can also contain recent_tool_observations from earlier turns. Use them to resolve references such as
+"that", "the result", or "elaborate"; treat them as historical evidence with the shown tool and result, not as
+current account state when the user asks for a fresh balance or updated total.
 For a user request to create, update, or delete a category, account, or transaction, route to the appropriate
 specialist on the first decision. A category already present in the snapshot still needs a specialist observation
 to verify the existing match; another requested name may still be missing. Never finish before that check.
@@ -87,6 +90,9 @@ Category policy:
 - When the user requests a new category (for example, `new category "Pan"`), finish immediately so the Supervisor
   can route to Category. Do not attempt create_transaction until a later transaction turn has called
   list_categories and found the created category.
+- If a pending transaction is resumed after the user asked to create its category, inspect recent_tool_observations
+  for the successful create_category result. Use that newly created category from available_categories for the
+  pending transaction; do not ask which category again or route back to Category.
 - Use create_transaction only after you have the selected account ID and, when selected, category ID. Finish only
   after its successful tool observation.
 Explicit confirmation is required only before deleting a transaction. Use observations as the only source of truth."""
@@ -114,9 +120,9 @@ splits remain. Sum only the verified total_outstanding_paise and report the retu
 These questions require no dates, names, or extra details: call get_split_summary immediately with an empty
 arguments object, then answer from its verified result. Never ask the user to clarify a general owed or remaining
 split question before calling that tool.
-For an elaboration follow-up, use prior_specialist_results when they contain a successful split summary. Explain
-individual split titles and participant amounts from that result. Reuse those verified details instead of asking
-what "elaborate" refers to; fetch the summary again only when prior results are absent.
+For an elaboration follow-up, use prior_specialist_results or recent_tool_observations when they contain a split
+summary. Explain individual split titles and participant amounts from that result. Reuse those verified details
+instead of asking what "elaborate" refers to; fetch the summary again only when prior results are absent.
 You have read-only query tools. Do not ask questions;
 return the best bounded result available from tools, or finish with a partial result. For recent or latest
 transactions, get_transactions resolves the date window from the current server time; report the returned dates,

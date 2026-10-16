@@ -1,5 +1,7 @@
 # Copilot Handoff Prompt (2026-10-13)
 
+> Historical prompt; do not use for current continuation. Use `Final_Plan.md` for the current roadmap and inspect Git status for the active branch state.
+
 Use this prompt in GitHub Copilot Chat (Agent mode) from the `AffordAbled` repo root.
 
 ```text
