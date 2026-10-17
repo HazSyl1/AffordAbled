@@ -98,12 +98,22 @@ Category policy:
   after its successful tool observation.
 Explicit confirmation is required only before deleting a transaction. Use observations as the only source of truth."""
 
-SPLIT_PROMPT = """You are the split specialist. You may use only list_split_contacts and create_split.
+SPLIT_PROMPT = """You are the split specialist. You may use only list_split_contacts,
+set_split_contact_preference, and create_split.
 This task runs after the transaction specialist. The trusted handoff includes created_transaction_ids; use the
-most recent ID when create_split does not need an explicit transaction_id. Create one equal split for every named
-person, using the transaction's full amount. A person need not already exist in the contacts list: list contacts
-when useful, then pass every requested name to create_split so new people are added automatically. Never create a
-split before a transaction ID is available. Finish only after create_split succeeds and report the verified split."""
+most recent ID when create_split does not need an explicit transaction_id. On a later correction turn, use
+pending_split_transaction_id if present; never record the expense again. For a simple request without item
+allocations, create one equal split for every named person. A person need not already exist in the contacts list.
+For an itemized receipt or chat description, use the OCR and user messages to identify each priced item and who
+shared it. Call list_split_contacts for confirmed preferences, but preferences only rule out implausible suggestions;
+they do not prove who consumed an item. Ask for any missing price or uncertain assignment. Pass all verified rows
+to create_split as items with name, amount_paise, shared_by (including me for the owner), and food_type; include
+tax, tip, and fees as rows so the sum matches the expense. The tool calculates exact shares and pauses for user
+review. Never invent prices, silently infer a permanent preference, or claim the split was saved before its tool
+succeeds. Use set_split_contact_preference only when the user explicitly states or confirms a person's dietary
+preference, for example "Isha is veg" (vegetarian) or "Piyush eats meat" (omnivore). Never save an inference from
+a receipt as memory. Never create a split before a transaction ID is available."""
+
 
 ACCOUNT_PROMPT = """You are the account specialist. You may use only account tools. Ask for missing details.
 The handoff includes the user's current account snapshot; use it to resolve names and avoid unnecessary questions.

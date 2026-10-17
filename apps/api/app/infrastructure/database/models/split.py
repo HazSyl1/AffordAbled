@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, String, UniqueConstraint, func
+from sqlalchemy import JSON, BigInteger, DateTime, ForeignKey, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.infrastructure.database.base import Base
@@ -18,6 +18,7 @@ class SplitModel(Base):
     transaction_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('transactions.id', ondelete='CASCADE'))
     title: Mapped[str] = mapped_column(String(255))
     owner_share_paise: Mapped[int] = mapped_column(BigInteger)
+    item_breakdown: Mapped[list[dict] | None] = mapped_column(JSON(none_as_null=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     participants: Mapped[list[SplitParticipantModel]] = relationship(
         back_populates='split', cascade='all, delete-orphan', lazy='selectin'

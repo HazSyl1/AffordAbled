@@ -12,6 +12,7 @@ from app.application.services.split_service import ParticipantEditShare, Partici
 from app.infrastructure.database.models import (
     AccountModel,
     CategoryModel,
+    SplitContactModel,
     SplitModel,
     SplitParticipantModel,
     TransactionModel,
@@ -43,7 +44,7 @@ class SqlAlchemySplitRepository:
 
     async def create(
         self, user_id: uuid.UUID, transaction_id: uuid.UUID, title: str,
-        owner_share_paise: int, participants: list[ParticipantShare],
+        owner_share_paise: int, participants: list[ParticipantShare], item_breakdown: list[dict] | None = None,
     ) -> SplitModel:
         transaction = await self.session.scalar(
             select(TransactionModel).where(
@@ -62,7 +63,7 @@ class SqlAlchemySplitRepository:
             raise ValueError('This expense already has a split.')
         split = SplitModel(
             id=uuid.uuid4(), user_id=user_id, transaction_id=transaction_id,
-            title=title, owner_share_paise=owner_share_paise,
+            title=title, owner_share_paise=owner_share_paise, item_breakdown=item_breakdown,
             participants=[
                 SplitParticipantModel(id=uuid.uuid4(), name=person.name, share_paise=person.share_paise,
                                       settled_paise=0)
@@ -119,6 +120,16 @@ class SqlAlchemySplitRepository:
         if requested_ids - existing.keys():
             raise ValueError('A participant does not belong to this split.')
         requested = {person.id: person for person in participants if person.id is not None}
+        same_allocations = (
+            owner_share_paise == split.owner_share_paise
+            and len(participants) == len(split.participants)
+            and all(
+                person.id in existing
+                and person.name == existing[person.id].name
+                and person.share_paise == existing[person.id].share_paise
+                for person in participants
+            )
+        )
         for person in split.participants:
             if person.repayment_transaction_id is not None or person.settled_paise > 0:
                 updated = requested.get(person.id)
@@ -140,6 +151,8 @@ class SqlAlchemySplitRepository:
 
             split.title = title
             split.owner_share_paise = owner_share_paise
+            if not same_allocations:
+                split.item_breakdown = None
             for person in participants:
                 if person.id is None:
                     split.participants.append(SplitParticipantModel(
@@ -259,4 +272,85 @@ class SqlAlchemySplitRepository:
             select(SplitParticipantModel.name).join(SplitModel)
             .where(SplitModel.user_id == user_id).distinct().order_by(SplitParticipantModel.name)
         )
+        names = {name.casefold(): name for name in rows.all()}
+        contacts = await self.list_contact_preferences(user_id)
+        for contact in contacts:
+            names[contact.normalized_name] = contact.name
+        return sorted(names.values(), key=str.casefold)
+
+    async def list_contact_preferences(self, user_id: uuid.UUID) -> list[SplitContactModel]:
+        rows = await self.session.scalars(
+            select(SplitContactModel).where(SplitContactModel.user_id == user_id)
+            .order_by(SplitContactModel.normalized_name)
+        )
         return list(rows.all())
+
+    async def contact_preference_suggestions(self, user_id: uuid.UUID) -> list[dict]:
+        """Suggest, but never save, a preference after repeated reviewed item allocations."""
+        known = {contact.normalized_name for contact in await self.list_contact_preferences(user_id)
+                 if contact.dietary_preference}
+        rows = await self.session.scalars(
+            select(SplitModel).where(SplitModel.user_id == user_id, SplitModel.item_breakdown.is_not(None))
+            .order_by(SplitModel.created_at.desc()).limit(100)
+        )
+        evidence: dict[str, dict] = {}
+        for split in rows.all():
+            for item in split.item_breakdown or []:
+                food_type = item.get('food_type')
+                if food_type not in {'vegetarian', 'vegan', 'contains_meat'}:
+                    continue
+                for allocation in item.get('allocations') or []:
+                    name = str(allocation.get('person') or '').strip()
+                    key = name.casefold()
+                    if not key or key == 'me' or key in known:
+                        continue
+                    person = evidence.setdefault(key, {'name': name, 'vegetarian_splits': set(), 'meat_splits': set()})
+                    bucket = 'meat_splits' if food_type == 'contains_meat' else 'vegetarian_splits'
+                    person[bucket].add(split.id)
+        return [
+            {'name': person['name'], 'suggested_preference': 'vegetarian',
+             'evidence_splits': len(person['vegetarian_splits'])}
+            for person in evidence.values()
+            if len(person['vegetarian_splits']) >= 3 and not person['meat_splits']
+        ]
+
+    async def set_contact_preference(
+        self, user_id: uuid.UUID, name: str, dietary_preference: str | None,
+    ) -> SplitContactModel:
+        clean_name = name.strip()
+        normalized_name = clean_name.casefold()
+        if not clean_name or len(clean_name) > 100:
+            raise ValueError('Contact name must be between 1 and 100 characters.')
+        if dietary_preference not in {None, 'vegetarian', 'vegan', 'omnivore'}:
+            raise ValueError('Dietary preference must be vegetarian, vegan, or omnivore.')
+        contact = await self.session.scalar(
+            select(SplitContactModel).where(
+                SplitContactModel.user_id == user_id,
+                SplitContactModel.normalized_name == normalized_name,
+            )
+        )
+        if contact is None:
+            contact = SplitContactModel(
+                id=uuid.uuid4(), user_id=user_id, name=clean_name, normalized_name=normalized_name,
+            )
+            self.session.add(contact)
+        else:
+            contact.name = clean_name
+        contact.dietary_preference = dietary_preference
+        contact.preference_confirmed_at = datetime.now(UTC) if dietary_preference else None
+        try:
+            await self.session.commit()
+        except IntegrityError as error:
+            await self.session.rollback()
+            raise ValueError('This split contact already exists. Please try again.') from error
+        return contact
+
+    async def delete_contact_preference(self, user_id: uuid.UUID, contact_id: uuid.UUID) -> bool:
+        contact = await self.session.scalar(
+            select(SplitContactModel).where(SplitContactModel.user_id == user_id, SplitContactModel.id == contact_id)
+        )
+        if contact is None:
+            return False
+        await self.session.delete(contact)
+        await self.session.commit()
+        return True

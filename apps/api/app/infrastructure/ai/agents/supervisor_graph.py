@@ -57,6 +57,7 @@ _MUTATION_TOOLS = {
     "delete_transaction",
     "restore_transaction",
     "create_split",
+    "set_split_contact_preference",
 }
 
 
@@ -70,7 +71,11 @@ def _split_task_for_request(request: str) -> str | None:
         return None
     match = re.search(r"\bwith\s+(.+?)(?:\s+for\s+me)?(?:[.!?]|$)", request, re.IGNORECASE)
     names = match.group(1).strip() if match else "the named people"
-    return f"create an equal split for the transaction just recorded with participants {names}"
+    split_kind = 'itemized' if (
+        not re.search(r'\b(?:equal|equally)\b', normalized)
+        and re.search(r'\b(?:by item|itemized|had|ate|ordered|shared the)\b', normalized)
+    ) else 'equal'
+    return f"create an {split_kind} split for the transaction just recorded with participants {names}. {request}"
 
 
 def _is_elaboration_followup(message: str) -> bool:
@@ -215,6 +220,12 @@ def _matches_observed_action(task: str, action: dict[str, Any]) -> bool:
         )
         task_mentions_merchant = bool(merchant and _mentions(task, merchant))
         return identified and (id_matches or not task_mentions_merchant or merchant_matches)
+    if tool == "set_split_contact_preference":
+        contact = data.get('contact') or {}
+        return _mentions(task, str(contact.get('name') or '')) and any(
+            _mentions(task, word)
+            for word in ('remember', 'vegetarian', 'vegan', 'omnivore', 'dietary', 'veg', 'meat', 'nonveg')
+        )
     if tool == "create_split":
         split = data.get("split") or {}
         return "split" in normalized_task and (
@@ -349,8 +360,10 @@ def _required_tools(task: str, specialist: str | None) -> set[str] | None:
         ):
             return {"create_transaction", "create_transaction_batch"}
     if specialist == "split":
-        if says("split", "shared", "owe", "people", "participants"):
+        if says("split", "shared", "participants") and not says('remember', 'save preference'):
             return {"create_split"}
+        if says('remember', 'dietary', 'vegetarian', 'vegan', 'omnivore', 'veg', 'meat', 'nonveg'):
+            return {'set_split_contact_preference'}
     if specialist == "export":
         return {"create_transaction_report"}
     return None
@@ -369,6 +382,12 @@ def _obvious_specialist(task: str) -> str | None:
         return "export"
     if "split" in normalized and not re.search(r"\b(?:spent|spend|paid|pay|record|log)\b", normalized):
         return "split"
+    if re.search(r'\b(?:remember|save)\b', normalized) and re.search(
+        r'\b(?:vegetarian|vegan|omnivore|dietary|veg|meat|non-?veg)\b', normalized
+    ):
+        return 'split'
+    if re.search(r'\b\w+\s+(?:is|eats)\s+(?:vegetarian|vegan|omnivore|veg|non-?veg|meat)\b', normalized):
+        return 'split'
     if any(_mentions(task, word) for word in ("balance", "balances")):
         return "analytics"
     if re.search(r"\bcategor(?:y|ies)\b", normalized) and any(
@@ -550,6 +569,7 @@ class AgentGraphState(TypedDict, total=False):
     task_queue: list[str]
     completed_tasks: list[str]
     created_transaction_ids: list[str]
+    pending_split_transaction_id: str | None
     tasks_completed: bool
     awaiting_user_input: bool
     show_completion_popup: bool
@@ -727,12 +747,24 @@ class AgenticSupervisorGraph:
                 config=config,
             )
         prior_results = prior_state.get("results") or []
+        pending_itemized_split = bool(
+            prior_state.get('task_queue')
+            and 'itemized split' in str(prior_state['task_queue'][0]).casefold()
+            and any(
+                'Itemized split was not saved' in str(error)
+                for result in prior_results
+                for error in result.get('errors', [])
+            )
+        )
+        if pending_itemized_split:
+            pending_queue = list(prior_state['task_queue'])
+            prior_task_request = str(prior_state.get('task_request') or message)
         tool_event_history = prior_state.get("tool_event_history") or []
         contextual_followup = bool(prior_results and _is_elaboration_followup(message))
         task_queue = (
             [message, *pending_queue]
             if is_new_category_for_pending_transaction
-            else pending_queue if resume_pending_transaction else []
+            else pending_queue if (resume_pending_transaction or pending_itemized_split) else []
         )
         return await self.graph.ainvoke(
             {
@@ -748,12 +780,18 @@ class AgenticSupervisorGraph:
                 # This is the task the active specialist must complete. It
                 # survives an interrupt; the newest message is only its
                 # clarification answer, not a replacement task.
-                "task_request": prior_task_request if resume_pending_transaction else message,
+                "task_request": (
+                    prior_task_request if (resume_pending_transaction or pending_itemized_split) else message
+                ),
                 "task_queue": task_queue or (["elaborate on the prior verified answer"] if contextual_followup else []),
                 "completed_tasks": list(prior_state.get("completed_tasks") or []) if resume_pending_transaction else [],
                 "created_transaction_ids": (
                     list(prior_state.get("created_transaction_ids") or []) if resume_pending_transaction else []
                 ),
+                "pending_split_transaction_id": (
+                    (prior_state.get('created_transaction_ids') or [None])[-1]
+                    or prior_state.get('pending_split_transaction_id')
+                ) if pending_itemized_split else None,
                 "tasks_completed": False,
                 "awaiting_user_input": False,
                 "show_completion_popup": False,
@@ -816,6 +854,7 @@ class AgenticSupervisorGraph:
                 "available_categories": available_categories,
                 "available_accounts": available_accounts,
                 "created_transaction_ids": state.get("created_transaction_ids", []),
+                "pending_split_transaction_id": state.get('pending_split_transaction_id'),
                 "last_transaction_window": state.get("last_transaction_window"),
                 "original_request": state.get("task_request"),
                 "prior_specialist_results": state.get("prior_results", []),
@@ -893,6 +932,16 @@ class AgenticSupervisorGraph:
                 "task_queue": task_queue,
                 "tasks_completed": False,
                 "awaiting_user_input": True,
+            }
+        if latest_result.get('specialist') == 'split' and any(
+            'Itemized split was not saved' in str(error) for error in latest_result.get('errors', [])
+        ):
+            return {
+                'final_response': latest_result.get('summary') or 'The split was not saved. Tell me what to change.',
+                'next_specialist': None,
+                'task_queue': task_queue,
+                'tasks_completed': False,
+                'awaiting_user_input': True,
             }
         if latest_result.get("status") in {"success", "partial"}:
             observed_actions = (latest_result.get("data") or {}).get("observed_actions") or []
@@ -1117,6 +1166,7 @@ class AgenticSupervisorGraph:
                 "available_categories": state.get("available_categories", []),
                 "available_accounts": state.get("available_accounts", []),
                 "created_transaction_ids": state.get("created_transaction_ids", []),
+                "pending_split_transaction_id": state.get('pending_split_transaction_id'),
                 "last_transaction_window": state.get("last_transaction_window"),
                 "original_request": state.get("task_request"),
             },

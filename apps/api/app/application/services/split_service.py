@@ -21,7 +21,7 @@ class ParticipantEditShare:
 class SplitStore(Protocol):
     async def create(
         self, user_id: uuid.UUID, transaction_id: uuid.UUID, title: str,
-        owner_share_paise: int, participants: list[ParticipantShare],
+        owner_share_paise: int, participants: list[ParticipantShare], item_breakdown: list[dict] | None = None,
     ): ...
 
     async def list_for_user(self, user_id: uuid.UUID): ...
@@ -47,6 +47,14 @@ class SplitStore(Protocol):
 
     async def contact_names(self, user_id: uuid.UUID) -> list[str]: ...
 
+    async def list_contact_preferences(self, user_id: uuid.UUID): ...
+
+    async def contact_preference_suggestions(self, user_id: uuid.UUID) -> list[dict]: ...
+
+    async def set_contact_preference(self, user_id: uuid.UUID, name: str, dietary_preference: str | None): ...
+
+    async def delete_contact_preference(self, user_id: uuid.UUID, contact_id: uuid.UUID) -> bool: ...
+
 
 @dataclass
 class SplitService:
@@ -55,6 +63,7 @@ class SplitService:
     async def create(
         self, user_id: uuid.UUID, transaction_id: uuid.UUID, title: str, amount_paise: int,
         mode: str, participants: list[ParticipantShare], owner_share_paise: int | None,
+        item_breakdown: list[dict] | None = None,
     ):
         clean_title = title.strip()
         if not clean_title or len(clean_title) > 255:
@@ -85,7 +94,7 @@ class SplitService:
                 raise ValueError('Shares must add up to the expense amount exactly.')
         else:
             raise ValueError('Split mode must be equal or custom.')
-        return await self.store.create(user_id, transaction_id, clean_title, owner_share_paise, shares)
+        return await self.store.create(user_id, transaction_id, clean_title, owner_share_paise, shares, item_breakdown)
 
     async def list_for_user(self, user_id: uuid.UUID):
         return await self.store.list_for_user(user_id)
@@ -133,3 +142,15 @@ class SplitService:
 
     async def contact_names(self, user_id: uuid.UUID) -> list[str]:
         return await self.store.contact_names(user_id)
+
+    async def list_contact_preferences(self, user_id: uuid.UUID):
+        return await self.store.list_contact_preferences(user_id)
+
+    async def contact_preference_suggestions(self, user_id: uuid.UUID) -> list[dict]:
+        return await self.store.contact_preference_suggestions(user_id)
+
+    async def set_contact_preference(self, user_id: uuid.UUID, name: str, dietary_preference: str | None):
+        return await self.store.set_contact_preference(user_id, name, dietary_preference)
+
+    async def delete_contact_preference(self, user_id: uuid.UUID, contact_id: uuid.UUID) -> bool:
+        return await self.store.delete_contact_preference(user_id, contact_id)

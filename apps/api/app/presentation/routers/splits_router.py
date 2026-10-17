@@ -5,14 +5,21 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.services.itemized_split import ItemAllocation, calculate_itemized_split
 from app.application.services.split_service import ParticipantEditShare, ParticipantShare, SplitService
-from app.core.dependencies import get_current_user, get_db
+from app.application.services.transaction_service import TransactionService
+from app.core.dependencies import get_current_user, get_db, get_transaction_service
 from app.domain.entities import User
+from app.domain.exceptions import TransactionNotFoundError
 from app.infrastructure.database.repositories.sqlalchemy_split_repository import SqlAlchemySplitRepository
 from app.presentation.schemas.split import (
     CreateSplitRequest,
+    ItemizedSplitPreviewResponse,
+    ItemizedSplitRequest,
     RepayParticipantRequest,
     SettleParticipantRequest,
+    SplitContactPreferenceRequest,
+    SplitContactPreferenceResponse,
     SplitResponse,
     UpdateSplitRequest,
 )
@@ -36,6 +43,102 @@ async def list_split_contacts(
     current_user: User = Depends(get_current_user), service: SplitService = Depends(get_split_service),
 ) -> list[str]:
     return await service.contact_names(current_user.id)
+
+
+@router.get('/contacts/preferences', response_model=list[SplitContactPreferenceResponse])
+async def list_split_contact_preferences(
+    current_user: User = Depends(get_current_user), service: SplitService = Depends(get_split_service),
+) -> list[SplitContactPreferenceResponse]:
+    return [SplitContactPreferenceResponse.model_validate(contact, from_attributes=True)
+            for contact in await service.list_contact_preferences(current_user.id)]
+
+
+@router.get('/contacts/preference-suggestions', response_model=list[dict])
+async def list_split_contact_preference_suggestions(
+    current_user: User = Depends(get_current_user), service: SplitService = Depends(get_split_service),
+) -> list[dict]:
+    return await service.contact_preference_suggestions(current_user.id)
+
+
+@router.put('/contacts/preferences', response_model=SplitContactPreferenceResponse)
+async def set_split_contact_preference(
+    payload: SplitContactPreferenceRequest,
+    current_user: User = Depends(get_current_user), service: SplitService = Depends(get_split_service),
+) -> SplitContactPreferenceResponse:
+    try:
+        contact = await service.set_contact_preference(
+            current_user.id, payload.name, payload.dietary_preference,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return SplitContactPreferenceResponse.model_validate(contact, from_attributes=True)
+
+
+@router.delete('/contacts/preferences/{contact_id}', status_code=status.HTTP_204_NO_CONTENT)
+async def delete_split_contact_preference(
+    contact_id: uuid.UUID,
+    current_user: User = Depends(get_current_user), service: SplitService = Depends(get_split_service),
+) -> None:
+    if not await service.delete_contact_preference(current_user.id, contact_id):
+        raise HTTPException(status_code=404, detail='Split contact preference not found.')
+
+
+async def _itemized_calculation(
+    service: SplitService, transactions: TransactionService, user_id: uuid.UUID, payload: ItemizedSplitRequest,
+):
+    try:
+        transaction = await transactions.get_transaction(user_id, payload.transaction_id)
+    except TransactionNotFoundError as error:
+        raise HTTPException(status_code=404, detail='Expense transaction was not found.') from error
+    if transaction.type.value != 'expense' or transaction.amount_paise != payload.amount_paise:
+        raise HTTPException(status_code=422, detail='Items must match the current expense amount.')
+    contacts = await service.list_contact_preferences(user_id)
+    preferences = {contact.normalized_name: contact.dietary_preference for contact in contacts}
+    return calculate_itemized_split(
+        payload.amount_paise,
+        payload.participants,
+        [ItemAllocation(item.name, item.amount_paise, item.shared_by, item.food_type) for item in payload.items],
+        preferences,
+    )
+
+
+@router.post('/itemized/preview', response_model=ItemizedSplitPreviewResponse)
+async def preview_itemized_split(
+    payload: ItemizedSplitRequest,
+    current_user: User = Depends(get_current_user), service: SplitService = Depends(get_split_service),
+    transactions: TransactionService = Depends(get_transaction_service),
+) -> ItemizedSplitPreviewResponse:
+    try:
+        calculation = await _itemized_calculation(service, transactions, current_user.id, payload)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return ItemizedSplitPreviewResponse(**calculation.__dict__)
+
+
+@router.post('/itemized', response_model=SplitResponse, status_code=status.HTTP_201_CREATED)
+async def create_itemized_split(
+    payload: ItemizedSplitRequest,
+    current_user: User = Depends(get_current_user), service: SplitService = Depends(get_split_service),
+    transactions: TransactionService = Depends(get_transaction_service),
+) -> SplitResponse:
+    if not payload.confirmed:
+        raise HTTPException(status_code=422, detail='Review and confirm the itemized split before saving.')
+    try:
+        calculation = await _itemized_calculation(service, transactions, current_user.id, payload)
+        if calculation.warnings and not payload.approve_warnings:
+            raise ValueError('Review the dietary preference warnings before saving.')
+        split = await service.create(
+            current_user.id, payload.transaction_id, payload.title, payload.amount_paise,
+            'custom',
+            [ParticipantShare(name, amount) for name, amount in calculation.participant_shares.items()],
+            calculation.owner_share_paise,
+            calculation.items,
+        )
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return SplitResponse.from_model(split)
 
 
 @router.post('', response_model=SplitResponse, status_code=status.HTTP_201_CREATED)

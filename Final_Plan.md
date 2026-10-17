@@ -2,26 +2,26 @@
 
 _Last reconciled: 2026-10-17_
 
-**Current continuation context:** this document was reconciled against the current `feature/report-exports` worktree on 2026-10-17. `HANDOFF_2026-10-15.md` and the October 13 handoffs are historical snapshots; their branch names and "next actions" are not current instructions.
+**Current continuation context:** this document was reconciled against the current `feature/smart-receipt-splits` worktree on 2026-10-17. `HANDOFF_2026-10-15.md` and the October 13 handoffs are historical snapshots; their branch names and "next actions" are not current instructions.
 
 This plan is the execution source of truth for the next product iteration. It distinguishes code that exists today from roadmap items that are only partially implemented or not implemented.
 
 ## Current checkpoint (2026-10-17)
 
-- Current branch: `feature/report-exports`, created on top of the committed split work. Report export/import implementation and split participant memory plan edits are on this branch; preserve unrelated local files.
+- Current branch: `feature/smart-receipt-splits`, created on top of committed report export/import and subsequent UI/chat fixes. Preserve unrelated local files.
 - The split product flow is implemented across API/domain, UI, and LangGraph: create/edit splits, equal/custom shares, outstanding balances, mark a participant repaid (which creates and links a categorized income transaction), navigate between a split and its transaction, and create a split from chat after recording the expense. Split questions such as "how much do I owe/need to receive?" use a user-scoped read tool; contextual elaboration can reuse the tool observation/history.
 - The user has manually confirmed the split UI and repayment flow are working. API regression coverage exists in `apps/api/tests/test_splits.py`; the full suite and complete fresh-thread AI/browser journeys have not been re-run as a release gate after all recent changes.
 - Conversation context and tool observations are now retained in the LangGraph state, with category-clarification resume fixes and regression tests. The user-facing popup duration is 12 seconds in dashboard and chat; the frontend production build passed on 2026-10-17.
 - Profile page and latest-five transaction summary, chat-history behavior, and transaction-chat close/discard/promote/draft choices are implemented. Verify these in the app if changing their behavior; do not treat the older October 15 handoff as authoritative for them.
-- Current priority: the user reports the export/import app checks are complete. Decide whether to start the separate receipt extraction branch. The multi-category chat resume regression is fixed and the full backend suite passes.
+- Current priority: verify the new itemized split and confirmed contact preference flow with a live model and receipt, then apply its migrations and run app acceptance. The user reports export/import app checks are complete.
 
-**Not yet a release claim:** the full backend suite reached 100 passed on 2026-10-17. No full live-model suite or complete desktop/mobile browser acceptance run has been recorded for the combined worktree.
+**Not yet a release claim:** the full backend suite reached 107 passed on 2026-10-17, and the frontend build and lint passed. No full live-model suite or complete desktop/mobile browser acceptance run has been recorded for the combined worktree.
 
 ## 1. Git baseline and working rules
 
 - Repository: `AffordAbled`
 - Baseline branch/commit details below describe the October 15 snapshot only; inspect Git before rebasing or branching.
-- Current implementation branch: `feature/report-exports`; the export/import feature is committed, while subsequent UI and category resume fixes are uncommitted.
+- Current implementation branch: `feature/smart-receipt-splits`; report export/import and subsequent UI/category resume fixes are committed. Smart receipt split work is in progress.
 - The feature branches `feature/advanced-guardrail`, `feature/chat-result-followups`, `feature/langgraph-supervisor`, and `feature/langgraph-multi-step-supervisor` have been merged. Do not continue feature work directly on `main`.
 - Before a new independent phase: verify status, fetch/update `main`, then branch from the latest `origin/main`. For this continuation, preserve the dirty feature branch; do not pull/checkout/reset or recreate it from main.
 - Branch naming: `feature/<short-scope>`; use a separate branch for each independently reviewable phase.
@@ -49,7 +49,7 @@ The exact PR merge ancestry is available in Git; the table records the verified 
 ## 2. Locked contracts and safety constraints
 
 1. `POST /api/v1/chat` is the only endpoint that invokes LangGraph.
-2. Voice and image are two-step ingestion: their endpoints return transcript/OCR text; the user can review it and then submit text through chat.
+2. Voice and image endpoints return transcript/OCR data without invoking LangGraph. The current chat image flow automatically submits the OCR-derived prompt to chat; preserve transaction confirmation before any write.
 3. Financial values are computed from database-backed deterministic tools. The LLM may interpret intent and compose wording, but may not invent or recalculate balances/totals.
 4. Transaction writes require explicit HITL confirmation through the transaction service.
 5. Authenticated user identity and ownership scope come from server-side request/graph state, never LLM tool arguments.
@@ -91,7 +91,7 @@ The exact PR merge ancestry is available in Git; the table records the verified 
 
 ### Not implemented (confirmed by current router/service/file inventory)
 
-- Staged receipt extraction, episodic/semantic/procedural memory, split participant preference memory, and notification delivery are not implemented. Report export/import is implemented on `feature/report-exports`; its migrations and live application checks remain outstanding.
+- OCR receipt upload and chat-based transaction logging already exist. Item-level split allocation and user-confirmed contact dietary preferences are being implemented on `feature/smart-receipt-splits`; live model and receipt verification remains. Episodic/semantic/procedural memory and notification delivery are not implemented. Report export/import is implemented on `feature/report-exports`; the user reports its live application checks are complete.
 - Full Celery worker/Beat notifications and delivery pipeline. A retention loop is not a notification system.
 - Redis-backed per-user/per-endpoint rate limits.
 - LangSmith evaluation dataset and scheduled improvement loop.
@@ -283,7 +283,7 @@ Separate branches: `feature/report-exports` and `feature/receipt-extraction`.
 **Report export/import implementation on `feature/report-exports`:** CSV/XLSX/PDF transaction exports, local date filtering, signed owner-scoped download links, retention through the existing scheduler, and chat report handoff are implemented. Generated reports exclude internal IDs, hashes, and notes; older report downloads are retired by version check and migration. CSV/XLSX transaction import now has preview, row validation, account/category ownership checks, one-transaction batch confirmation, and exact-file duplicate protection, including same-user report re-import via a server-side fingerprint. Edited files are not checked for duplicate rows; the UI explains this limit. See `docs/TRANSACTION_FILES.md` for limits, deployment, and test steps. Report bytes currently use PostgreSQL; a blob adapter remains an optional scaling step. Receipt extraction remains a separate feature.
 
 - Exports: deterministic PDF/XLSX rendering, blob storage adapter, artifact record creation/expiry, owner-scoped fresh download URL, chat handoff, cleanup.
-- Receipt pipeline: OCR/layout extraction first, normalization second, vision fallback only for low-confidence cases. Produce structured line items, prices, quantity, tax/fees, and extraction confidence for later item-level splits. Keep image endpoint’s two-step review contract unless explicitly changed.
+- Receipt pipeline: build on the existing Azure Document Intelligence OCR and chat transaction flow. Normalize OCR into structured line items, prices, quantity, tax/fees, and extraction confidence for later item-level splits. Add vision fallback only for low-confidence cases. Preserve the current image endpoint contract unless explicitly changed.
 
 External-service work must document provisioning, env vars/secrets, and a concrete verification checklist before implementation is considered complete.
 
@@ -294,6 +294,8 @@ Branches: `feature/finance-memory`, then `feature/split-participant-memory` afte
 Implement memory types only with explicit user controls, retention/deletion, ownership tests, and data minimization. Add anomaly/recurring/budget insights only when baseline data and a Budget domain are defined. Evaluation telemetry must avoid secrets/PII and include a documented opt-out/retention policy.
 
 #### Split participant preferences and smart receipt splits
+
+Current branch implementation: user-owned named contacts can store an explicitly confirmed dietary preference; the Splits page can edit or delete it and can show repeated-allocation suggestions for confirmation. OCR item lines are preserved for chat, the split tool calculates exact paise allocations from proposed items, pauses for review, and saves item breakdowns after confirmation. API preview/create endpoints and ownership tests exist. The current review is a chat question, not a dedicated editable item grid. Contacts are matched by normalized name rather than linked by a stable contact ID, and preference provenance beyond confirmation time is not stored. Live receipt/model testing and these remaining UX/data-model refinements are still needed before this section's full acceptance can be claimed.
 
 - Store preferences for a stable, authenticated-user-owned split contact, rather than matching names alone. Start with user-approved dietary preferences such as vegetarian; allow the user to view, edit, or delete each preference. Record where it came from and when it was confirmed. Do not turn a single receipt or the model's guess into a permanent fact about a person.
 - After receipt extraction, the user can say, for example, “Dinner with Isha and Piyush.” Resolve the contacts, retrieve the owner's approved preferences, classify receipt items only where the evidence is clear, and draft item-to-person assignments. If Isha is stored as vegetarian, exclude meat items from her suggested share. A vegetarian preference alone does not prove that she consumed every vegetarian item; ask for or show editable assignments when consumption is unclear.

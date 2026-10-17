@@ -51,6 +51,42 @@ class RepayParticipantRequest(BaseModel):
     account_id: uuid.UUID
 
 
+class SplitContactPreferenceRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    dietary_preference: Literal['vegetarian', 'vegan', 'omnivore'] | None = None
+
+
+class SplitContactPreferenceResponse(BaseModel):
+    id: uuid.UUID
+    name: str
+    dietary_preference: Literal['vegetarian', 'vegan', 'omnivore'] | None
+    preference_confirmed_at: datetime | None
+
+
+class ItemAllocationRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    amount_paise: int = Field(gt=0)
+    shared_by: list[str] = Field(min_length=1, max_length=21)
+    food_type: Literal['vegetarian', 'vegan', 'contains_meat', 'unknown', 'shared_charge'] = 'unknown'
+
+
+class ItemizedSplitRequest(BaseModel):
+    transaction_id: uuid.UUID
+    title: str = Field(min_length=1, max_length=255)
+    amount_paise: int = Field(gt=0)
+    participants: list[str] = Field(min_length=1, max_length=20)
+    items: list[ItemAllocationRequest] = Field(min_length=1, max_length=100)
+    confirmed: bool = False
+    approve_warnings: bool = False
+
+
+class ItemizedSplitPreviewResponse(BaseModel):
+    owner_share_paise: int
+    participant_shares: dict[str, int]
+    items: list[dict]
+    warnings: list[str]
+
+
 class SplitResponse(BaseModel):
     id: uuid.UUID
     transaction_id: uuid.UUID
@@ -60,6 +96,7 @@ class SplitResponse(BaseModel):
     outstanding_paise: int
     created_at: datetime
     participants: list[ParticipantResponse]
+    item_breakdown: list[dict] | None = None
 
     @classmethod
     def from_model(cls, split: SplitModel) -> SplitResponse:
@@ -79,4 +116,5 @@ class SplitResponse(BaseModel):
                     repayment_transaction_id=person.repayment_transaction_id,
                 ) for person in people
             ],
+            item_breakdown=split.item_breakdown,
         )

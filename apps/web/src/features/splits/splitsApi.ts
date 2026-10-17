@@ -17,6 +17,21 @@ export interface Split {
   outstanding_paise: number;
   created_at: string;
   participants: SplitParticipant[];
+  item_breakdown?: { name: string; amount_paise: number; food_type: string;
+    allocations: { person: string; amount_paise: number }[] }[] | null;
+}
+
+export interface SplitContactPreference {
+  id: string;
+  name: string;
+  dietary_preference: 'vegetarian' | 'vegan' | 'omnivore' | null;
+  preference_confirmed_at: string | null;
+}
+
+export interface SplitPreferenceSuggestion {
+  name: string;
+  suggested_preference: 'vegetarian';
+  evidence_splits: number;
 }
 
 export interface CreateSplitRequest {
@@ -38,6 +53,21 @@ const splitsApi = apiClient.injectEndpoints({
   endpoints: (builder) => ({
     listSplits: builder.query<Split[], void>({ query: () => '/splits', providesTags: ['Split'] }),
     listSplitContacts: builder.query<string[], void>({ query: () => '/splits/contacts', providesTags: ['Split'] }),
+    listSplitContactPreferences: builder.query<SplitContactPreference[], void>({
+      query: () => '/splits/contacts/preferences', providesTags: ['Split'],
+    }),
+    listSplitPreferenceSuggestions: builder.query<SplitPreferenceSuggestion[], void>({
+      query: () => '/splits/contacts/preference-suggestions', providesTags: ['Split'],
+    }),
+    setSplitContactPreference: builder.mutation<SplitContactPreference,
+      { name: string; dietary_preference: SplitContactPreference['dietary_preference'] }>({
+      query: (body) => ({ url: '/splits/contacts/preferences', method: 'PUT', body }),
+      invalidatesTags: ['Split'],
+    }),
+    deleteSplitContactPreference: builder.mutation<void, string>({
+      query: (contactId) => ({ url: `/splits/contacts/preferences/${contactId}`, method: 'DELETE' }),
+      invalidatesTags: ['Split'],
+    }),
     createSplit: builder.mutation<Split, CreateSplitRequest>({
       query: (body) => ({ url: '/splits', method: 'POST', body }), invalidatesTags: ['Split'],
     }),
@@ -69,4 +99,7 @@ const splitsApi = apiClient.injectEndpoints({
 export const {
   useListSplitsQuery, useListSplitContactsQuery, useCreateSplitMutation, useSettleSplitParticipantMutation,
   useDeleteSplitMutation, useUpdateSplitMutation, useRepaySplitParticipantMutation,
+  useListSplitContactPreferencesQuery, useSetSplitContactPreferenceMutation,
+  useListSplitPreferenceSuggestionsQuery,
+  useDeleteSplitContactPreferenceMutation,
 } = splitsApi;

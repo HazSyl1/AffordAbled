@@ -546,7 +546,14 @@ function ChatWorkspace({ userId }: { userId: string }) {
         return;
       }
 
-      await handleSendMessage(imagePrompt);
+      const instructions = chatInput.trim();
+      const combinedPrompt = instructions ? `${imagePrompt}\nMy instructions: ${instructions}` : imagePrompt;
+      if (combinedPrompt.length > 8000) {
+        setChatError('Receipt text and instructions are too long. Shorten your message and try again.');
+        return;
+      }
+      if (instructions) setChatInput('');
+      await handleSendMessage(combinedPrompt);
     } catch {
       setChatError(DASHBOARD_CHAT_UI_TEXT.imageError);
     }
@@ -785,6 +792,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
             </button>
             <Input
               value={chatInput}
+              maxLength={8000}
               placeholder={DASHBOARD_CHAT_UI_TEXT.inputPlaceholder}
               onChange={(event) => setChatInput(event.target.value)}
               onKeyDown={(event) => {

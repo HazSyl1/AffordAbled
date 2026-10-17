@@ -12,6 +12,7 @@ from typing import Annotated, Any, Literal, Protocol
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.tools import StructuredTool
+from langgraph.errors import GraphBubbleUp
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import InjectedState, ToolNode, tools_condition
 from langgraph.types import interrupt
@@ -73,6 +74,49 @@ class CreateTransactionToolInput(BaseModel):
     arguments: CreateTransactionArguments
 
 
+class SplitPersonArguments(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    share_paise: int = Field(default=0, ge=0)
+
+
+class SplitItemArguments(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    amount_paise: int = Field(gt=0, description='Verified item or shared-charge amount in paise, not rupees.')
+    shared_by: list[str] = Field(
+        min_length=1, max_length=21, description='Names who shared this row; use me for owner.'
+    )
+    food_type: Literal['vegetarian', 'vegan', 'contains_meat', 'unknown', 'shared_charge'] = 'unknown'
+
+
+class CreateSplitArguments(BaseModel):
+    transaction_id: str | None = Field(default=None, description='Expense ID; omit for a newly recorded expense.')
+    title: str | None = None
+    mode: Literal['equal', 'custom'] = 'equal'
+    participants: list[str | SplitPersonArguments] | None = None
+    people: list[str | SplitPersonArguments] | None = None
+    owner_share_paise: int | None = Field(default=None, ge=0)
+    owner_share_rupees: Decimal | None = Field(default=None, ge=0)
+    items: list[SplitItemArguments] | None = Field(
+        default=None, max_length=20,
+        description='Every verified receipt line and shared charge for an itemized split. Omit for equal splits.',
+    )
+
+
+class CreateSplitToolInput(BaseModel):
+    arguments: CreateSplitArguments
+
+
+class SetSplitContactPreferenceArguments(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    dietary_preference: Literal['vegetarian', 'vegan', 'omnivore'] | None = Field(
+        description='Explicitly confirmed preference; null clears it. Never infer from one receipt.'
+    )
+
+
+class SetSplitContactPreferenceToolInput(BaseModel):
+    arguments: SetSplitContactPreferenceArguments
+
+
 class EmptyArgumentsToolInput(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
 
@@ -91,6 +135,8 @@ _TOOL_SCHEMAS: dict[str, type[BaseModel]] = {
     "create_account": CreateAccountToolInput,
     "create_category": CreateCategoryToolInput,
     "create_transaction": CreateTransactionToolInput,
+    "create_split": CreateSplitToolInput,
+    "set_split_contact_preference": SetSplitContactPreferenceToolInput,
     "get_split_summary": EmptyArgumentsToolInput,
     "create_transaction_report": CreateTransactionReportToolInput,
 }
@@ -123,8 +169,19 @@ _TOOL_DESCRIPTIONS = {
     "get_split_summary": (
         "Read outstanding split balances for money-owed or remaining-split questions; no arguments are required."
     ),
-    "list_split_contacts": "Read names used in prior splits to help match people; new names are allowed.",
-    "create_split": "Create a split after its expense exists, using its ID and requested participants.",
+    "list_split_contacts": (
+        "Read prior split names and explicitly confirmed dietary preferences. Preferences guide suggestions "
+        "but never prove who ate a particular item."
+    ),
+    "set_split_contact_preference": (
+        "Save or clear one user's confirmed dietary preference for a named split contact. Use only when the user "
+        "explicitly states or approves that preference; never infer lasting memory from a receipt."
+    ),
+    "create_split": (
+        "Create a split after its expense exists. For itemized receipts, supply every item with amount_paise, "
+        "shared_by names (use me for the owner), and food_type. The tool calculates exact shares and asks the "
+        "user to confirm before saving. Do not invent item prices or who ate an item."
+    ),
     "create_transaction_report": (
         "Generate a user-owned transaction report for download. Use for export or download requests; "
         "choose CSV, XLSX, or PDF and optional local date range."
@@ -339,6 +396,8 @@ class ToolBoundSpecialistRuntime:
                     },
                 )
                 return ToolObservation(tool=name, ok=True, data=data)
+            except GraphBubbleUp:
+                raise
             except Exception as exc:
                 if self._db_session is not None:
                     try:
@@ -350,7 +409,7 @@ class ToolBoundSpecialistRuntime:
                             arguments=arguments,
                             error=_tool_error_message(rollback_exc),
                         )
-                if attempt == self.max_tool_retries:
+                if isinstance(exc, ValueError) or attempt == self.max_tool_retries:
                     return ToolObservation(tool=name, ok=False, arguments=arguments, error=_tool_error_message(exc))
         raise AssertionError("unreachable")
 
@@ -427,6 +486,7 @@ class ToolBoundSpecialistRuntime:
                 "delete_transaction",
                 "restore_transaction",
                 "create_split",
+                "set_split_contact_preference",
                 "get_account_balances",
                 "get_transactions",
                 "get_spending_summary",
@@ -572,11 +632,16 @@ class ToolBoundSpecialistRuntime:
                     "last_transaction_window": state.get("last_transaction_window"),
                     "original_request": state.get("task_request"),
                     "created_transaction_ids": state.get("created_transaction_ids", []),
+                    "prior_specialist_results": state.get("prior_results", []),
+                    "pending_split_transaction_id": state.get("pending_split_transaction_id"),
                     "available_categories": state.get("available_categories", []),
                     "available_accounts": state.get("available_accounts", []),
                 },
             )
-            values = dict(arguments)
+            values = arguments.model_dump() if isinstance(arguments, BaseModel) else {
+                key: value.model_dump() if isinstance(value, BaseModel) else value
+                for key, value in arguments.items()
+            }
             if name in self.destructive_tools and values.get("confirmed") is not True:
                 answer = interrupt(
                     {"agent": self.name, "question": f"Please confirm that you want to {name.replace('_', ' ')}."}
