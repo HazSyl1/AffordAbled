@@ -260,12 +260,12 @@ export function SplitsPage() {
       <h1 className='text-xl font-bold text-[var(--text-primary)]'>Splits</h1>
       <p className='text-sm text-[var(--text-muted)]'>Track who owes you for shared expenses.</p>
     </header>
-    <div className='flex items-center justify-between gap-4 rounded-2xl border border-[var(--bg-border)] bg-[var(--bg-card)] p-4'>
-      <div aria-live='polite'>
+    <div className='flex flex-col gap-3 rounded-2xl border border-[var(--bg-border)] bg-[var(--bg-card)] p-4 sm:flex-row sm:items-center sm:justify-between'>
+      <div className='min-w-0' aria-live='polite'>
         <p className='text-xs text-[var(--text-muted)]'>Amount owed to you</p>
         <p className='text-2xl font-bold text-[var(--positive)]'>{isLoading ? '…' : formatPaiseAsInr(totalOwedPaise)}</p>
       </div>
-      <Button className='w-auto shrink-0' onClick={() => { setOpen(true); setReview(null); }}>New split</Button>
+      <Button className='w-full sm:w-auto sm:shrink-0' onClick={() => { setOpen(true); setReview(null); }}>New split</Button>
     </div>
     {error && <p role='alert' className='rounded-xl bg-red-500/10 p-3 text-sm text-red-300'>{error}</p>}
     {open && <Card className='space-y-4 p-5'>

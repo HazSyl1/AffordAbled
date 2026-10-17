@@ -702,6 +702,20 @@ class AgenticSupervisorGraph:
             is_new_category_for_pending_transaction,
         ) = _pending_transaction_followup(prior_state, message)
         if snapshot.interrupts:
+            interrupt_payload = getattr(snapshot.interrupts[0], "value", {})
+            pending_question = (
+                str(interrupt_payload.get("question") or "")
+                if isinstance(interrupt_payload, dict)
+                else str(interrupt_payload)
+            )
+            if pending_question and (
+                not conversation_history
+                or conversation_history[-1] != {"role": "assistant", "content": pending_question}
+            ):
+                conversation_history = [
+                    *conversation_history,
+                    {"role": "assistant", "content": pending_question},
+                ]
             resume_update: dict[str, Any] = {
                 "messages": [HumanMessage(content=message)],
                 "conversation_history": [*conversation_history, {"role": "user", "content": message}][-100:],
@@ -1143,16 +1157,17 @@ class AgenticChatOrchestrator:
         # Preserve the user-facing transcript independently from the messages
         # used by specialist subgraphs. Those working messages are cleared at
         # handoff, while this bounded history remains available on later turns.
-        await self._graph.graph.aupdate_state(
-            {"configurable": {"thread_id": f"{user_id}:{thread_id}"}},
-            {
-                "messages": [AIMessage(content=reply)] if not interrupts else [],
-                "conversation_history": [
-                    *((result.get("conversation_history") or [])[-99:]),
-                    {"role": "assistant", "content": reply},
-                ],
-            },
-        )
+        if not interrupts:
+            await self._graph.graph.aupdate_state(
+                {"configurable": {"thread_id": f"{user_id}:{thread_id}"}},
+                {
+                    "messages": [AIMessage(content=reply)],
+                    "conversation_history": [
+                        *((result.get("conversation_history") or [])[-99:]),
+                        {"role": "assistant", "content": reply},
+                    ],
+                },
+            )
         transaction_id: str | None = (result.get("created_transaction_ids") or [None])[-1]
         for specialist_result in reversed(result.get("results") or []):
             if specialist_result.get("specialist") != "transaction":

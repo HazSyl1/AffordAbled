@@ -2,7 +2,7 @@
 
 _Last reconciled: 2026-10-17_
 
-**Current continuation context:** this document was reconciled against the current `feature/splits-mvp` worktree on 2026-10-17. `HANDOFF_2026-10-15.md` and the October 13 handoffs are historical snapshots; their branch names and "next actions" are not current instructions.
+**Current continuation context:** this document was reconciled against the current `feature/report-exports` worktree on 2026-10-17. `HANDOFF_2026-10-15.md` and the October 13 handoffs are historical snapshots; their branch names and "next actions" are not current instructions.
 
 This plan is the execution source of truth for the next product iteration. It distinguishes code that exists today from roadmap items that are only partially implemented or not implemented.
 
@@ -13,15 +13,15 @@ This plan is the execution source of truth for the next product iteration. It di
 - The user has manually confirmed the split UI and repayment flow are working. API regression coverage exists in `apps/api/tests/test_splits.py`; the full suite and complete fresh-thread AI/browser journeys have not been re-run as a release gate after all recent changes.
 - Conversation context and tool observations are now retained in the LangGraph state, with category-clarification resume fixes and regression tests. The user-facing popup duration is 12 seconds in dashboard and chat; the frontend production build passed on 2026-10-17.
 - Profile page and latest-five transaction summary, chat-history behavior, and transaction-chat close/discard/promote/draft choices are implemented. Verify these in the app if changing their behavior; do not treat the older October 15 handoff as authoritative for them.
-- Current priority: apply the report migrations, manually verify CSV/XLSX/PDF exports and CSV/XLSX import on the live app, then decide whether to start the separate receipt extraction branch. The automated API suite currently has one multi-category chat resume failure; the report-focused tests pass.
+- Current priority: the user reports the export/import app checks are complete. Decide whether to start the separate receipt extraction branch. The multi-category chat resume regression is fixed and the full backend suite passes.
 
-**Not yet a release claim:** the full backend suite reached 99 passed and one failing multi-category chat resume test on 2026-10-17. No full live-model suite or complete desktop/mobile browser acceptance run has been recorded for the combined worktree.
+**Not yet a release claim:** the full backend suite reached 100 passed on 2026-10-17. No full live-model suite or complete desktop/mobile browser acceptance run has been recorded for the combined worktree.
 
 ## 1. Git baseline and working rules
 
 - Repository: `AffordAbled`
 - Baseline branch/commit details below describe the October 15 snapshot only; inspect Git before rebasing or branching.
-- Current implementation branch: `feature/splits-mvp`; implementation is uncommitted and includes multiple scopes.
+- Current implementation branch: `feature/report-exports`; the export/import feature is committed, while subsequent UI and category resume fixes are uncommitted.
 - The feature branches `feature/advanced-guardrail`, `feature/chat-result-followups`, `feature/langgraph-supervisor`, and `feature/langgraph-multi-step-supervisor` have been merged. Do not continue feature work directly on `main`.
 - Before a new independent phase: verify status, fetch/update `main`, then branch from the latest `origin/main`. For this continuation, preserve the dirty feature branch; do not pull/checkout/reset or recreate it from main.
 - Branch naming: `feature/<short-scope>`; use a separate branch for each independently reviewable phase.

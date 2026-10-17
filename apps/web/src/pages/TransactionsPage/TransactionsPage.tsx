@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { Download, Upload } from 'lucide-react';
 
 import { Button } from '../../components/atoms/Button';
 import { Card } from '../../components/atoms/Card';
@@ -175,17 +176,21 @@ export function TransactionsPage() {
     <div className='mx-auto w-full max-w-[1200px] px-4 py-4 md:px-6 md:py-6'>
       <header className='sticky top-[env(safe-area-inset-top)] z-10 -mx-4 mb-4 border-b border-[var(--bg-border)] bg-[color:rgba(9,9,11,0.9)] px-4 py-4 backdrop-blur-xl md:static md:mx-0 md:border-none md:bg-transparent md:px-0 md:py-0'>
         <div className='flex items-start justify-between gap-3'>
-          <div>
+          <div className='min-w-0'>
             <h1 className='text-xl font-bold text-[var(--text-primary)]'>Transactions</h1>
             <p className='text-xs text-[var(--text-secondary)]'>Review spending, income, and transfers in one place. Click a transaction to edit it or add a split.</p>
           </div>
 
-          <div className='flex flex-wrap justify-end gap-2'>
-            <Button type='button' variant='secondary' className='w-auto px-3' onClick={() => setIsImportOpen(true)}>
-              Import
+          <div className='flex shrink-0 items-start gap-1.5'>
+            <Button type='button' className='!min-h-0 !w-auto flex-col !gap-0.5 !rounded-lg !px-2.5 !py-1.5 !text-[11px] !leading-none'
+              onClick={() => setIsImportOpen(true)}>
+              <Upload size={15} aria-hidden='true' />
+              <span>Import</span>
             </Button>
-            <Button type='button' variant='secondary' className='w-auto px-3' onClick={() => setIsExportOpen(true)}>
-              Export
+            <Button type='button' className='!min-h-0 !w-auto flex-col !gap-0.5 !rounded-lg !px-2.5 !py-1.5 !text-[11px] !leading-none'
+              onClick={() => setIsExportOpen(true)}>
+              <Download size={15} aria-hidden='true' />
+              <span>Export</span>
             </Button>
             <Button type='button' className='w-auto px-3 lg:hidden' onClick={() => setIsAddTransactionSheetOpen(true)}>
               + Add
