@@ -11,6 +11,7 @@ from app.application.services.transaction_service import TransactionService
 from app.core.dependencies import get_current_user, get_db, get_transaction_service
 from app.domain.entities import User
 from app.domain.exceptions import TransactionNotFoundError
+from app.infrastructure.database.repositories.sqlalchemy_memory_repository import SqlAlchemyMemoryRepository
 from app.infrastructure.database.repositories.sqlalchemy_split_repository import SqlAlchemySplitRepository
 from app.presentation.schemas.split import (
     CreateSplitRequest,
@@ -28,7 +29,7 @@ router = APIRouter(prefix='/splits', tags=['splits'])
 
 
 def get_split_service(db: AsyncSession = Depends(get_db)) -> SplitService:
-    return SplitService(SqlAlchemySplitRepository(db))
+    return SplitService(SqlAlchemySplitRepository(db), SqlAlchemyMemoryRepository(db))
 
 
 @router.get('', response_model=list[SplitResponse])

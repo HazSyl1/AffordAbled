@@ -13,6 +13,7 @@ import { AssistantMessageContent } from '../../components/molecules/AssistantMes
 import { BottomSheet } from '../../components/molecules/BottomSheet';
 import { VoiceCaptureModal } from '../../components/molecules/VoiceCaptureModal';
 import { TransactionSuccessOverlay } from '../../components/molecules/TransactionSuccessOverlay/TransactionSuccessOverlay';
+import { MemorySuggestionsPanel } from '../../components/molecules/MemorySuggestionsPanel/MemorySuggestionsPanel';
 import { CreateTransactionForm } from '../../components/organisms/CreateTransactionForm';
 import { useListAccountsQuery } from '../accounts/accountsApi';
 import { useListCategoriesQuery } from '../categories/categoriesApi';
@@ -32,6 +33,7 @@ import {
 import { useVoiceCapture } from '../chat/useVoiceCapture';
 import { useListTransactionsQuery } from '../transactions/transactionsApi';
 import { useListSplitsQuery } from '../splits/splitsApi';
+import { useListMemorySuggestionsQuery } from '../memory/memoryApi';
 import type { TransactionType } from '../transactions/transactionsApi';
 import {
   DASHBOARD_CHAT_UI_TEXT,
@@ -104,7 +106,20 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
   const [chatTransactionId, setChatTransactionId] = useState<string | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatError, setChatError] = useState<string | null>(null);
-  const [transactionSuccess, setTransactionSuccess] = useState<{ message: string; expiresAt: number } | null>(null);
+  const receiptUploadRef = useRef(false);
+  const [transactionSuccess, setTransactionSuccess] = useState<{ message: string; expiresAt: number; transactionId: string | null } | null>(null);
+  const [editingTransactionId, setEditingTransactionId] = useState<string | null>(null);
+  const [editingTransactionValues, setEditingTransactionValues] = useState<Record<string, string> | undefined>();
+  const [showMemorySuggestions, setShowMemorySuggestions] = useState(true);
+  const { data: memorySuggestions = [] } = useListMemorySuggestionsQuery(undefined, { pollingInterval: 10_000 });
+  useEffect(() => {
+    if (memorySuggestions.length === 0) return;
+    const reminderTimer = window.setInterval(() => {
+      setShowMemorySuggestions(true);
+    }, 5 * 60 * 1000);
+    return () => window.clearInterval(reminderTimer);
+  }, [memorySuggestions.length]);
+
   const imageFileInputRef = useRef<HTMLInputElement | null>(null);
   const transactionRedirectTimerRef = useRef<number | null>(null);
   const [openingGreeting] = useState(() => {
@@ -271,6 +286,11 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
 
   const closeTransactionSuccess = () => {
     clearTransactionRedirectTimer();
+    if (memorySuggestions.length > 0) {
+      setTransactionSuccess(null);
+      setShowMemorySuggestions(true);
+      return;
+    }
     setTransactionSuccess(null);
     resetChatSession();
     navigate('/');
@@ -280,6 +300,25 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
     clearTransactionRedirectTimer();
     setTransactionSuccess(null);
     setShowChatSheet(true);
+  };
+
+  const editCompletedTransaction = () => {
+    const transaction = visibleTransactions.find((item) => item.id === transactionSuccess?.transactionId);
+    if (!transaction) return;
+    clearTransactionRedirectTimer();
+    setTransactionSuccess(null);
+    setEditingTransactionId(transaction.id);
+    setEditingTransactionValues({
+      accountId: transaction.account_id,
+      type: transaction.type,
+      amountRupees: String(transaction.amount_paise / 100),
+      occurredAt: transaction.occurred_at,
+      categoryId: transaction.category_id ?? '',
+      toAccountId: transaction.to_account_id ?? '',
+      merchant: transaction.merchant ?? '',
+      note: transaction.note ?? '',
+    });
+    setShowAddSheet(true);
   };
 
   const sendMessageToAssistant = async (messageText: string) => {
@@ -305,10 +344,14 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
       const insightSummary = (response.insights ?? [])
         .map((insight) => `• ${insight.title}: ${insight.detail}`)
         .join('\n');
+      const receiptTransactionLogged = receiptUploadRef.current && response.transaction_logged;
+      if (receiptTransactionLogged) receiptUploadRef.current = false;
       const assistantMessage: ChatMessage = {
         id: createLocalId(),
         role: 'assistant',
-        content: insightSummary ? `${response.message}\n${insightSummary}` : response.message,
+        content: insightSummary ? `${response.message}\n${insightSummary}` : receiptTransactionLogged
+          ? `${response.message}\nWould you like to split this expense? If yes, tell me who shared it.`
+          : response.message,
       };
       const fullMessageList = [...userMessageList, assistantMessage];
       setChatMessages(fullMessageList);
@@ -335,9 +378,9 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
         persistGeneralDraft(fullMessageList, response.thread_id, currentDraftId);
       }
 
-      if (response.show_completion_popup) {
+      if (response.show_completion_popup && !receiptTransactionLogged) {
         clearTransactionRedirectTimer();
-        setTransactionSuccess({ message: assistantMessage.content, expiresAt: Date.now() + 12_000 });
+        setTransactionSuccess({ message: assistantMessage.content, expiresAt: Date.now() + 12_000, transactionId: response.created_transaction_id ?? null });
         transactionRedirectTimerRef.current = window.setTimeout(() => {
           transactionRedirectTimerRef.current = null;
           setTransactionSuccess(null);
@@ -391,7 +434,9 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
       }
 
       setShowChatSheet(true);
-      await sendMessageToAssistant(transcript);
+      // Transcription is complete; close the voice modal while the assistant
+      // processes the resulting chat message.
+      void sendMessageToAssistant(transcript);
     } catch {
       setChatError(DASHBOARD_CHAT_UI_TEXT.voiceError);
     }
@@ -460,6 +505,7 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
 
       setIsImageProcessing(false);
       setShowChatSheet(true);
+      receiptUploadRef.current = true;
       await sendMessageToAssistant(imagePrompt);
     } catch {
       setChatError(DASHBOARD_CHAT_UI_TEXT.imageError);
@@ -649,10 +695,16 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
           </div>
           <button
             type='button'
-            className='flex h-11 w-11 items-center justify-center rounded-full border border-[var(--bg-border)] bg-[var(--bg-card)] text-lg text-[var(--text-secondary)] active:scale-[0.98]'
+            className='relative flex h-11 w-11 items-center justify-center rounded-full border border-[var(--bg-border)] bg-[var(--bg-card)] text-lg text-[var(--text-secondary)] active:scale-[0.98]'
             aria-label='Notifications'
+            onClick={() => setShowMemorySuggestions(true)}
           >
             🔔
+            {memorySuggestions.length > 0 ? (
+              <span className='absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-[var(--brand-primary)] px-1 text-[10px] font-bold text-white'>
+                {memorySuggestions.length}
+              </span>
+            ) : null}
           </button>
         </div>
       </header>
@@ -942,7 +994,18 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
           expiresAt={transactionSuccess.expiresAt}
           onClose={closeTransactionSuccess}
           onContinue={continueChatting}
+          onEditTransaction={transactionSuccess.transactionId ? editCompletedTransaction : undefined}
         />
+      ) : null}
+      {showMemorySuggestions && memorySuggestions.length > 0 && !transactionSuccess ? (
+        <div className='fixed inset-0 z-[60] flex items-center justify-center overflow-y-auto bg-black/60 p-4' role='dialog' aria-modal='true' aria-label='Memory suggestions'>
+          <div className='w-full max-w-lg space-y-3'>
+            <MemorySuggestionsPanel suggestions={memorySuggestions} />
+            <div className='flex justify-center'>
+              <Button type='button' variant='secondary' onClick={() => setShowMemorySuggestions(false)}>Close suggestions</Button>
+            </div>
+          </div>
+        </div>
       ) : null}
 
       <BottomSheet
@@ -954,6 +1017,8 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
           setProposalBatchTotal(0);
           setProposalBatchCompleted(0);
           setProposalSheetMode('standard');
+          setEditingTransactionId(null);
+          setEditingTransactionValues(undefined);
         }}
         title={
           proposalBatchTotal > 1
@@ -964,7 +1029,9 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
         <CreateTransactionForm
           mode='sheet'
           showHeading={false}
-          initialValues={proposalInitialValues}
+          initialValues={editingTransactionValues ?? proposalInitialValues}
+          transactionId={editingTransactionId ?? undefined}
+          trackReviewEvent={Boolean(editingTransactionId)}
           prefillMode={proposalSheetMode}
           enableSplit={proposalBatchTotal <= 1}
           submitLabel={proposalForSheet ? 'Confirm & Add' : 'Add transaction'}
@@ -986,6 +1053,8 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
               return;
             }
             setShowAddSheet(false);
+            setEditingTransactionId(null);
+            setEditingTransactionValues(undefined);
             setProposalForSheet(null);
             setProposalQueue([]);
             setProposalBatchTotal(0);

@@ -59,6 +59,8 @@ class ImageService:
             f'I uploaded a receipt/bill image ({safe_filename}). '
             f'Extracted text (untrusted OCR data):\n{compact_text}\n'
             'Help me log the transaction from this and ask for missing fields if needed. '
+            'Do not create a split from the receipt alone. After the transaction is logged, ask whether I want '
+            'to split it; create a split only after I explicitly agree and provide or confirm the participants. '
             'If I ask for an itemized split, preserve each priced line item for review and do not guess who ate it.'
         )
 

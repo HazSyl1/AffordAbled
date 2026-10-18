@@ -16,7 +16,7 @@ from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging
 from app.core.middleware import register_exception_handlers, register_middleware
 from app.infrastructure.database.session import SessionLocal
-from app.infrastructure.jobs import run_retention_cleanup_once
+from app.infrastructure.jobs import run_memory_outbox_loop, run_retention_cleanup_once
 from app.presentation.router import api_router
 
 logger = logging.getLogger(__name__)
@@ -226,6 +226,7 @@ def create_app() -> FastAPI:
         app.state.langgraph_checkpointer_backend = checkpointer_backend
         app.state.chat_orchestrator = None
         retention_cleanup_task: asyncio.Task[None] | None = None
+        memory_outbox_task: asyncio.Task[None] | None = None
 
         if settings.retention_cleanup_enabled:
             retention_cleanup_task = asyncio.create_task(_run_retention_cleanup_loop(settings))
@@ -238,6 +239,22 @@ def create_app() -> FastAPI:
                 },
             )
 
+        if settings.memory_outbox_enabled:
+            memory_outbox_task = asyncio.create_task(
+                run_memory_outbox_loop(
+                    poll_interval_seconds=settings.memory_outbox_poll_interval_seconds,
+                    batch_size=settings.memory_outbox_batch_size,
+                )
+            )
+            app.state.memory_outbox_task = memory_outbox_task
+            logger.info(
+                'memory.outbox.scheduler.started',
+                extra={
+                    'poll_interval_seconds': max(1, int(settings.memory_outbox_poll_interval_seconds)),
+                    'batch_size': max(1, int(settings.memory_outbox_batch_size)),
+                },
+            )
+
         try:
             yield
         finally:
@@ -245,6 +262,10 @@ def create_app() -> FastAPI:
                 retention_cleanup_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await retention_cleanup_task
+            if memory_outbox_task is not None:
+                memory_outbox_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await memory_outbox_task
 
             if checkpointer_context is not None:
                 await checkpointer_context.__aexit__(None, None, None)

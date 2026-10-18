@@ -71,6 +71,7 @@ class CreateTransactionInput:
     to_account_id: uuid.UUID | None = None
     merchant: str | None = None
     note: str | None = None
+    review_event: dict | None = None
 
 
 @dataclass
@@ -83,6 +84,7 @@ class UpdateTransactionInput:
     to_account_id: uuid.UUID | None = None
     merchant: str | None = None
     note: str | None = None
+    review_event: dict | None = None
 
 
 @dataclass(frozen=True)

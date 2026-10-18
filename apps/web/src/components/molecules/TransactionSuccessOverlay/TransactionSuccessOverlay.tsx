@@ -9,9 +9,10 @@ interface TransactionSuccessOverlayProps {
   expiresAt: number;
   onClose: () => void;
   onContinue: () => void;
+  onEditTransaction?: () => void;
 }
 
-export function TransactionSuccessOverlay({ message, expiresAt, onClose, onContinue }: TransactionSuccessOverlayProps) {
+export function TransactionSuccessOverlay({ message, expiresAt, onClose, onContinue, onEditTransaction }: TransactionSuccessOverlayProps) {
   const [secondsRemaining, setSecondsRemaining] = useState(() => Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000)));
 
   useEffect(() => {
@@ -22,7 +23,8 @@ export function TransactionSuccessOverlay({ message, expiresAt, onClose, onConti
   }, [expiresAt]);
 
   return (
-    <div className='fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4' role='dialog' aria-modal='true' aria-labelledby='task-success-title'>
+    <div className='fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/45 p-4' role='dialog' aria-modal='true' aria-labelledby='task-success-title'>
+      <div className='flex w-full max-w-3xl flex-col items-stretch justify-center gap-4 md:flex-row'>
       <Card className='w-full max-w-md border-[var(--brand-primary)] p-6 text-center shadow-2xl'>
         <CheckCircle2 className='mx-auto h-12 w-12 text-[var(--positive)]' aria-hidden='true' />
         <h2 id='task-success-title' className='mt-3 text-lg font-bold text-[var(--text-primary)]'>Tasks completed</h2>
@@ -32,7 +34,9 @@ export function TransactionSuccessOverlay({ message, expiresAt, onClose, onConti
           <Button type='button' variant='secondary' onClick={onClose}>Close</Button>
           <Button type='button' autoFocus onClick={onContinue}>Continue chatting</Button>
         </div>
+        {onEditTransaction ? <Button type='button' variant='ghost' className='mt-3' onClick={onEditTransaction}>Edit transaction</Button> : null}
       </Card>
+      </div>
     </div>
   );
 }

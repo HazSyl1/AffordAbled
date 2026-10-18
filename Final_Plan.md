@@ -1,21 +1,20 @@
 # AffordAbled — Final Execution Plan
 
-_Last reconciled: 2026-10-17_
+_Last reconciled: 2026-10-19_
 
-**Current continuation context:** this document was reconciled against the current `feature/smart-receipt-splits` worktree on 2026-10-17. `HANDOFF_2026-10-15.md` and the October 13 handoffs are historical snapshots; their branch names and "next actions" are not current instructions.
+**Current continuation context:** the active worktree is `feature/shared-memory`, at committed HEAD `170f242`, with shared-memory, smart receipt split, profile, and related chat/UI changes in progress. `HANDOFF_2026-10-15.md` is a historical snapshot, not current branch state. See [docs/V1_RELEASE_CHECKLIST.md](docs/V1_RELEASE_CHECKLIST.md) for the current release gates.
 
-This plan is the execution source of truth for the next product iteration. It distinguishes code that exists today from roadmap items that are only partially implemented or not implemented.
+The roadmap below records earlier phase planning and may contain stale implementation claims. The release checklist is the source of truth for current v1 readiness.
 
-## Current checkpoint (2026-10-17)
+## Current checkpoint (2026-10-19)
 
-- Current branch: `feature/smart-receipt-splits`, created on top of committed report export/import and subsequent UI/chat fixes. Preserve unrelated local files.
-- The split product flow is implemented across API/domain, UI, and LangGraph: create/edit splits, equal/custom shares, outstanding balances, mark a participant repaid (which creates and links a categorized income transaction), navigate between a split and its transaction, and create a split from chat after recording the expense. Split questions such as "how much do I owe/need to receive?" use a user-scoped read tool; contextual elaboration can reuse the tool observation/history.
-- The user has manually confirmed the split UI and repayment flow are working. API regression coverage exists in `apps/api/tests/test_splits.py`; the full suite and complete fresh-thread AI/browser journeys have not been re-run as a release gate after all recent changes.
-- Conversation context and tool observations are now retained in the LangGraph state, with category-clarification resume fixes and regression tests. The user-facing popup duration is 12 seconds in dashboard and chat; the frontend production build passed on 2026-10-17.
-- Profile page and latest-five transaction summary, chat-history behavior, and transaction-chat close/discard/promote/draft choices are implemented. Verify these in the app if changing their behavior; do not treat the older October 15 handoff as authoritative for them.
-- Current priority: verify the new itemized split and confirmed contact preference flow with a live model and receipt, then apply its migrations and run app acceptance. The user reports export/import app checks are complete.
+- Current branch: `feature/shared-memory`; the latest commit shared with `feature/smart-receipt-splits` is `170f242`. The current worktree contains uncommitted shared preference memory, smart receipt item allocations, and related chat/UI work.
+- Implemented capabilities on the branch include the memory review-event/outbox pipeline, confirmed and forgettable user memories, itemized receipt split proposals and paise allocation, and associated API/UI/LangGraph changes. Their final integration and release acceptance are not yet confirmed.
+- The user has previously tested the split repayment flow and export/import flow. That does not replace migration, regression, security, and full browser checks for the current combined code.
+- A frontend production build and TypeScript check passed during release preparation. Backend tests and lint are running; see the v1 checklist for the recorded results and remaining gates.
+- Next priority: finish automated checks, apply and verify migrations on fresh and supported databases, run desktop/mobile acceptance including receipt splits and memory, then decide whether to tag `v1.0.0`.
 
-**Not yet a release claim:** the full backend suite reached 107 passed on 2026-10-17, and the frontend build and lint passed. No full live-model suite or complete desktop/mobile browser acceptance run has been recorded for the combined worktree.
+**Not yet a release claim:** the current combined branch has not completed the release checklist, including database migration verification and complete browser acceptance.
 
 ## 1. Git baseline and working rules
 

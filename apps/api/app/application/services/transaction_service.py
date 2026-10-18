@@ -20,12 +20,17 @@ class LinkedSplitLookup(Protocol):
     async def is_linked(self, user_id: uuid.UUID, transaction_id: uuid.UUID) -> bool: ...
 
 
+class MemoryEventWriter(Protocol):
+    async def add_review_event(self, **kwargs): ...
+
+
 @dataclass
 class TransactionService:
     transaction_repository: TransactionRepository
     account_repository: AccountRepository
     category_repository: CategoryRepository
     split_repository: LinkedSplitLookup | None = None
+    memory_event_writer: MemoryEventWriter | None = None
 
     async def create_transaction(self, data: CreateTransactionInput) -> Transaction:
         await self._validate_transaction(
@@ -55,6 +60,15 @@ class TransactionService:
         )
 
         await self._apply_balance_effect(transaction)
+        if self.memory_event_writer is not None and data.review_event:
+            await self.memory_event_writer.add_review_event(
+                user_id=data.user_id,
+                transaction_id=transaction.id,
+                action=data.review_event['action'],
+                source=data.review_event.get('source', 'manual'),
+                before=data.review_event.get('before') or {},
+                after=data.review_event.get('after') or {},
+            )
         return await self.transaction_repository.create(transaction)
 
     async def list_transactions(self, user_id: uuid.UUID) -> list[Transaction]:
@@ -118,6 +132,15 @@ class TransactionService:
 
         transaction.updated_at = datetime.now(UTC)
         await self._apply_balance_effect(transaction)
+        if self.memory_event_writer is not None and data.review_event:
+            await self.memory_event_writer.add_review_event(
+                user_id=user_id,
+                transaction_id=transaction.id,
+                action=data.review_event['action'],
+                source=data.review_event.get('source', 'manual'),
+                before=data.review_event.get('before') or {},
+                after=data.review_event.get('after') or {},
+            )
         return await self.transaction_repository.update(transaction)
 
     async def soft_delete_transaction(self, user_id: uuid.UUID, transaction_id: uuid.UUID) -> None:

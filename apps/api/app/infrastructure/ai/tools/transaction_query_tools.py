@@ -36,7 +36,15 @@ class TransactionQueryTools:
         normalized_date_to = self._to_utc_datetime(date_to)
 
         capped_limit = max(1, min(limit, 25))
-        if hasattr(self.transaction_repository, 'list_for_user_window'):
+        # The analytics layer uses the Unix epoch as a sentinel for a
+        # standalone relative request (for example, "previous transaction").
+        # Use the repository's indexed recent query directly instead of
+        # scanning a 1970-to-now date window.
+        if normalized_date_from.year <= 1970 and hasattr(self.transaction_repository, 'list_recent_for_user'):
+            selected_transactions = await self.transaction_repository.list_recent_for_user(
+                user_id, limit=capped_limit,
+            )
+        elif hasattr(self.transaction_repository, 'list_for_user_window'):
             selected_transactions, _total_count = await self.transaction_repository.list_for_user_window(
                 user_id,
                 date_from=normalized_date_from,

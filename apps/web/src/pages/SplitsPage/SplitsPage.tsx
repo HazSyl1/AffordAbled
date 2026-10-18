@@ -8,9 +8,6 @@ import { useListAccountsQuery } from '../../features/accounts/accountsApi';
 import {
   useCreateSplitMutation, useListSplitContactsQuery, useListSplitsQuery,
   useRepaySplitParticipantMutation, useDeleteSplitMutation, useUpdateSplitMutation,
-  useListSplitContactPreferencesQuery, useSetSplitContactPreferenceMutation,
-  useListSplitPreferenceSuggestionsQuery,
-  useDeleteSplitContactPreferenceMutation,
   type CreateSplitRequest, type Split,
 } from '../../features/splits/splitsApi';
 import { useListTransactionsQuery } from '../../features/transactions/transactionsApi';
@@ -147,10 +144,6 @@ export function SplitsPage() {
   const { data: transactions = [] } = useListTransactionsQuery();
   const { data: accounts = [] } = useListAccountsQuery();
   const { data: contacts = [] } = useListSplitContactsQuery();
-  const { data: contactPreferences = [] } = useListSplitContactPreferencesQuery();
-  const { data: preferenceSuggestions = [] } = useListSplitPreferenceSuggestionsQuery();
-  const [setContactPreference, { isLoading: savingPreference }] = useSetSplitContactPreferenceMutation();
-  const [deleteContactPreference] = useDeleteSplitContactPreferenceMutation();
   const [createSplit, { isLoading: creating }] = useCreateSplitMutation();
   const [repay, { isLoading: repaying }] = useRepaySplitParticipantMutation();
   const [deleteSplit, { isLoading: deleting }] = useDeleteSplitMutation();
@@ -165,9 +158,6 @@ export function SplitsPage() {
   const [showValidation, setShowValidation] = useState(false);
   const [repaymentAccounts, setRepaymentAccounts] = useState<Record<string, string>>({});
   const [editingSplitId, setEditingSplitId] = useState<string | null>(null);
-  const [preferenceName, setPreferenceName] = useState('');
-  const [dietaryPreference, setDietaryPreference] = useState<'vegetarian' | 'vegan' | 'omnivore'>('vegetarian');
-  const [preferenceError, setPreferenceError] = useState('');
   const totalOwedPaise = splits.reduce((total, split) => total + split.outstanding_paise, 0);
   const activeAccounts = accounts.filter((account) => account.is_active);
   const defaultAccountId = activeAccounts.find((account) => account.is_default)?.id ?? activeAccounts[0]?.id ?? '';
@@ -277,55 +267,6 @@ export function SplitsPage() {
       </div>
       <Button className='w-full sm:w-auto sm:shrink-0' onClick={() => { setOpen(true); setReview(null); }}>New split</Button>
     </div>
-    <Card className='space-y-3 p-4'>
-      <div>
-        <h2 className='text-sm font-semibold text-[var(--text-primary)]'>People you split with</h2>
-        <p className='text-xs text-[var(--text-muted)]'>Save only preferences they have confirmed. These guide item suggestions; you still review who shared each item.</p>
-      </div>
-      <form className='grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] sm:items-end' onSubmit={async (event) => {
-        event.preventDefault();
-        setPreferenceError('');
-        try {
-          await setContactPreference({ name: preferenceName.trim(), dietary_preference: dietaryPreference }).unwrap();
-          setPreferenceName('');
-        } catch (failure) { setPreferenceError(detail(failure)); }
-      }}>
-        <label className='space-y-1 text-xs text-[var(--text-secondary)]'>Person
-          <input className={inputClass} list='split-contact-names' maxLength={100} required
-            value={preferenceName} onChange={(event) => setPreferenceName(event.target.value)} placeholder='Isha' />
-          <datalist id='split-contact-names'>{contacts.map((name) => <option key={name} value={name} />)}</datalist>
-        </label>
-        <label className='space-y-1 text-xs text-[var(--text-secondary)]'>Confirmed preference
-          <ThemedSelect id='split-dietary-preference' placeholder='Choose preference' value={dietaryPreference} options={[
-            { value: 'vegetarian', label: 'Vegetarian' }, { value: 'vegan', label: 'Vegan' },
-            { value: 'omnivore', label: 'Eats meat' },
-          ]} onChange={(value) => setDietaryPreference(value as typeof dietaryPreference)} />
-        </label>
-        <Button type='submit' className='sm:w-auto' isLoading={savingPreference}>Save</Button>
-      </form>
-      {preferenceError && <p role='alert' className='text-xs text-red-400'>{preferenceError}</p>}
-      {contactPreferences.length > 0 && <ul className='space-y-1 text-xs text-[var(--text-secondary)]'>
-        {contactPreferences.filter((contact) => contact.dietary_preference).map((contact) => <li key={contact.id}
-          className='flex items-center justify-between gap-2 rounded-lg bg-[var(--bg-elevated)] px-3 py-2'>
-          <span>{contact.name}: {contact.dietary_preference === 'omnivore' ? 'eats meat' : contact.dietary_preference}</span>
-          <button type='button' className='text-[var(--brand-primary)]' onClick={async () => {
-            try { await deleteContactPreference(contact.id).unwrap(); }
-            catch (failure) { setPreferenceError(detail(failure)); }
-          }}>Forget</button>
-        </li>)}
-      </ul>}
-      {preferenceSuggestions.length > 0 && <div className='space-y-2 border-t border-[var(--bg-border)] pt-3'>
-        <p className='text-xs font-medium text-[var(--text-primary)]'>Possible patterns to confirm</p>
-        {preferenceSuggestions.map((suggestion) => <div key={suggestion.name}
-          className='flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--text-secondary)]'>
-          <span>{suggestion.name} shared vegetarian dishes in {suggestion.evidence_splits} reviewed splits. Is this a preference?</span>
-          <button type='button' className='text-[var(--brand-primary)]' onClick={() => {
-            setPreferenceName(suggestion.name);
-            setDietaryPreference('vegetarian');
-          }}>Review and save above</button>
-        </div>)}
-      </div>}
-    </Card>
     {error && <p role='alert' className='rounded-xl bg-red-500/10 p-3 text-sm text-red-300'>{error}</p>}
     {open && <Card className='space-y-4 p-5'>
       <h2 className='font-semibold text-[var(--text-primary)]'>Share a recorded expense</h2>
@@ -418,9 +359,9 @@ export function SplitsPage() {
               <p className='text-xs text-[var(--text-muted)]'>Total {formatPaiseAsInr(split.total_paise)} · Your share {formatPaiseAsInr(split.owner_share_paise)}</p></div>
               <div className='text-right'><span className='text-sm font-semibold text-[var(--text-primary)]'>{formatPaiseAsInr(split.outstanding_paise)} due</span>
                 <div className='flex flex-wrap justify-end gap-3'>
-                  <button type='button' className='text-xs text-[var(--brand-primary)]'
+                  <button type='button' className='rounded-lg border border-[var(--bg-border)] px-3 py-1.5 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:border-[var(--brand-primary)] hover:bg-[var(--brand-subtle)] hover:text-[var(--brand-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)] focus-visible:ring-offset-2'
                     onClick={() => navigate(`/transactions?transactionId=${split.transaction_id}`)}>View transaction</button>
-                  <button type='button' className='text-xs text-[var(--brand-primary)]'
+                  <button type='button' className='rounded-lg border border-[var(--brand-primary)]/30 bg-[var(--brand-subtle)] px-3 py-1.5 text-xs font-semibold text-[var(--brand-primary)] transition-colors hover:border-[var(--brand-primary)] hover:bg-[var(--brand-primary)] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)] focus-visible:ring-offset-2'
                     onClick={() => setEditingSplitId(editingSplitId === split.id ? null : split.id)}>
                     {editingSplitId === split.id ? 'Close edit' : 'Edit split'}
                   </button>

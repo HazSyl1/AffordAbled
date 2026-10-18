@@ -1,4 +1,4 @@
-import { CalendarDays, LogOut, Mail, Sparkles, UserRound } from 'lucide-react';
+import { CalendarDays, ChevronDown, ChevronLeft, ChevronRight, LogOut, Mail, Sparkles, UserRound } from 'lucide-react';
 import { useEffect, useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 
@@ -13,6 +13,11 @@ import {
 } from '../../features/auth/authApi';
 import { clearCredentials, setUser } from '../../features/auth/authSlice';
 import { apiClient } from '../../lib/apiClient';
+import { MemorySuggestionsPanel } from '../../components/molecules/MemorySuggestionsPanel/MemorySuggestionsPanel';
+import { useListAccountsQuery } from '../../features/accounts/accountsApi';
+import { useListCategoriesQuery } from '../../features/categories/categoriesApi';
+import { useForgetMemoryMutation, useListMemoriesQuery, useListMemorySuggestionsQuery } from '../../features/memory/memoryApi';
+import { describeMemory } from '../../features/memory/memoryText';
 
 function initials(name: string): string {
   return name.trim().split(/\s+/).slice(0, 2).map((part) => part[0]?.toUpperCase() ?? '').join('') || 'U';
@@ -38,6 +43,17 @@ export function ProfilePage() {
   const [logout, { isLoading: isLoggingOut }] = useLogoutMutation();
   const [loadSummary, { data: summary, isFetching: isLoadingSummary, isError: summaryFailed }] =
     useLazyGetProfileTransactionSummaryQuery();
+  const { data: memorySuggestions = [] } = useListMemorySuggestionsQuery();
+  const { data: memories = [] } = useListMemoriesQuery();
+  const { data: categories = [] } = useListCategoriesQuery();
+  const { data: accounts = [] } = useListAccountsQuery();
+  const [forgetMemory, { isLoading: isForgetting }] = useForgetMemoryMutation();
+  const [memoryError, setMemoryError] = useState<string | null>(null);
+  const [memoriesOpen, setMemoriesOpen] = useState(false);
+  const [activeMemoryIndex, setActiveMemoryIndex] = useState(0);
+  const categoryNames = new Map(categories.map((category) => [category.id, category.name]));
+  const accountNames = new Map(accounts.map((account) => [account.id, account.name]));
+  const confirmedMemories = memories.filter((memory) => memory.status === 'confirmed');
 
   useEffect(() => {
     if (currentUser?.id) {
@@ -152,6 +168,8 @@ export function ProfilePage() {
         </div>
       </Card>
 
+      <MemorySuggestionsPanel suggestions={memorySuggestions} />
+
       <Card className='flex flex-col gap-4 p-5 md:flex-row md:items-center md:justify-between md:p-6'>
         <div>
           <h2 className='text-base font-semibold text-[var(--text-primary)]'>Done for now?</h2>
@@ -160,6 +178,52 @@ export function ProfilePage() {
         <Button type='button' variant='secondary' className='w-full md:w-auto' isLoading={isLoggingOut} onClick={() => { void handleLogout(); }}>
           <LogOut className='h-4 w-4' aria-hidden='true' /> Log out
         </Button>
+      </Card>
+
+      <Card className='space-y-4 p-0'>
+        <button
+          type='button'
+          className='flex w-full items-center justify-between gap-3 rounded-[var(--card-radius)] px-5 py-4 text-left transition-colors hover:bg-[var(--bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--brand-primary)] md:px-6'
+          aria-expanded={memoriesOpen}
+          aria-controls='remembered-preferences'
+          onClick={() => setMemoriesOpen((open) => !open)}
+        >
+          <span>
+            <span className='block text-base font-semibold text-[var(--text-primary)]'>What I remember</span>
+            <span className='mt-1 block text-sm text-[var(--text-muted)]'>Your confirmed preferences · {confirmedMemories.length}</span>
+          </span>
+          <ChevronDown className={`h-5 w-5 shrink-0 text-[var(--text-muted)] transition-transform ${memoriesOpen ? 'rotate-180' : ''}`} aria-hidden='true' />
+        </button>
+        {memoriesOpen ? <div id='remembered-preferences' className='space-y-4 border-t border-[var(--bg-border)] px-5 py-4 md:px-6'>
+          <p className='text-sm text-[var(--text-muted)]'>Only confirmed preferences guide future suggestions. You can forget one whenever it no longer fits.</p>
+          {memoryError ? <p role='alert' className='text-sm text-[var(--negative)]'>{memoryError}</p> : null}
+          {confirmedMemories.length === 0 ? (
+            <p className='rounded-xl border border-[var(--bg-border)] bg-[var(--bg-elevated)] p-4 text-sm text-[var(--text-muted)]'>No confirmed preferences yet.</p>
+          ) : <>
+            <div className='min-h-36 rounded-xl border border-[var(--bg-border)] bg-[var(--bg-elevated)] p-4' aria-live='polite' aria-atomic='true'>
+              <p className='text-sm leading-relaxed text-[var(--text-primary)]'>{describeMemory(confirmedMemories[activeMemoryIndex], categoryNames, accountNames)}</p>
+              <p className='mt-3 text-xs text-[var(--text-muted)]'>Based on {confirmedMemories[activeMemoryIndex].evidence_count} reviewed example{confirmedMemories[activeMemoryIndex].evidence_count === 1 ? '' : 's'}.</p>
+            </div>
+            <div className='flex items-center justify-between gap-3'>
+              <Button type='button' variant='secondary' className='w-auto min-h-10 px-3 py-2' aria-label='Previous memory' disabled={confirmedMemories.length < 2}
+                onClick={() => setActiveMemoryIndex((index) => (index - 1 + confirmedMemories.length) % confirmedMemories.length)}>
+                <ChevronLeft className='h-4 w-4' aria-hidden='true' /> Previous
+              </Button>
+              <span className='text-xs tabular-nums text-[var(--text-muted)]'>{activeMemoryIndex + 1} / {confirmedMemories.length}</span>
+              <Button type='button' variant='secondary' className='w-auto min-h-10 px-3 py-2' aria-label='Next memory' disabled={confirmedMemories.length < 2}
+                onClick={() => setActiveMemoryIndex((index) => (index + 1) % confirmedMemories.length)}>
+                Next <ChevronRight className='h-4 w-4' aria-hidden='true' />
+              </Button>
+            </div>
+            <Button type='button' variant='ghost' className='w-full sm:w-auto' isLoading={isForgetting} onClick={() => {
+              const memory = confirmedMemories[activeMemoryIndex];
+              setMemoryError(null);
+              void forgetMemory(memory.id).unwrap().then(() => {
+                setActiveMemoryIndex((index) => Math.max(0, Math.min(index, confirmedMemories.length - 2)));
+              }).catch(() => setMemoryError('Could not forget this preference. Please try again.'));
+            }}>Forget this preference</Button>
+          </>}
+        </div> : null}
       </Card>
     </div>
   );

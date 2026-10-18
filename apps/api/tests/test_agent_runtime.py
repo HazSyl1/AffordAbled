@@ -257,6 +257,30 @@ async def test_prior_transaction_follow_up_uses_the_previous_result_window() -> 
     assert result["date_from"] == queries.date_from.isoformat()
 
 
+@pytest.mark.asyncio
+async def test_standalone_previous_transaction_query_uses_full_history_fallback() -> None:
+    class PriorQueries:
+        resolve_date_window = staticmethod(TransactionQueryTools.resolve_date_window)
+
+        def __init__(self) -> None:
+            self.date_from: datetime | None = None
+            self.date_to: datetime | None = None
+
+        async def get_transactions(self, *, date_from: datetime, date_to: datetime, **_kwargs: object) -> list[object]:
+            self.date_from, self.date_to = date_from, date_to
+            return []
+
+    queries = PriorQueries()
+    result = await AnalyticsToolset(queries).get_transactions(
+        HandoffContext(user_id=uuid.uuid4(), request="what was my previous transaction?", timezone="Asia/Kolkata"),
+        {},
+    )
+
+    assert queries.date_from == datetime(1970, 1, 1, tzinfo=UTC)
+    assert queries.date_to is not None
+    assert result["date_from"] == queries.date_from.isoformat()
+
+
 class _ComparisonQueries:
     def __init__(self) -> None:
         self.window_args: tuple[str, str, str] | None = None

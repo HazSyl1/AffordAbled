@@ -40,6 +40,7 @@ from app.infrastructure.ai.agents.runtime import ToolBoundSpecialistRuntime
 from app.infrastructure.ai.agents.split import SplitToolset
 from app.infrastructure.ai.agents.transaction import TransactionToolset
 from app.infrastructure.ai.tools.transaction_query_tools import TransactionQueryTools
+from app.infrastructure.database.repositories.sqlalchemy_memory_repository import SqlAlchemyMemoryRepository
 
 _MAX_REROUTES = 3
 _MUTATION_TOOLS = {
@@ -575,6 +576,7 @@ class AgentGraphState(TypedDict, total=False):
     show_completion_popup: bool
     available_categories: list[dict[str, Any]]
     available_accounts: list[dict[str, Any]]
+    confirmed_memories: list[dict[str, Any]]
     specialist_messages: Annotated[list[BaseMessage], add_messages]
     next_specialist: str | None
     handoff: dict[str, Any]
@@ -603,11 +605,13 @@ class AgenticSupervisorGraph:
         query_tools: TransactionQueryTools,
         export_service: ExportService | None = None,
         split_service: SplitService | None = None,
+        memory_repository: SqlAlchemyMemoryRepository | None = None,
         db_session: AsyncSession | None = None,
     ) -> None:
         self._guardrail = guardrail
         self._category_service = category_service
         self._account_service = account_service
+        self._memory_repository = memory_repository
 
         # Callers may provide a single shared model or a per-agent mapping.
         # This keeps cost/quality selection configuration outside agent logic.
@@ -840,6 +844,21 @@ class AgenticSupervisorGraph:
             }
             for item in accounts
         ]
+        confirmed_memories = []
+        if self._memory_repository is not None:
+            memories = await self._memory_repository.relevant_confirmed(
+                uuid.UUID(state['user_id']), subjects=[], scopes=['user', 'merchant', 'person', 'account', 'category'],
+            )
+            confirmed_memories = [
+                {
+                    'scope': memory.scope,
+                    'subject_key': memory.subject_key,
+                    'memory_type': memory.memory_type,
+                    'value': memory.value_json,
+                    'evidence_count': memory.evidence_count,
+                }
+                for memory in memories
+            ]
         history = (state.get("conversation_history") or [])[-20:]
         task_queue = state.get("task_queue") or []
         context = HandoffContext(
@@ -859,6 +878,7 @@ class AgenticSupervisorGraph:
                 "original_request": state.get("task_request"),
                 "prior_specialist_results": state.get("prior_results", []),
                 "recent_tool_observations": state.get("tool_event_history", [])[-12:],
+                "confirmed_memories": confirmed_memories,
             },
         )
         decision = await self._supervisor.decide(context, state.get("results", []))
@@ -953,6 +973,23 @@ class AgenticSupervisorGraph:
                 available_categories=available_categories,
                 verify_categories=latest_result.get("specialist") == "category",
             )
+            # A resumed transaction turn can be a confirmation/correction
+            # reply after the transaction was already created. In that case
+            # the specialist may return a verified success summary without
+            # repeating the create_transaction observation. Consume the
+            # queued transaction task from that summary instead of reporting
+            # an incomplete request.
+            if (
+                latest_result.get("specialist") == "transaction"
+                and latest_result.get("status") == "success"
+                and not observed_actions
+                and remaining_tasks
+                and _obvious_specialist(remaining_tasks[0]) == "transaction"
+                and re.search(r"\b(?:successfully logged|already been logged|transaction has been logged)\b",
+                              str(latest_result.get("summary", "")), flags=re.IGNORECASE)
+            ):
+                satisfied_tasks = [remaining_tasks[0]]
+                remaining_tasks = remaining_tasks[1:]
             if state.get("contextual_followup") and latest_result.get("status") == "success":
                 remaining_tasks, satisfied_tasks = [], list(task_queue)
             if (
@@ -1128,6 +1165,7 @@ class AgenticSupervisorGraph:
             "task_queue": task_queue,
             "available_categories": available_categories,
             "available_accounts": available_accounts,
+            "confirmed_memories": confirmed_memories,
             "next_specialist": decision.specialist,
             "handoff": decision.handoff,
             "reroutes": state.get("reroutes", 0) + 1,
@@ -1138,6 +1176,7 @@ class AgenticSupervisorGraph:
                     "task_queue": task_queue,
                     "available_categories": available_categories,
                     "available_accounts": available_accounts,
+                    "confirmed_memories": confirmed_memories,
                 },
                 decision.specialist,
                 decision.handoff,
@@ -1165,6 +1204,7 @@ class AgenticSupervisorGraph:
                 "latest_user_reply": str(state["messages"][-1].content),
                 "available_categories": state.get("available_categories", []),
                 "available_accounts": state.get("available_accounts", []),
+                "confirmed_memories": state.get("confirmed_memories", []),
                 "created_transaction_ids": state.get("created_transaction_ids", []),
                 "pending_split_transaction_id": state.get('pending_split_transaction_id'),
                 "last_transaction_window": state.get("last_transaction_window"),

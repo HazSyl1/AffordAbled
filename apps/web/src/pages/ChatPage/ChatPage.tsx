@@ -3,11 +3,13 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 
 import { useAppSelector } from '../../app/hooks';
+import { Button } from '../../components/atoms/Button';
 import { BottomSheet } from '../../components/molecules/BottomSheet';
 import { AssistantReplyIndicator } from '../../components/molecules/AssistantReplyIndicator';
 import { AssistantMessageContent } from '../../components/molecules/AssistantMessageContent';
 import { VoiceCaptureModal } from '../../components/molecules/VoiceCaptureModal';
 import { TransactionSuccessOverlay } from '../../components/molecules/TransactionSuccessOverlay/TransactionSuccessOverlay';
+import { MemorySuggestionsPanel } from '../../components/molecules/MemorySuggestionsPanel/MemorySuggestionsPanel';
 import { CreateTransactionForm } from '../../components/organisms/CreateTransactionForm';
 import { Card } from '../../components/atoms/Card';
 import { CollapseToggle } from '../../components/atoms/CollapseToggle';
@@ -32,6 +34,8 @@ import {
   type ChatDraftMessage,
 } from '../../features/chat/chatDrafts';
 import { useVoiceCapture } from '../../features/chat/useVoiceCapture';
+import { useListMemorySuggestionsQuery } from '../../features/memory/memoryApi';
+import { useListTransactionsQuery } from '../../features/transactions/transactionsApi';
 
 type ChatListFilter = 'finance' | 'drafts';
 
@@ -90,13 +94,27 @@ function ChatWorkspace({ userId }: { userId: string }) {
   const [isSideToolCollapsed, setIsSideToolCollapsed] = useState(false);
   const [chatInput, setChatInput] = useState('');
   const [chatError, setChatError] = useState<string | null>(null);
+  const receiptUploadRef = useRef(false);
   const [showProposalSheet, setShowProposalSheet] = useState(false);
   const [proposalForSheet, setProposalForSheet] = useState<ChatTransactionProposal | null>(null);
   const [proposalQueue, setProposalQueue] = useState<ChatTransactionProposal[]>([]);
   const [proposalBatchTotal, setProposalBatchTotal] = useState(0);
   const [proposalBatchCompleted, setProposalBatchCompleted] = useState(0);
   const [proposalSheetMode, setProposalSheetMode] = useState<'standard' | 'manual_low_confidence'>('standard');
-  const [taskSuccess, setTaskSuccess] = useState<{ message: string; expiresAt: number } | null>(null);
+  const [taskSuccess, setTaskSuccess] = useState<{ message: string; expiresAt: number; transactionId: string | null } | null>(null);
+  const [editingTransactionId, setEditingTransactionId] = useState<string | null>(null);
+  const [editingTransactionValues, setEditingTransactionValues] = useState<Record<string, string> | undefined>();
+  const [showMemorySuggestions, setShowMemorySuggestions] = useState(true);
+  const { data: memorySuggestions = [] } = useListMemorySuggestionsQuery(undefined, { pollingInterval: 10_000 });
+  useEffect(() => {
+    if (memorySuggestions.length === 0) return;
+    const reminderTimer = window.setInterval(() => {
+      setShowMemorySuggestions(true);
+    }, 5 * 60 * 1000);
+    return () => window.clearInterval(reminderTimer);
+  }, [memorySuggestions.length]);
+
+  const { data: transactions = [] } = useListTransactionsQuery();
   const imageFileInputRef = useRef<HTMLInputElement | null>(null);
   const chatMessagesRef = useRef<HTMLDivElement | null>(null);
   const transactionRedirectTimerRef = useRef<number | null>(null);
@@ -185,6 +203,11 @@ function ChatWorkspace({ userId }: { userId: string }) {
 
   const closeTaskSuccess = () => {
     clearTaskSuccessTimer();
+    if (memorySuggestions.length > 0) {
+      setTaskSuccess(null);
+      setShowMemorySuggestions(true);
+      return;
+    }
     setTaskSuccess(null);
     navigate('/');
   };
@@ -192,6 +215,25 @@ function ChatWorkspace({ userId }: { userId: string }) {
   const continueChatting = () => {
     clearTaskSuccessTimer();
     setTaskSuccess(null);
+  };
+
+  const editCompletedTransaction = () => {
+    const transaction = transactions.find((item) => item.id === taskSuccess?.transactionId);
+    if (!transaction) return;
+    clearTaskSuccessTimer();
+    setTaskSuccess(null);
+    setEditingTransactionId(transaction.id);
+    setEditingTransactionValues({
+      accountId: transaction.account_id,
+      type: transaction.type,
+      amountRupees: String(transaction.amount_paise / 100),
+      occurredAt: transaction.occurred_at,
+      categoryId: transaction.category_id ?? '',
+      toAccountId: transaction.to_account_id ?? '',
+      merchant: transaction.merchant ?? '',
+      note: transaction.note ?? '',
+    });
+    setShowProposalSheet(true);
   };
 
   const handleSelectDraft = async (draft: ChatDraft) => {
@@ -291,10 +333,14 @@ function ChatWorkspace({ userId }: { userId: string }) {
       const insightSummary = (response.insights ?? [])
         .map((insight) => `• ${insight.title}: ${insight.detail}`)
         .join('\n');
+      const receiptTransactionLogged = receiptUploadRef.current && response.transaction_logged;
+      if (receiptTransactionLogged) receiptUploadRef.current = false;
       const assistantMessage: ChatDraftMessage = {
         id: createLocalMessageId(),
         role: 'assistant',
-        content: insightSummary ? `${response.message}\n${insightSummary}` : response.message,
+        content: insightSummary ? `${response.message}\n${insightSummary}` : receiptTransactionLogged
+          ? `${response.message}\nWould you like to split this expense? If yes, tell me who shared it.`
+          : response.message,
       };
 
       if (response.pending_transaction_proposal || response.manual_transaction_input_required) {
@@ -331,9 +377,9 @@ function ChatWorkspace({ userId }: { userId: string }) {
         }
         refreshDrafts(savedDraft.id);
         setActiveFilter('finance');
-        if (response.show_completion_popup) {
+        if (response.show_completion_popup && !receiptTransactionLogged) {
           clearTaskSuccessTimer();
-          setTaskSuccess({ message: assistantMessage.content, expiresAt: Date.now() + 12_000 });
+          setTaskSuccess({ message: assistantMessage.content, expiresAt: Date.now() + 12_000, transactionId: response.created_transaction_id ?? null });
           transactionRedirectTimerRef.current = window.setTimeout(() => {
             transactionRedirectTimerRef.current = null;
             setTaskSuccess(null);
@@ -368,7 +414,9 @@ function ChatWorkspace({ userId }: { userId: string }) {
         return;
       }
 
-      await handleSendMessage(transcript);
+      // Let the capture modal close as soon as transcription finishes. The
+      // assistant request continues independently in the chat view.
+      void handleSendMessage(transcript);
     } catch {
       setChatError(DASHBOARD_CHAT_UI_TEXT.voiceError);
     }
@@ -553,6 +601,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
         return;
       }
       if (instructions) setChatInput('');
+      receiptUploadRef.current = true;
       await handleSendMessage(combinedPrompt);
     } catch {
       setChatError(DASHBOARD_CHAT_UI_TEXT.imageError);
@@ -845,7 +894,18 @@ function ChatWorkspace({ userId }: { userId: string }) {
           expiresAt={taskSuccess.expiresAt}
           onClose={closeTaskSuccess}
           onContinue={continueChatting}
+          onEditTransaction={taskSuccess.transactionId ? editCompletedTransaction : undefined}
         />
+      ) : null}
+      {showMemorySuggestions && memorySuggestions.length > 0 && !taskSuccess ? (
+        <div className='fixed inset-0 z-[60] flex items-center justify-center overflow-y-auto bg-black/60 p-4' role='dialog' aria-modal='true' aria-label='Memory suggestions'>
+          <div className='w-full max-w-lg space-y-3'>
+            <MemorySuggestionsPanel suggestions={memorySuggestions} />
+            <div className='flex justify-center'>
+              <Button type='button' variant='secondary' onClick={() => setShowMemorySuggestions(false)}>Close suggestions</Button>
+            </div>
+          </div>
+        </div>
       ) : null}
 
       <BottomSheet
@@ -857,6 +917,8 @@ function ChatWorkspace({ userId }: { userId: string }) {
           setProposalBatchTotal(0);
           setProposalBatchCompleted(0);
           setProposalSheetMode('standard');
+          setEditingTransactionId(null);
+          setEditingTransactionValues(undefined);
         }}
         title={
           proposalBatchTotal > 1
@@ -867,7 +929,9 @@ function ChatWorkspace({ userId }: { userId: string }) {
         <CreateTransactionForm
           mode='sheet'
           showHeading={false}
-          initialValues={proposalInitialValues}
+          initialValues={editingTransactionValues ?? proposalInitialValues}
+          transactionId={editingTransactionId ?? undefined}
+          trackReviewEvent={Boolean(editingTransactionId)}
           proposalCategory={
             proposalForSheet && proposalForSheet.type !== 'transfer'
               ? {
@@ -888,6 +952,8 @@ function ChatWorkspace({ userId }: { userId: string }) {
               refreshDrafts(selectedDraftId);
               return;
             }
+            setEditingTransactionId(null);
+            setEditingTransactionValues(undefined);
             if (proposalBatchTotal > 0) {
               setShowProposalSheet(false);
               setProposalForSheet(null);

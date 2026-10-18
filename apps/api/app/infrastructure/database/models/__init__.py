@@ -5,6 +5,7 @@ from app.infrastructure.database.models.chat_message import ChatMessageModel
 from app.infrastructure.database.models.chat_thread import ChatThreadModel
 from app.infrastructure.database.models.export_artifact import ExportArtifactModel
 from app.infrastructure.database.models.guardrail_log import GuardrailLogModel
+from app.infrastructure.database.models.memory import MemoryModel, MemoryOutboxModel, MemoryReviewEventModel
 from app.infrastructure.database.models.refresh_session import RefreshSessionModel
 from app.infrastructure.database.models.split import SplitModel, SplitParticipantModel
 from app.infrastructure.database.models.split_contact import SplitContactModel
@@ -24,6 +25,9 @@ __all__ = [
     'SplitModel',
     'SplitParticipantModel',
     'SplitContactModel',
+    'MemoryModel',
+    'MemoryOutboxModel',
+    'MemoryReviewEventModel',
     'TransactionModel',
     'TransactionImportModel',
     'UserModel',

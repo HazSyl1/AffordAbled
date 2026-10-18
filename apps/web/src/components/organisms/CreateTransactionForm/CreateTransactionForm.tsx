@@ -38,6 +38,7 @@ export interface CreateTransactionFormProps {
   transactionId?: string;
   submitLabel?: string;
   prefillMode?: 'standard' | 'manual_low_confidence';
+  trackReviewEvent?: boolean;
   enableSplit?: boolean;
 }
 
@@ -115,6 +116,7 @@ export function CreateTransactionForm({
   transactionId,
   submitLabel = 'Add transaction',
   prefillMode = 'standard',
+  trackReviewEvent = false,
   enableSplit = true,
 }: CreateTransactionFormProps) {
   const navigate = useNavigate();
@@ -146,7 +148,7 @@ export function CreateTransactionForm({
     handleSubmit,
     reset,
     setValue,
-    formState: { errors, isSubmitting },
+    formState: { errors, isSubmitting, isDirty },
   } = useForm<CreateTransactionFormValues>({
     resolver: zodResolver(createTransactionSchema),
     defaultValues: resolveInitialValues(initialValues),
@@ -228,6 +230,35 @@ export function CreateTransactionForm({
       to_account_id: values.type === 'transfer' ? values.toAccountId || undefined : undefined,
       merchant: values.merchant?.trim() || undefined,
       note: values.note?.trim() || undefined,
+      ...(prefillMode === 'manual_low_confidence' || trackReviewEvent
+        ? {
+            review_event: {
+              action:
+                initialValues?.accountId === values.accountId &&
+                initialValues?.categoryId === values.categoryId &&
+                initialValues?.merchant?.trim() === values.merchant?.trim() &&
+                initialValues?.note?.trim() === values.note?.trim() &&
+                Number(initialValues?.amountRupees) === Number(values.amountRupees)
+                  ? ('accepted' as const)
+                  : ('edited' as const),
+              source: trackReviewEvent ? 'completion_popup_edit' : 'review_popup',
+              before: {
+                account_id: initialValues?.accountId,
+                category_id: initialValues?.categoryId,
+                amount_rupees: initialValues?.amountRupees,
+                merchant: initialValues?.merchant?.trim() || undefined,
+                note: initialValues?.note?.trim() || undefined,
+              },
+              after: {
+                account_id: values.accountId,
+                category_id: values.categoryId || undefined,
+                amount_rupees: values.amountRupees,
+                merchant: values.merchant?.trim() || undefined,
+                note: values.note?.trim() || undefined,
+              },
+            },
+          }
+        : {}),
     };
 
     try {
@@ -602,7 +633,7 @@ export function CreateTransactionForm({
         </label>
       ) : null}
 
-      <Button type='submit' isLoading={isSubmitting}>
+      <Button type='submit' isLoading={isSubmitting} disabled={isEditing && !isDirty}>
         {splitAfterSave && transactionType === 'expense' ? 'Save and set up split' : submitLabel}
       </Button>
     </form>

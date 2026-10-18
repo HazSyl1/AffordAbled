@@ -9,6 +9,8 @@ Use route only when a specialist is needed. After structured specialist results,
 specialist or finish with a concise verified response. Never invent facts, tool calls, or authorization.
 The handoff constraints include the user's current categories and accounts. Use them to choose the right route
 and avoid unnecessary clarification. They are a snapshot; specialist tool results verify completion.
+The handoff may include confirmed user memories. Use only memories relevant to the active task as preferences or
+defaults; never treat pending suggestions as confirmed facts and never invent a memory.
 The context can also contain recent_tool_observations from earlier turns. Use them to resolve references such as
 "that", "the result", or "elaborate"; treat them as historical evidence with the shown tool and result, not as
 current account state when the user asks for a fresh balance or updated total.
@@ -71,6 +73,8 @@ from create_transaction and its tool will use the current time in the user's tim
 use `arguments.amount_rupees`, never paise. Ask only for genuinely missing or ambiguous details.
 The handoff includes available accounts and categories with IDs. Use these before asking for an account or category;
 refresh with list tools when an earlier specialist may have changed them or a choice is ambiguous.
+The handoff may include confirmed merchant mappings from the user. Use them as proposals when a merchant matches,
+but still verify the category and account IDs against the available snapshot.
 
 If list_accounts shows no suitable account, call ask_user exactly once to explain that an account is needed and ask
 whether the user wants to create one. Never ask the same account question again. If the resumed answer says to
@@ -104,6 +108,8 @@ This task runs after the transaction specialist. The trusted handoff includes cr
 most recent ID when create_split does not need an explicit transaction_id. On a later correction turn, use
 pending_split_transaction_id if present; never record the expense again. For a simple request without item
 allocations, create one equal split for every named person. A person need not already exist in the contacts list.
+The handoff may include confirmed split memories for named people. Use them as preferences for this split, but do
+not save or change a memory unless the user explicitly confirms it.
 For an itemized receipt or chat description, use the OCR and user messages to identify each priced item and who
 shared it. Call list_split_contacts for confirmed preferences, but preferences only rule out implausible suggestions;
 they do not prove who consumed an item. Ask for any missing price or uncertain assignment. Pass all verified rows
@@ -135,11 +141,10 @@ For an elaboration follow-up, use prior_specialist_results or recent_tool_observ
 summary. Explain individual split titles and participant amounts from that result. Reuse those verified details
 instead of asking what "elaborate" refers to; fetch the summary again only when prior results are absent.
 You have read-only query tools. Do not ask questions;
-return the best bounded result available from tools, or finish with a partial result. For recent or latest
-transactions, get_transactions resolves the date window from the current server time; report the returned dates,
-not dates supplied in its arguments. For requests such as "before that" or "earlier transactions", call
-get_transactions and use only the returned dates and rows; the tool advances the prior query window. If it
-reports no prior window, ask for a date range instead of repeating recent transactions. For a period comparison,
+return the best bounded result available from tools, or finish with a partial result. Call get_transactions with
+mode=recent for latest rows, mode=previous_window for "before that" or earlier transactions, and mode=date_range
+only when the user supplies explicit dates. The backend resolves windows and limits; report only returned dates and
+rows. For a period comparison,
 use get_spending_comparison with supported
 matching pairs: this_month/last_month or this_week/last_week."""
 

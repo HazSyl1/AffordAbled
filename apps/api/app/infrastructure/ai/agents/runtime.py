@@ -121,6 +121,23 @@ class EmptyArgumentsToolInput(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
 
 
+class GetTransactionsArguments(BaseModel):
+    mode: Literal['recent', 'previous_window', 'date_range'] = Field(
+        default='recent',
+        description=(
+            'recent for latest rows, previous_window for the period before the last query, '
+            'date_range for explicit dates.'
+        ),
+    )
+    date_from: str | None = Field(default=None, description='Required only for date_range. Inclusive ISO start date.')
+    date_to: str | None = Field(default=None, description='Required only for date_range. Inclusive ISO end date.')
+    limit: int = Field(default=10, ge=1, le=25, description='Maximum number of transactions to return.')
+
+
+class GetTransactionsToolInput(BaseModel):
+    arguments: GetTransactionsArguments
+
+
 class CreateTransactionReportArguments(BaseModel):
     format: Literal["csv", "xlsx", "pdf"] = Field(default="pdf", description="Report file format.")
     date_from: str | None = Field(default=None, description="Inclusive local start date YYYY-MM-DD.")
@@ -137,6 +154,7 @@ _TOOL_SCHEMAS: dict[str, type[BaseModel]] = {
     "create_transaction": CreateTransactionToolInput,
     "create_split": CreateSplitToolInput,
     "set_split_contact_preference": SetSplitContactPreferenceToolInput,
+    "get_transactions": GetTransactionsToolInput,
     "get_split_summary": EmptyArgumentsToolInput,
     "create_transaction_report": CreateTransactionReportToolInput,
 }
@@ -162,7 +180,10 @@ _TOOL_DESCRIPTIONS = {
     "delete_transaction": "Soft-delete one user-owned transaction only after explicit confirmation.",
     "restore_transaction": "Restore one previously deleted user-owned transaction when explicitly requested.",
     "get_account_balances": "Read current account balances for balance questions, not transaction history.",
-    "get_transactions": "Read transactions in a bounded date window for recent, prior, or date-range history.",
+    "get_transactions": (
+        "Read user-owned transactions. Use mode=recent for latest rows, "
+        "previous_window for the period before the last query, or date_range for explicit dates."
+    ),
     "get_spending_summary": "Read aggregate spending for a supplied date range, not individual transactions.",
     "get_spending_by_account": "Read spending grouped by account for a supplied date range.",
     "get_spending_comparison": "Compare two supported spending periods.",
@@ -636,6 +657,7 @@ class ToolBoundSpecialistRuntime:
                     "pending_split_transaction_id": state.get("pending_split_transaction_id"),
                     "available_categories": state.get("available_categories", []),
                     "available_accounts": state.get("available_accounts", []),
+                    "confirmed_memories": state.get("confirmed_memories", []),
                 },
             )
             values = arguments.model_dump() if isinstance(arguments, BaseModel) else {

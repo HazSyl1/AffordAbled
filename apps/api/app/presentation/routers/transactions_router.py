@@ -34,6 +34,7 @@ async def create_transaction(
             to_account_id=payload.to_account_id,
             merchant=payload.merchant,
             note=payload.note,
+            review_event=payload.review_event,
         )
     )
     return TransactionResponse.from_entity(transaction)
@@ -77,6 +78,7 @@ async def update_transaction(
             to_account_id=payload.to_account_id,
             merchant=payload.merchant,
             note=payload.note,
+            review_event=payload.review_event,
         ),
     )
     return TransactionResponse.from_entity(transaction)

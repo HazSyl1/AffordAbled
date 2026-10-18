@@ -330,6 +330,7 @@ export function TransactionsPage() {
             showHeading={false}
             transactionId={transactionBeingEdited.id}
             initialValues={editInitialValues}
+            trackReviewEvent
             submitLabel='Save changes'
             onSuccess={handleCloseEditSheet}
           />

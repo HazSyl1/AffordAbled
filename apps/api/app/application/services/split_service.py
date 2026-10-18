@@ -56,9 +56,14 @@ class SplitStore(Protocol):
     async def delete_contact_preference(self, user_id: uuid.UUID, contact_id: uuid.UUID) -> bool: ...
 
 
+class MemoryEventWriter(Protocol):
+    async def add_review_event(self, **kwargs): ...
+
+
 @dataclass
 class SplitService:
     store: SplitStore
+    memory_event_writer: MemoryEventWriter | None = None
 
     async def create(
         self, user_id: uuid.UUID, transaction_id: uuid.UUID, title: str, amount_paise: int,
@@ -94,6 +99,25 @@ class SplitService:
                 raise ValueError('Shares must add up to the expense amount exactly.')
         else:
             raise ValueError('Split mode must be equal or custom.')
+        if self.memory_event_writer is not None:
+            await self.memory_event_writer.add_review_event(
+                user_id=user_id,
+                split_id=None,
+                action='accepted',
+                source='split_review',
+                before={},
+                after={
+                    'mode': mode,
+                    'participants': [
+                        {
+                            'name': person.name,
+                            'share_ratio': round(person.share_paise / amount_paise, 6),
+                        }
+                        for person in shares
+                    ],
+                },
+                transaction_id=transaction_id,
+            )
         return await self.store.create(user_id, transaction_id, clean_title, owner_share_paise, shares, item_breakdown)
 
     async def list_for_user(self, user_id: uuid.UUID):
@@ -123,6 +147,29 @@ class SplitService:
             raise ValueError('Each existing person may only appear once.')
         cleaned = [ParticipantEditShare(person.id, name, person.share_paise)
                    for person, name in zip(participants, names, strict=True)]
+        if self.memory_event_writer is not None:
+            existing = await self.store.get_for_user(user_id, split_id)
+            before = {
+                'participants': [
+                    {'name': person.name, 'share_ratio': round(person.share_paise / (owner_share_paise + sum(
+                        item.share_paise for item in participants
+                    )), 6)}
+                    for person in (existing.participants if existing else [])
+                ],
+            }
+            await self.memory_event_writer.add_review_event(
+                user_id=user_id, split_id=split_id, action='edited', source='split_review',
+                before=before,
+                after={
+                    'mode': 'custom',
+                    'participants': [
+                        {'name': person.name, 'share_ratio': round(person.share_paise / (
+                            owner_share_paise + sum(item.share_paise for item in participants)
+                        ), 6)}
+                        for person in cleaned
+                    ],
+                },
+            )
         return await self.store.update(user_id, split_id, clean_title, owner_share_paise, cleaned)
 
     async def settle(

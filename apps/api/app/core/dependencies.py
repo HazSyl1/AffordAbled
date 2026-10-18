@@ -53,6 +53,7 @@ from app.infrastructure.database.repositories.sqlalchemy_export_artifact_reposit
 from app.infrastructure.database.repositories.sqlalchemy_guardrail_log_repository import (
     SqlAlchemyGuardrailLogRepository,
 )
+from app.infrastructure.database.repositories.sqlalchemy_memory_repository import SqlAlchemyMemoryRepository
 from app.infrastructure.database.repositories.sqlalchemy_refresh_session_repository import (
     SqlAlchemyRefreshSessionRepository,
 )
@@ -265,6 +266,7 @@ def get_transaction_service(
         account_repository=account_repository,
         category_repository=category_repository,
         split_repository=SqlAlchemySplitRepository(db),
+        memory_event_writer=SqlAlchemyMemoryRepository(db),
     )
 
 
@@ -354,9 +356,12 @@ def get_chat_orchestrator(
             category_service=CategoryService(category_repository=category_repository),
             account_service=AccountService(account_repository=account_repository),
             transaction_service=transaction_service,
-            split_service=SplitService(SqlAlchemySplitRepository(db)),
+            split_service=SplitService(
+                SqlAlchemySplitRepository(db), SqlAlchemyMemoryRepository(db),
+            ),
             query_tools=transaction_query_tools,
             export_service=export_service,
+            memory_repository=SqlAlchemyMemoryRepository(db),
             db_session=db,
         )
     )

@@ -66,6 +66,12 @@ def main() -> None:
 
             return RunnableLambda(lambda _input: schema.model_construct())
 
+        def bind_tools(self, _tools: list[Any], **_kwargs: Any) -> Any:
+            from langchain_core.messages import AIMessage
+            from langchain_core.runnables import RunnableLambda
+
+            return RunnableLambda(lambda _input: AIMessage(content='Diagram only'))
+
     account_repository = _EmptyAccountRepository()
     category_repository = _EmptyCategoryRepository()
     graph = AgenticSupervisorGraph(
