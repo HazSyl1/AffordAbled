@@ -1,7 +1,8 @@
 import { zodResolver } from '@hookform/resolvers/zod';
-import { AlertCircle, ChevronDown } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { AlertCircle } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
 import { useForm, useWatch } from 'react-hook-form';
+import { useNavigate } from 'react-router-dom';
 
 import {
   type AccountType,
@@ -17,17 +18,19 @@ import {
   useCreateTransactionMutation,
   useUpdateTransactionMutation,
 } from '../../../features/transactions/transactionsApi';
-import type { TransactionType } from '../../../features/transactions/transactionsApi';
+import type { Transaction, TransactionType } from '../../../features/transactions/transactionsApi';
+import { useListSplitsQuery } from '../../../features/splits/splitsApi';
 import { DASHBOARD_CHAT_UI_TEXT } from '../../../constants';
 import { Badge } from '../../atoms/Badge';
 import { Button } from '../../atoms/Button';
 import { Input } from '../../atoms/Input';
 import { FormField } from '../../molecules/FormField';
+import { ThemedSelect } from '../../molecules/ThemedSelect';
 import { createTransactionSchema } from './CreateTransactionForm.schema';
 import type { CreateTransactionFormValues } from './CreateTransactionForm.schema';
 
 export interface CreateTransactionFormProps {
-  onSuccess?: () => void;
+  onSuccess?: (transaction: Transaction, splitRequested: boolean) => void;
   showHeading?: boolean;
   mode?: 'page' | 'sheet';
   initialValues?: Partial<CreateTransactionFormValues>;
@@ -35,6 +38,8 @@ export interface CreateTransactionFormProps {
   transactionId?: string;
   submitLabel?: string;
   prefillMode?: 'standard' | 'manual_low_confidence';
+  trackReviewEvent?: boolean;
+  enableSplit?: boolean;
 }
 
 function getDefaultOccurredAt(): string {
@@ -102,116 +107,6 @@ function resolveInitialValues(initialValues?: Partial<CreateTransactionFormValue
   };
 }
 
-const SELECT_TRIGGER_CLASS =
-  'flex w-full min-h-12 items-center justify-between rounded-xl border border-[var(--bg-border)] bg-[var(--bg-surface)] px-3 py-3 text-left text-base text-[var(--text-primary)] shadow-sm outline-none transition-colors focus-visible:border-[var(--brand-primary)] focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)]';
-
-interface ThemedSelectOption {
-  label: string;
-  value: string;
-  disabled?: boolean;
-}
-
-interface ThemedSelectProps {
-  id: string;
-  value: string;
-  placeholder: string;
-  options: ThemedSelectOption[];
-  onChange: (nextValue: string) => void;
-}
-
-function ThemedSelect({ id, value, placeholder, options, onChange }: ThemedSelectProps) {
-  const [isOpen, setIsOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    const handlePointerDown = (event: MouseEvent) => {
-      if (!rootRef.current) {
-        return;
-      }
-
-      if (!rootRef.current.contains(event.target as Node)) {
-        setIsOpen(false);
-      }
-    };
-
-    document.addEventListener('mousedown', handlePointerDown);
-    return () => {
-      document.removeEventListener('mousedown', handlePointerDown);
-    };
-  }, []);
-
-  const selectedOption = options.find((option) => option.value === value);
-
-  return (
-    <div className='relative' ref={rootRef}>
-      <button
-        id={id}
-        type='button'
-        aria-haspopup='listbox'
-        aria-expanded={isOpen}
-        className={SELECT_TRIGGER_CLASS}
-        onClick={() => setIsOpen((open) => !open)}
-        onKeyDown={(event) => {
-          if (event.key === 'ArrowDown' || event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault();
-            setIsOpen(true);
-          }
-          if (event.key === 'Escape') {
-            setIsOpen(false);
-          }
-        }}
-      >
-        <span className={selectedOption ? 'text-[var(--text-primary)]' : 'text-[var(--text-muted)]'}>
-          {selectedOption?.label ?? placeholder}
-        </span>
-        <ChevronDown
-          className={[
-            'pointer-events-none size-4 text-[var(--text-muted)] transition-transform duration-200',
-            isOpen ? 'rotate-180' : '',
-          ].join(' ')}
-        />
-      </button>
-
-      {isOpen ? (
-        <div className='absolute left-0 right-0 top-[calc(100%+0.5rem)] z-30 overflow-hidden rounded-xl border border-[var(--bg-border)] bg-[var(--bg-card)] shadow-[0_20px_48px_rgba(0,0,0,0.34)]'>
-          <ul role='listbox' aria-labelledby={id} className='max-h-64 overflow-auto p-1'>
-            {options.map((option) => {
-              const isSelected = option.value === value;
-              return (
-                <li key={option.value}>
-                  <button
-                    type='button'
-                    role='option'
-                    aria-selected={isSelected}
-                    disabled={option.disabled}
-                    className={[
-                      'w-full rounded-lg px-3 py-2 text-left text-sm transition-all',
-                      option.disabled
-                        ? 'cursor-not-allowed text-[var(--text-muted)]'
-                        : isSelected
-                          ? 'bg-[var(--bg-border)] font-medium text-[var(--text-primary)] shadow-[inset_0_0_0_1px_var(--bg-border)]'
-                          : 'text-[var(--text-primary)] hover:bg-[var(--bg-elevated)] hover:shadow-[inset_0_0_0_1px_var(--bg-border)]',
-                    ].join(' ')}
-                    onClick={() => {
-                      if (option.disabled) {
-                        return;
-                      }
-                      onChange(option.value);
-                      setIsOpen(false);
-                    }}
-                  >
-                    {option.label}
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
 export function CreateTransactionForm({
   onSuccess,
   showHeading = true,
@@ -221,15 +116,21 @@ export function CreateTransactionForm({
   transactionId,
   submitLabel = 'Add transaction',
   prefillMode = 'standard',
+  trackReviewEvent = false,
+  enableSplit = true,
 }: CreateTransactionFormProps) {
+  const navigate = useNavigate();
   const isSheetMode = mode === 'sheet';
   const isEditing = Boolean(transactionId);
+  const [splitAfterSave, setSplitAfterSave] = useState(false);
   const [createTransaction] = useCreateTransactionMutation();
   const [updateTransaction] = useUpdateTransactionMutation();
   const [createAccount, { isLoading: isCreatingAccount }] = useCreateAccountMutation();
   const [createCategory, { isLoading: isCreatingCategory }] = useCreateCategoryMutation();
   const { data: accounts } = useListAccountsQuery();
   const { data: categories } = useListCategoriesQuery();
+  const { data: splits, isSuccess: splitsReady } = useListSplitsQuery();
+  const hasSplit = Boolean(transactionId && splits?.some((split) => split.transaction_id === transactionId));
 
   const [formError, setFormError] = useState<string | null>(null);
   const [quickAccountName, setQuickAccountName] = useState('');
@@ -247,7 +148,7 @@ export function CreateTransactionForm({
     handleSubmit,
     reset,
     setValue,
-    formState: { errors, isSubmitting },
+    formState: { errors, isSubmitting, isDirty },
   } = useForm<CreateTransactionFormValues>({
     resolver: zodResolver(createTransactionSchema),
     defaultValues: resolveInitialValues(initialValues),
@@ -329,17 +230,49 @@ export function CreateTransactionForm({
       to_account_id: values.type === 'transfer' ? values.toAccountId || undefined : undefined,
       merchant: values.merchant?.trim() || undefined,
       note: values.note?.trim() || undefined,
+      ...(prefillMode === 'manual_low_confidence' || trackReviewEvent
+        ? {
+            review_event: {
+              action:
+                initialValues?.accountId === values.accountId &&
+                initialValues?.categoryId === values.categoryId &&
+                initialValues?.merchant?.trim() === values.merchant?.trim() &&
+                initialValues?.note?.trim() === values.note?.trim() &&
+                Number(initialValues?.amountRupees) === Number(values.amountRupees)
+                  ? ('accepted' as const)
+                  : ('edited' as const),
+              source: trackReviewEvent ? 'completion_popup_edit' : 'review_popup',
+              before: {
+                account_id: initialValues?.accountId,
+                category_id: initialValues?.categoryId,
+                amount_rupees: initialValues?.amountRupees,
+                merchant: initialValues?.merchant?.trim() || undefined,
+                note: initialValues?.note?.trim() || undefined,
+              },
+              after: {
+                account_id: values.accountId,
+                category_id: values.categoryId || undefined,
+                amount_rupees: values.amountRupees,
+                merchant: values.merchant?.trim() || undefined,
+                note: values.note?.trim() || undefined,
+              },
+            },
+          }
+        : {}),
     };
 
     try {
+      let savedTransaction: Transaction;
       if (transactionId) {
-        await updateTransaction({
+        savedTransaction = await updateTransaction({
           transactionId,
           body: payload,
         }).unwrap();
       } else {
-        await createTransaction(payload).unwrap();
+        savedTransaction = await createTransaction(payload).unwrap();
       }
+
+      const openSplit = enableSplit && splitsReady && splitAfterSave && values.type === 'expense' && !hasSplit;
 
       setShowQuickCategory(false);
       setQuickCategoryName('');
@@ -350,7 +283,11 @@ export function CreateTransactionForm({
       setQuickAccountError(null);
       setQuickAccountTarget('source');
       reset(resolveInitialValues(isEditing ? values : initialValues));
-      onSuccess?.();
+      setSplitAfterSave(false);
+      onSuccess?.(savedTransaction, openSplit);
+      if (openSplit) {
+        navigate(`/splits/new?transactionId=${savedTransaction.id}`);
+      }
     } catch {
       setFormError(isEditing ? 'Could not update the transaction.' : 'Could not create the transaction.');
     }
@@ -683,8 +620,21 @@ export function CreateTransactionForm({
         </p>
       ) : null}
 
-      <Button type='submit' isLoading={isSubmitting}>
-        {submitLabel}
+      {enableSplit && splitsReady && transactionType === 'expense' && !hasSplit ? (
+        <label className='mb-4 flex cursor-pointer items-start gap-3 rounded-xl border border-[var(--bg-border)] bg-[var(--bg-elevated)] p-3 text-sm text-[var(--text-primary)]'>
+          <input
+            type='checkbox'
+            className='mt-1'
+            checked={splitAfterSave}
+            onChange={(event) => setSplitAfterSave(event.target.checked)}
+          />
+          <span><span className='block font-semibold'>Split this expense</span>
+            <span className='block text-xs text-[var(--text-muted)]'>After saving, choose people and review their shares.</span></span>
+        </label>
+      ) : null}
+
+      <Button type='submit' isLoading={isSubmitting} disabled={isEditing && !isDirty}>
+        {splitAfterSave && transactionType === 'expense' ? 'Save and set up split' : submitLabel}
       </Button>
     </form>
   );

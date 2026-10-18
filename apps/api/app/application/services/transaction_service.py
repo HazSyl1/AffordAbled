@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Protocol
 
 from app.application.dto import CreateTransactionInput, UpdateTransactionInput
 from app.domain.entities import Account, CategoryType, Transaction, TransactionType
@@ -15,11 +16,21 @@ from app.domain.exceptions import (
 from app.domain.repositories import AccountRepository, CategoryRepository, TransactionRepository
 
 
+class LinkedSplitLookup(Protocol):
+    async def is_linked(self, user_id: uuid.UUID, transaction_id: uuid.UUID) -> bool: ...
+
+
+class MemoryEventWriter(Protocol):
+    async def add_review_event(self, **kwargs): ...
+
+
 @dataclass
 class TransactionService:
     transaction_repository: TransactionRepository
     account_repository: AccountRepository
     category_repository: CategoryRepository
+    split_repository: LinkedSplitLookup | None = None
+    memory_event_writer: MemoryEventWriter | None = None
 
     async def create_transaction(self, data: CreateTransactionInput) -> Transaction:
         await self._validate_transaction(
@@ -49,6 +60,15 @@ class TransactionService:
         )
 
         await self._apply_balance_effect(transaction)
+        if self.memory_event_writer is not None and data.review_event:
+            await self.memory_event_writer.add_review_event(
+                user_id=data.user_id,
+                transaction_id=transaction.id,
+                action=data.review_event['action'],
+                source=data.review_event.get('source', 'manual'),
+                before=data.review_event.get('before') or {},
+                after=data.review_event.get('after') or {},
+            )
         return await self.transaction_repository.create(transaction)
 
     async def list_transactions(self, user_id: uuid.UUID) -> list[Transaction]:
@@ -71,13 +91,18 @@ class TransactionService:
         data: UpdateTransactionInput,
     ) -> Transaction:
         transaction = await self.get_transaction(user_id, transaction_id)
-        await self._revert_balance_effect(transaction)
-
         account_id = data.account_id if data.account_id is not None else transaction.account_id
         transaction_type = data.type if data.type is not None else transaction.type
         amount_paise = data.amount_paise if data.amount_paise is not None else transaction.amount_paise
         category_id = data.category_id if data.category_id is not None else transaction.category_id
         to_account_id = data.to_account_id if data.to_account_id is not None else transaction.to_account_id
+
+        if self.split_repository is not None and await self.split_repository.is_linked(user_id, transaction_id):
+            if (account_id != transaction.account_id or transaction_type != transaction.type or
+                    amount_paise != transaction.amount_paise or category_id != transaction.category_id):
+                raise InvalidTransactionError(
+                    'Remove the split before changing its linked transaction amount, type, account, or category.'
+                )
 
         await self._validate_transaction(
             user_id=user_id,
@@ -87,6 +112,10 @@ class TransactionService:
             category_id=category_id,
             to_account_id=to_account_id,
         )
+
+        # Validate the complete replacement before touching any persisted balance. This is
+        # especially important for chat-driven edits, where model output is untrusted input.
+        await self._revert_balance_effect(transaction)
 
         transaction.account_id = account_id
         transaction.type = transaction_type
@@ -103,10 +132,21 @@ class TransactionService:
 
         transaction.updated_at = datetime.now(UTC)
         await self._apply_balance_effect(transaction)
+        if self.memory_event_writer is not None and data.review_event:
+            await self.memory_event_writer.add_review_event(
+                user_id=user_id,
+                transaction_id=transaction.id,
+                action=data.review_event['action'],
+                source=data.review_event.get('source', 'manual'),
+                before=data.review_event.get('before') or {},
+                after=data.review_event.get('after') or {},
+            )
         return await self.transaction_repository.update(transaction)
 
     async def soft_delete_transaction(self, user_id: uuid.UUID, transaction_id: uuid.UUID) -> None:
         transaction = await self.get_transaction(user_id, transaction_id)
+        if self.split_repository is not None and await self.split_repository.is_linked(user_id, transaction_id):
+            raise InvalidTransactionError('Remove the split before deleting its linked transaction.')
         await self._revert_balance_effect(transaction)
 
         deleted = await self.transaction_repository.soft_delete_for_user(transaction_id, user_id)

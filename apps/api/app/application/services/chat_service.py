@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
@@ -22,13 +22,17 @@ from app.domain.repositories import (
 class ChatResponseOutput:
     thread_id: str
     message: str
+    tasks_completed: bool = False
+    show_completion_popup: bool = False
     pending_transaction_proposal: PendingTransactionProposal | None = None
+    pending_transaction_proposals: list[PendingTransactionProposal] | None = None
     transaction_logged: bool = False
+    created_transaction_id: str | None = None
     manual_transaction_input_required: bool = False
     intent: str | None = None
-    guardrail_decision: str = 'allow'
+    guardrail_decision: str = "allow"
     guardrail_confidence: float = 1.0
-    guardrail_layer: str = 'semantic'
+    guardrail_layer: str = "semantic"
     insights: list[dict[str, str]] | None = None
 
 
@@ -41,7 +45,7 @@ class ChatService:
     agent_correction_repository: AgentCorrectionRepository
     guardrail_log_repository: GuardrailLogRepository
 
-    @traceable(name='chat_service.send_message', run_type='chain')
+    @traceable(name="chat_service.send_message", run_type="chain")
     async def send_message(
         self,
         *,
@@ -52,9 +56,9 @@ class ChatService:
     ) -> ChatResponseOutput:
         normalized_message = message.strip()
         if not normalized_message:
-            raise InvalidChatInputError('Message cannot be empty')
+            raise InvalidChatInputError("Message cannot be empty")
 
-        resolved_thread_id = (thread_id or '').strip() or str(uuid.uuid4())
+        resolved_thread_id = (thread_id or "").strip() or str(uuid.uuid4())
         result = await self.orchestrator.run_turn(
             user_id=user_id,
             thread_id=resolved_thread_id,
@@ -85,7 +89,7 @@ class ChatService:
                     id=uuid.uuid4(),
                     user_id=user_id,
                     thread_id=resolved_thread_id,
-                    role='user',
+                    role="user",
                     content=normalized_message,
                     created_at=now,
                 )
@@ -95,7 +99,7 @@ class ChatService:
                     id=uuid.uuid4(),
                     user_id=user_id,
                     thread_id=resolved_thread_id,
-                    role='assistant',
+                    role="assistant",
                     content=result.message,
                     created_at=now,
                 )
@@ -103,8 +107,8 @@ class ChatService:
 
             agent_correction_payload = result.agent_correction
             if isinstance(agent_correction_payload, dict):
-                original_proposal = agent_correction_payload.get('original_proposal')
-                corrected_proposal = agent_correction_payload.get('corrected_proposal')
+                original_proposal = agent_correction_payload.get("original_proposal")
+                corrected_proposal = agent_correction_payload.get("corrected_proposal")
                 if isinstance(original_proposal, dict) and isinstance(corrected_proposal, dict):
                     await self.agent_correction_repository.create(
                         AgentCorrection(
@@ -113,12 +117,12 @@ class ChatService:
                             thread_id=resolved_thread_id,
                             original_proposal=original_proposal,
                             corrected_proposal=corrected_proposal,
-                            user_message=str(agent_correction_payload.get('user_message') or normalized_message),
+                            user_message=str(agent_correction_payload.get("user_message") or normalized_message),
                             created_at=now,
                         )
                     )
 
-            expires_at = now + timedelta(days=365 if result.guardrail_decision == 'block' else 90)
+            expires_at = now + timedelta(days=365 if result.guardrail_decision == "block" else 90)
             await self.guardrail_log_repository.create(
                 GuardrailLog(
                     id=uuid.uuid4(),
@@ -127,7 +131,7 @@ class ChatService:
                     message=normalized_message[:500],
                     intent=result.intent,
                     confidence=float(result.guardrail_confidence),
-                    triggered=result.guardrail_decision == 'block',
+                    triggered=result.guardrail_decision == "block",
                     layer=result.guardrail_layer,
                     created_at=now,
                     expires_at=expires_at,
@@ -137,8 +141,12 @@ class ChatService:
         return ChatResponseOutput(
             thread_id=resolved_thread_id,
             message=result.message,
+            tasks_completed=result.tasks_completed,
+            show_completion_popup=result.show_completion_popup,
             pending_transaction_proposal=result.pending_transaction_proposal,
+            pending_transaction_proposals=result.pending_transaction_proposals,
             transaction_logged=result.transaction_logged,
+            created_transaction_id=result.created_transaction_id,
             manual_transaction_input_required=result.manual_transaction_input_required,
             intent=result.intent,
             guardrail_decision=result.guardrail_decision,
@@ -146,4 +154,3 @@ class ChatService:
             guardrail_layer=result.guardrail_layer,
             insights=result.insights,
         )
-

@@ -71,6 +71,7 @@ class CreateTransactionInput:
     to_account_id: uuid.UUID | None = None
     merchant: str | None = None
     note: str | None = None
+    review_event: dict | None = None
 
 
 @dataclass
@@ -79,6 +80,19 @@ class UpdateTransactionInput:
     type: TransactionType | None = None
     amount_paise: int | None = None
     occurred_at: datetime | None = None
+    category_id: uuid.UUID | None = None
+    to_account_id: uuid.UUID | None = None
+    merchant: str | None = None
+    note: str | None = None
+    review_event: dict | None = None
+
+
+@dataclass(frozen=True)
+class ImportTransactionInput:
+    account_id: uuid.UUID
+    type: TransactionType
+    amount_paise: int
+    occurred_at: datetime
     category_id: uuid.UUID | None = None
     to_account_id: uuid.UUID | None = None
     merchant: str | None = None

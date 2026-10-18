@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from fastapi import APIRouter, Depends, File, Form, UploadFile, status
 
@@ -16,10 +16,10 @@ from app.presentation.schemas.chat import (
     VoiceTranscriptionResponse,
 )
 
-router = APIRouter(prefix='/chat', tags=['chat'])
+router = APIRouter(prefix="/chat", tags=["chat"])
 
 
-@router.post('', response_model=ChatResponse, status_code=status.HTTP_200_OK)
+@router.post("", response_model=ChatResponse, status_code=status.HTTP_200_OK)
 async def send_chat_message(
     payload: ChatRequest,
     current_user: User = Depends(get_current_user),
@@ -32,9 +32,12 @@ async def send_chat_message(
         timezone=payload.timezone,
     )
     proposal = response.pending_transaction_proposal
+    proposals = response.pending_transaction_proposals or []
     return ChatResponse(
         thread_id=response.thread_id,
         message=response.message,
+        tasks_completed=response.tasks_completed,
+        show_completion_popup=response.show_completion_popup,
         pending_transaction_proposal=(
             PendingTransactionProposalResponse(
                 type=proposal.type,
@@ -51,16 +54,35 @@ async def send_chat_message(
             if proposal is not None
             else None
         ),
+        pending_transaction_proposals=(
+            [
+                PendingTransactionProposalResponse(
+                    type=item.type,
+                    amount_paise=item.amount_paise,
+                    occurred_at=item.occurred_at,
+                    account_id=item.account_id,
+                    account_name=item.account_name,
+                    category_id=item.category_id,
+                    category_name=item.category_name,
+                    confidence_score=item.confidence_score,
+                    merchant=item.merchant,
+                    note=item.note,
+                )
+                for item in proposals
+            ]
+            or None
+        ),
         transaction_logged=response.transaction_logged,
+        created_transaction_id=response.created_transaction_id,
         manual_transaction_input_required=response.manual_transaction_input_required,
         insights=(
             [
                 ChatInsightResponse(
-                    title=str(item.get('title') or '').strip(),
-                    detail=str(item.get('detail') or '').strip(),
+                    title=str(item.get("title") or "").strip(),
+                    detail=str(item.get("detail") or "").strip(),
                 )
                 for item in (response.insights or [])
-                if str(item.get('title') or '').strip() and str(item.get('detail') or '').strip()
+                if str(item.get("title") or "").strip() and str(item.get("detail") or "").strip()
             ]
             or None
         ),
@@ -68,25 +90,25 @@ async def send_chat_message(
 
 
 @router.post(
-    '/voice',
+    "/voice",
     response_model=VoiceTranscriptionResponse,
     status_code=status.HTTP_200_OK,
     dependencies=[Depends(get_current_user)],
 )
 async def transcribe_voice(
     audio: UploadFile = File(...),
-    locale: str = Form('en-IN'),
+    locale: str = Form("en-IN"),
     speech_service: SpeechService = Depends(get_speech_service),
 ) -> VoiceTranscriptionResponse:
     audio_bytes = await audio.read()
-    content_type = audio.content_type or 'application/octet-stream'
+    content_type = audio.content_type or "application/octet-stream"
 
     transcript = await speech_service.transcribe_voice(audio_bytes, content_type=content_type, locale=locale)
     return VoiceTranscriptionResponse(transcript=transcript, locale=locale)
 
 
 @router.post(
-    '/image',
+    "/image",
     response_model=ImageAnalysisResponse,
     status_code=status.HTTP_200_OK,
     dependencies=[Depends(get_current_user)],
@@ -96,7 +118,7 @@ async def analyze_image(
     image_service: ImageService = Depends(get_image_service),
 ) -> ImageAnalysisResponse:
     image_bytes = await image.read()
-    content_type = image.content_type or 'application/octet-stream'
+    content_type = image.content_type or "application/octet-stream"
 
     analysis = await image_service.analyze_image(
         image_bytes,

@@ -57,6 +57,9 @@ class Settings(BaseSettings):
     retention_cleanup_enabled: bool = False
     retention_cleanup_interval_minutes: int = 60
     chat_message_retention_days: int = 180
+    memory_outbox_enabled: bool = True
+    memory_outbox_poll_interval_seconds: int = 5
+    memory_outbox_batch_size: int = 20
 
     langsmith_api_key: str = ''
     langsmith_tracing: bool = False

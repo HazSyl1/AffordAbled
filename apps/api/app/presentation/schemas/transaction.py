@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Self
+from typing import Any, Self
 
 from pydantic import BaseModel, Field
 
@@ -18,6 +18,7 @@ class CreateTransactionRequest(BaseModel):
     to_account_id: uuid.UUID | None = None
     merchant: str | None = Field(default=None, max_length=255)
     note: str | None = None
+    review_event: dict[str, Any] | None = None
 
 
 class UpdateTransactionRequest(BaseModel):
@@ -29,6 +30,7 @@ class UpdateTransactionRequest(BaseModel):
     to_account_id: uuid.UUID | None = None
     merchant: str | None = Field(default=None, max_length=255)
     note: str | None = None
+    review_event: dict[str, Any] | None = None
 
 
 class TransactionResponse(BaseModel):

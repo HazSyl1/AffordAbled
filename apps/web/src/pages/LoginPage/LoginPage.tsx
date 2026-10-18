@@ -13,6 +13,7 @@ import { useAppDispatch } from '../../app/hooks';
 import { loginSchema } from './LoginPage.schema';
 import type { LoginFormValues } from './LoginPage.schema';
 import { AUTH_UI_TEXT } from '../../constants';
+import { apiClient } from '../../lib/apiClient';
 
 
 function resolveLoginErrorMessage(error: unknown): string {
@@ -43,6 +44,7 @@ export function LoginPage() {
     setFormError(null);
     try {
       const result = await login(values).unwrap();
+      dispatch(apiClient.util.resetApiState());
       dispatch(setCredentials({ accessToken: result.access_token }));
       navigate('/', { replace: true });
     } catch (error) {

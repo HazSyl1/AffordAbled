@@ -26,6 +26,12 @@ export interface CreateTransactionRequest {
   merchant?: string;
   note?: string;
   occurred_at: string;
+  review_event?: {
+    action: 'accepted' | 'edited' | 'rejected' | 'discarded';
+    source: string;
+    before: Record<string, unknown>;
+    after: Record<string, unknown>;
+  };
 }
 
 export interface UpdateTransactionRequest {
@@ -37,6 +43,7 @@ export interface UpdateTransactionRequest {
   merchant?: string;
   note?: string;
   occurred_at?: string;
+  review_event?: CreateTransactionRequest['review_event'];
 }
 
 const transactionsApi = apiClient.injectEndpoints({

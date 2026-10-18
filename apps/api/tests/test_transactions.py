@@ -1,5 +1,15 @@
-from httpx import AsyncClient
+from datetime import UTC, datetime
 
+from httpx import AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.infrastructure.ai.agents.analytics import AnalyticsToolset
+from app.infrastructure.ai.agents.contracts import HandoffContext
+from app.infrastructure.ai.tools.transaction_query_tools import TransactionQueryTools
+from app.infrastructure.database.repositories.sqlalchemy_account_repository import SqlAlchemyAccountRepository
+from app.infrastructure.database.repositories.sqlalchemy_category_repository import SqlAlchemyCategoryRepository
+from app.infrastructure.database.repositories.sqlalchemy_transaction_repository import SqlAlchemyTransactionRepository
+from app.infrastructure.database.repositories.sqlalchemy_user_repository import SqlAlchemyUserRepository
 from tests.helpers import auth_headers, register_and_get_token
 
 
@@ -83,6 +93,78 @@ async def test_transactions_router_smoke(client: AsyncClient) -> None:
         headers=auth_headers(token),
     )
     assert get_after_restore_response.status_code == 200
+
+
+async def test_transactions_and_account_ids_are_scoped_to_the_authenticated_user(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    owner = await register_and_get_token(client, 'transactions-owner-isolation@example.com')
+    other = await register_and_get_token(client, 'transactions-other-isolation@example.com')
+    owner_headers = auth_headers(owner)
+    other_headers = auth_headers(other)
+    account = await client.post(
+        '/api/v1/accounts',
+        json={'name': 'Private Bank', 'type': 'bank', 'balance_paise': 100000, 'currency': 'INR'},
+        headers=owner_headers,
+    )
+    category = await client.post(
+        '/api/v1/categories', json={'name': 'Private Food', 'type': 'expense'}, headers=owner_headers
+    )
+    assert account.status_code == 201 and category.status_code == 201
+    transaction = await client.post(
+        '/api/v1/transactions',
+        json={
+            'account_id': account.json()['id'],
+            'category_id': category.json()['id'],
+            'type': 'expense',
+            'amount_paise': 1234,
+            'occurred_at': '2026-10-10T12:00:00+00:00',
+        },
+        headers=owner_headers,
+    )
+    assert transaction.status_code == 201
+
+    other_list = await client.get('/api/v1/transactions', headers=other_headers)
+    other_get = await client.get(f"/api/v1/transactions/{transaction.json()['id']}", headers=other_headers)
+    other_create = await client.post(
+        '/api/v1/transactions',
+        json={
+            'account_id': account.json()['id'],
+            'category_id': category.json()['id'],
+            'type': 'expense',
+            'amount_paise': 100,
+            'occurred_at': '2026-10-10T12:00:00+00:00',
+        },
+        headers=other_headers,
+    )
+    assert other_list.status_code == 200 and other_list.json() == []
+    assert other_get.status_code == 404
+    assert other_create.status_code == 404
+
+    users = SqlAlchemyUserRepository(db_session)
+    owner_user = await users.get_by_email('transactions-owner-isolation@example.com')
+    other_user = await users.get_by_email('transactions-other-isolation@example.com')
+    assert owner_user is not None and other_user is not None
+    analytics = AnalyticsToolset(
+        TransactionQueryTools(
+            transaction_repository=SqlAlchemyTransactionRepository(db_session),
+            account_repository=SqlAlchemyAccountRepository(db_session),
+            category_repository=SqlAlchemyCategoryRepository(db_session),
+        )
+    )
+    query_args = {
+        'date_from': datetime(2026, 10, 1, tzinfo=UTC).isoformat(),
+        'date_to': datetime(2026, 10, 31, tzinfo=UTC).isoformat(),
+        'user_id': str(owner_user.id),
+    }
+    owner_result = await analytics.get_transactions(
+        HandoffContext(user_id=owner_user.id, request='transactions in October'), query_args
+    )
+    other_result = await analytics.get_transactions(
+        HandoffContext(user_id=other_user.id, request='transactions in October'), query_args
+    )
+    assert len(owner_result['transactions']) == 1
+    assert other_result['transactions'] == []
 
 
 async def test_transfer_requires_sufficient_source_balance(client: AsyncClient) -> None:

@@ -6,6 +6,7 @@ import { CollapseToggle } from '../../atoms/CollapseToggle';
 import { useAppDispatch, useAppSelector } from '../../../app/hooks';
 import { useLazyGetMeQuery } from '../../../features/auth/authApi';
 import { setUser } from '../../../features/auth/authSlice';
+import { discardLegacyUnscopedChatDrafts } from '../../../features/chat/chatDrafts';
 import {
   ACCOUNTS_NAV_ITEM,
   APP_NAME,
@@ -46,6 +47,7 @@ export function Layout({ children }: LayoutProps) {
       .unwrap()
       .then((user) => {
         if (isMounted) {
+          discardLegacyUnscopedChatDrafts();
           dispatch(setUser(user));
         }
       })

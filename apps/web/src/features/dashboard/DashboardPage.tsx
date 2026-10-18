@@ -1,7 +1,9 @@
-import { ImagePlus, Mic } from 'lucide-react';
+import { ImagePlus, LoaderCircle, Mic } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
+import { useAppSelector } from '../../app/hooks';
+import type { AuthUser } from '../auth/authSlice';
 import { Badge } from '../../components/atoms/Badge';
 import { Button } from '../../components/atoms/Button';
 import { Card } from '../../components/atoms/Card';
@@ -10,6 +12,8 @@ import { AssistantReplyIndicator } from '../../components/molecules/AssistantRep
 import { AssistantMessageContent } from '../../components/molecules/AssistantMessageContent';
 import { BottomSheet } from '../../components/molecules/BottomSheet';
 import { VoiceCaptureModal } from '../../components/molecules/VoiceCaptureModal';
+import { TransactionSuccessOverlay } from '../../components/molecules/TransactionSuccessOverlay/TransactionSuccessOverlay';
+import { MemorySuggestionsPanel } from '../../components/molecules/MemorySuggestionsPanel/MemorySuggestionsPanel';
 import { CreateTransactionForm } from '../../components/organisms/CreateTransactionForm';
 import { useListAccountsQuery } from '../accounts/accountsApi';
 import { useListCategoriesQuery } from '../categories/categoriesApi';
@@ -20,9 +24,16 @@ import {
   useTranscribeVoiceMutation,
 } from '../chat/chatApi';
 import { mapProposalToCreateTransactionValues } from '../chat/chatProposal';
-import { deleteChatDraft, deleteChatDraftByThreadId, saveChatDraft } from '../chat/chatDrafts';
+import {
+  deleteChatDraft,
+  deleteChatDraftByThreadId,
+  queueChatDraftTitleGeneration,
+  saveChatDraft,
+} from '../chat/chatDrafts';
 import { useVoiceCapture } from '../chat/useVoiceCapture';
 import { useListTransactionsQuery } from '../transactions/transactionsApi';
+import { useListSplitsQuery } from '../splits/splitsApi';
+import { useListMemorySuggestionsQuery } from '../memory/memoryApi';
 import type { TransactionType } from '../transactions/transactionsApi';
 import {
   DASHBOARD_CHAT_UI_TEXT,
@@ -66,30 +77,74 @@ function formatTransactionTime(value: string): string {
 }
 
 export function DashboardPage() {
+  const currentUser = useAppSelector((state) => state.auth.user);
+  return <DashboardContent key={currentUser?.id ?? 'profile-loading'} currentUser={currentUser} />;
+}
+
+function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
   const navigate = useNavigate();
+  const [currentHour, setCurrentHour] = useState(() => new Date().getHours());
   const { data: accounts, isLoading: isLoadingAccounts } = useListAccountsQuery();
   const { data: transactions, isLoading: isLoadingTransactions } = useListTransactionsQuery();
+  const { data: splits, isLoading: isLoadingSplits } = useListSplitsQuery();
   const { data: categories } = useListCategoriesQuery();
   const [sendChatMessage, { isLoading: isSendingChatMessage }] = useSendChatMessageMutation();
   const [transcribeVoice, { isLoading: isTranscribingVoice }] = useTranscribeVoiceMutation();
   const [analyzeImage, { isLoading: isAnalyzingImage }] = useAnalyzeImageMutation();
   const [showAddSheet, setShowAddSheet] = useState(false);
   const [showChatSheet, setShowChatSheet] = useState(false);
+  const [isImageProcessing, setIsImageProcessing] = useState(false);
   const [showSaveDraftPrompt, setShowSaveDraftPrompt] = useState(false);
   const [proposalForSheet, setProposalForSheet] = useState<ChatTransactionProposal | null>(null);
+  const [proposalQueue, setProposalQueue] = useState<ChatTransactionProposal[]>([]);
+  const [proposalBatchTotal, setProposalBatchTotal] = useState(0);
+  const [proposalBatchCompleted, setProposalBatchCompleted] = useState(0);
   const [proposalSheetMode, setProposalSheetMode] = useState<'standard' | 'manual_low_confidence'>('standard');
   const [chatInput, setChatInput] = useState('');
   const [chatThreadId, setChatThreadId] = useState<string | null>(null);
   const [chatDraftId, setChatDraftId] = useState<string | null>(null);
+  const [chatTransactionId, setChatTransactionId] = useState<string | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatError, setChatError] = useState<string | null>(null);
+  const receiptUploadRef = useRef(false);
+  const [transactionSuccess, setTransactionSuccess] = useState<{ message: string; expiresAt: number; transactionId: string | null } | null>(null);
+  const [editingTransactionId, setEditingTransactionId] = useState<string | null>(null);
+  const [editingTransactionValues, setEditingTransactionValues] = useState<Record<string, string> | undefined>();
+  const [showMemorySuggestions, setShowMemorySuggestions] = useState(true);
+  const { data: memorySuggestions = [] } = useListMemorySuggestionsQuery(undefined, { pollingInterval: 10_000 });
+  useEffect(() => {
+    if (memorySuggestions.length === 0) return;
+    const reminderTimer = window.setInterval(() => {
+      setShowMemorySuggestions(true);
+    }, 5 * 60 * 1000);
+    return () => window.clearInterval(reminderTimer);
+  }, [memorySuggestions.length]);
+
   const imageFileInputRef = useRef<HTMLInputElement | null>(null);
+  const transactionRedirectTimerRef = useRef<number | null>(null);
   const [openingGreeting] = useState(() => {
     const options = DASHBOARD_CHAT_UI_TEXT.rotatingGreetings;
     return options[Math.floor(Math.random() * options.length)] ?? DASHBOARD_CHAT_UI_TEXT.emptyState;
   });
 
-  const pendingSplits: PendingSplit[] = [];
+  const pendingSplits = useMemo<PendingSplit[]>(() => {
+    const byName = new Map<string, PendingSplit>();
+    for (const split of splits ?? []) {
+      for (const participant of split.participants) {
+        const due = participant.share_paise - participant.settled_paise;
+        if (due <= 0) continue;
+        const key = participant.name.toLocaleLowerCase();
+        const current = byName.get(key) ?? {
+          id: key, name: participant.name, split_count: 0,
+          total_pending_paise: 0, avatar_color: '#a855f7',
+        };
+        current.split_count += 1;
+        current.total_pending_paise += due;
+        byName.set(key, current);
+      }
+    }
+    return [...byName.values()].sort((a, b) => b.total_pending_paise - a.total_pending_paise);
+  }, [splits]);
 
   const proposalInitialValues = useMemo(
     () => (proposalForSheet ? mapProposalToCreateTransactionValues(proposalForSheet) : undefined),
@@ -161,20 +216,43 @@ export function DashboardPage() {
 
   const isLoading = isLoadingAccounts || isLoadingTransactions;
   const isAssistantResponding = isSendingChatMessage;
+  const greetingName = currentUser?.name?.trim().split(/\s+/)[0] || 'there';
+  const greeting = currentHour < 12 ? 'Good morning' : currentHour < 17 ? 'Good afternoon' : 'Good evening';
+
+  useEffect(() => {
+    const updateGreetingHour = () => setCurrentHour(new Date().getHours());
+    const intervalId = window.setInterval(updateGreetingHour, 60_000);
+    return () => window.clearInterval(intervalId);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (transactionRedirectTimerRef.current !== null) {
+        window.clearTimeout(transactionRedirectTimerRef.current);
+      }
+    };
+  }, []);
 
   const persistGeneralDraft = (
     messages: ChatMessage[],
     threadId: string | null,
     draftIdOverride: string | null = chatDraftId,
+    lifecycle: 'conversation' | 'draft' = 'conversation',
+    kind: 'general' | 'transaction' = chatTransactionId ? 'transaction' : 'general',
+    transactionId: string | null = chatTransactionId,
   ): string | null => {
-    if (messages.length === 0) {
+    if (messages.length === 0 || !currentUser?.id) {
       return draftIdOverride;
     }
 
     const savedDraft = saveChatDraft({
+      userId: currentUser.id,
       draftId: draftIdOverride,
-      kind: 'general',
-      lifecycle: 'draft',
+      kind,
+      // A dashboard chat has been sent to the assistant, so keep it in the
+      // conversation list even when it is an analytics or split question.
+      lifecycle,
+      transactionId,
       threadId,
       messages,
     });
@@ -187,12 +265,60 @@ export function DashboardPage() {
     setShowChatSheet(false);
     setShowAddSheet(false);
     setProposalForSheet(null);
+    setProposalQueue([]);
+    setProposalBatchTotal(0);
+    setProposalBatchCompleted(0);
     setProposalSheetMode('standard');
     setChatInput('');
     setChatDraftId(null);
+    setChatTransactionId(null);
     setChatThreadId(null);
     setChatMessages([]);
     setChatError(null);
+  };
+
+  const clearTransactionRedirectTimer = () => {
+    if (transactionRedirectTimerRef.current !== null) {
+      window.clearTimeout(transactionRedirectTimerRef.current);
+      transactionRedirectTimerRef.current = null;
+    }
+  };
+
+  const closeTransactionSuccess = () => {
+    clearTransactionRedirectTimer();
+    if (memorySuggestions.length > 0) {
+      setTransactionSuccess(null);
+      setShowMemorySuggestions(true);
+      return;
+    }
+    setTransactionSuccess(null);
+    resetChatSession();
+    navigate('/');
+  };
+
+  const continueChatting = () => {
+    clearTransactionRedirectTimer();
+    setTransactionSuccess(null);
+    setShowChatSheet(true);
+  };
+
+  const editCompletedTransaction = () => {
+    const transaction = visibleTransactions.find((item) => item.id === transactionSuccess?.transactionId);
+    if (!transaction) return;
+    clearTransactionRedirectTimer();
+    setTransactionSuccess(null);
+    setEditingTransactionId(transaction.id);
+    setEditingTransactionValues({
+      accountId: transaction.account_id,
+      type: transaction.type,
+      amountRupees: String(transaction.amount_paise / 100),
+      occurredAt: transaction.occurred_at,
+      categoryId: transaction.category_id ?? '',
+      toAccountId: transaction.to_account_id ?? '',
+      merchant: transaction.merchant ?? '',
+      note: transaction.note ?? '',
+    });
+    setShowAddSheet(true);
   };
 
   const sendMessageToAssistant = async (messageText: string) => {
@@ -218,29 +344,61 @@ export function DashboardPage() {
       const insightSummary = (response.insights ?? [])
         .map((insight) => `• ${insight.title}: ${insight.detail}`)
         .join('\n');
+      const receiptTransactionLogged = receiptUploadRef.current && response.transaction_logged;
+      if (receiptTransactionLogged) receiptUploadRef.current = false;
       const assistantMessage: ChatMessage = {
         id: createLocalId(),
         role: 'assistant',
-        content: insightSummary ? `${response.message}\n${insightSummary}` : response.message,
+        content: insightSummary ? `${response.message}\n${insightSummary}` : receiptTransactionLogged
+          ? `${response.message}\nWould you like to split this expense? If yes, tell me who shared it.`
+          : response.message,
       };
       const fullMessageList = [...userMessageList, assistantMessage];
       setChatMessages(fullMessageList);
 
       if (response.transaction_logged) {
-        if (currentDraftId) {
-          deleteChatDraft(currentDraftId);
+        if (response.created_transaction_id && currentDraftId && currentUser?.id) {
+          deleteChatDraft(currentUser.id, currentDraftId);
         }
-        setChatDraftId(null);
+        if (currentUser?.id && response.created_transaction_id) {
+          const savedDraft = saveChatDraft({
+            userId: currentUser.id,
+            kind: 'transaction',
+            lifecycle: 'conversation',
+            transactionId: response.created_transaction_id,
+            threadId: response.thread_id,
+            messages: fullMessageList,
+          });
+          setChatDraftId(savedDraft.id);
+          setChatTransactionId(response.created_transaction_id);
+        } else {
+          persistGeneralDraft(fullMessageList, response.thread_id, currentDraftId);
+        }
+      } else {
+        persistGeneralDraft(fullMessageList, response.thread_id, currentDraftId);
+      }
+
+      if (response.show_completion_popup && !receiptTransactionLogged) {
+        clearTransactionRedirectTimer();
+        setTransactionSuccess({ message: assistantMessage.content, expiresAt: Date.now() + 12_000, transactionId: response.created_transaction_id ?? null });
+        transactionRedirectTimerRef.current = window.setTimeout(() => {
+          transactionRedirectTimerRef.current = null;
+          setTransactionSuccess(null);
+          resetChatSession();
+          navigate('/');
+        }, 12_000);
         return;
       }
 
       if (response.pending_transaction_proposal || response.manual_transaction_input_required) {
-        setProposalForSheet(response.pending_transaction_proposal ?? null);
+        const proposalBatch = response.pending_transaction_proposals ?? [];
+        setProposalQueue(proposalBatch);
+        setProposalBatchTotal(proposalBatch.length);
+        setProposalBatchCompleted(0);
+        setProposalForSheet(proposalBatch[0] ?? response.pending_transaction_proposal ?? null);
         setProposalSheetMode(response.manual_transaction_input_required ? 'manual_low_confidence' : 'standard');
         setShowAddSheet(true);
       }
-
-      persistGeneralDraft(fullMessageList, response.thread_id, currentDraftId);
     } catch {
       setChatError(DASHBOARD_CHAT_UI_TEXT.assistantError);
     }
@@ -276,7 +434,9 @@ export function DashboardPage() {
       }
 
       setShowChatSheet(true);
-      await sendMessageToAssistant(transcript);
+      // Transcription is complete; close the voice modal while the assistant
+      // processes the resulting chat message.
+      void sendMessageToAssistant(transcript);
     } catch {
       setChatError(DASHBOARD_CHAT_UI_TEXT.voiceError);
     }
@@ -333,6 +493,7 @@ export function DashboardPage() {
     }
 
     try {
+      setIsImageProcessing(true);
       setChatError(null);
       const analysis = await analyzeImage({ image: imageFile }).unwrap();
       const imagePrompt = analysis.prompt.trim();
@@ -342,10 +503,14 @@ export function DashboardPage() {
         return;
       }
 
+      setIsImageProcessing(false);
       setShowChatSheet(true);
+      receiptUploadRef.current = true;
       await sendMessageToAssistant(imagePrompt);
     } catch {
       setChatError(DASHBOARD_CHAT_UI_TEXT.imageError);
+    } finally {
+      setIsImageProcessing(false);
     }
   };
 
@@ -359,16 +524,43 @@ export function DashboardPage() {
   };
 
   const handleSaveDraftAndClose = () => {
-    persistGeneralDraft(chatMessages, chatThreadId, chatDraftId);
+    persistGeneralDraft(chatMessages, chatThreadId, chatDraftId, 'draft');
+    setShowSaveDraftPrompt(false);
+    resetChatSession();
+  };
+
+  const handleAddChatAndClose = () => {
+    // Promotion is explicit: transaction-specific chats stay out of the main
+    // list unless the user chooses Add to Chats.
+    if (currentUser?.id && chatTransactionId) {
+      if (chatThreadId) {
+        deleteChatDraftByThreadId(currentUser.id, chatThreadId);
+      } else if (chatDraftId) {
+        deleteChatDraft(currentUser.id, chatDraftId);
+      }
+      const promotedDraftId = persistGeneralDraft(
+        chatMessages,
+        chatThreadId,
+        null,
+        'conversation',
+        'general',
+        null,
+      );
+      if (promotedDraftId) {
+        queueChatDraftTitleGeneration(currentUser.id, promotedDraftId);
+      }
+    } else {
+      persistGeneralDraft(chatMessages, chatThreadId, chatDraftId, 'conversation', 'general');
+    }
     setShowSaveDraftPrompt(false);
     resetChatSession();
   };
 
   const handleDiscardDraftAndClose = () => {
-    if (chatDraftId) {
-      deleteChatDraft(chatDraftId);
-    } else if (chatThreadId) {
-      deleteChatDraftByThreadId(chatThreadId);
+    if (currentUser?.id && chatDraftId) {
+      deleteChatDraft(currentUser.id, chatDraftId);
+    } else if (currentUser?.id && chatThreadId) {
+      deleteChatDraftByThreadId(currentUser.id, chatThreadId);
     }
 
     setShowSaveDraftPrompt(false);
@@ -454,7 +646,11 @@ export function DashboardPage() {
           disabled={isSendingChatMessage || isAnalyzingImage}
           onClick={() => imageFileInputRef.current?.click()}
         >
-          <ImagePlus className='h-4 w-4' strokeWidth={2.2} aria-hidden='true' />
+          {isAnalyzingImage ? (
+            <LoaderCircle className='h-4 w-4 animate-spin' strokeWidth={2.2} aria-hidden='true' />
+          ) : (
+            <ImagePlus className='h-4 w-4' strokeWidth={2.2} aria-hidden='true' />
+          )}
         </button>
         <Input
           value={chatInput}
@@ -492,15 +688,23 @@ export function DashboardPage() {
       <header className='sticky top-[env(safe-area-inset-top)] z-20 -mx-4 mb-4 border-b border-[var(--bg-border)] bg-[color:rgba(9,9,11,0.8)] px-4 py-4 pt-[calc(1rem+env(safe-area-inset-top))] backdrop-blur-xl md:static md:mx-0 md:mb-5 md:border-none md:bg-transparent md:px-0 md:pt-0'>
         <div className='flex items-center justify-between'>
           <div>
-            <h1 className='text-lg font-semibold text-[var(--text-secondary)]'>Good morning, Sarthak 👋</h1>
+            <h1 className='text-lg font-semibold text-[var(--text-secondary)]'>
+              {greeting}, {greetingName} 👋
+            </h1>
             <p className='mt-0.5 text-xs text-[var(--text-muted)]'>Here is your wallet snapshot for today.</p>
           </div>
           <button
             type='button'
-            className='flex h-11 w-11 items-center justify-center rounded-full border border-[var(--bg-border)] bg-[var(--bg-card)] text-lg text-[var(--text-secondary)] active:scale-[0.98]'
+            className='relative flex h-11 w-11 items-center justify-center rounded-full border border-[var(--bg-border)] bg-[var(--bg-card)] text-lg text-[var(--text-secondary)] active:scale-[0.98]'
             aria-label='Notifications'
+            onClick={() => setShowMemorySuggestions(true)}
           >
             🔔
+            {memorySuggestions.length > 0 ? (
+              <span className='absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-[var(--brand-primary)] px-1 text-[10px] font-bold text-white'>
+                {memorySuggestions.length}
+              </span>
+            ) : null}
           </button>
         </div>
       </header>
@@ -671,7 +875,9 @@ export function DashboardPage() {
                 </Button>
               </div>
 
-              {pendingSplits.length === 0 ? (
+              {isLoadingSplits ? (
+                <p className='py-8 text-center text-sm text-[var(--text-muted)]'>Loading splits…</p>
+              ) : pendingSplits.length === 0 ? (
                 <div className='py-8 text-center'>
                   <p className='mb-2 text-3xl'>🤝</p>
                   <p className='text-sm text-[var(--text-muted)]'>No pending splits</p>
@@ -719,7 +925,7 @@ export function DashboardPage() {
         <div className='fixed inset-0 z-[70] flex items-center justify-center bg-black/60 px-4 py-6'>
           <div className='w-full max-w-md rounded-2xl border border-[var(--bg-border)] bg-[var(--bg-card)] p-5 shadow-[0_20px_50px_rgba(0,0,0,0.45)]'>
             <div className='flex items-start justify-between gap-2'>
-              <h3 className='text-lg font-semibold text-[var(--text-primary)]'>{DASHBOARD_CHAT_UI_TEXT.saveDraftBeforeCloseTitle}</h3>
+              <h3 className='text-lg font-semibold text-[var(--text-primary)]'>{DASHBOARD_CHAT_UI_TEXT.closeChatTitle}</h3>
               <button
                 type='button'
                 aria-label='Close'
@@ -729,14 +935,17 @@ export function DashboardPage() {
                 ×
               </button>
             </div>
-            <p className='mt-2 text-sm text-[var(--text-secondary)]'>{DASHBOARD_CHAT_UI_TEXT.saveDraftBeforeClosePrompt}</p>
+            <p className='mt-2 text-sm text-[var(--text-secondary)]'>{DASHBOARD_CHAT_UI_TEXT.closeChatPrompt}</p>
 
-            <div className='mt-4 grid grid-cols-2 gap-2'>
+            <div className='mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3'>
               <Button type='button' variant='secondary' onClick={handleDiscardDraftAndClose}>
-                {DASHBOARD_CHAT_UI_TEXT.saveDraftNoLabel}
+                {DASHBOARD_CHAT_UI_TEXT.discardAndCloseLabel}
+              </Button>
+              <Button type='button' variant='secondary' onClick={handleAddChatAndClose}>
+                {DASHBOARD_CHAT_UI_TEXT.addToChatsLabel}
               </Button>
               <Button type='button' onClick={handleSaveDraftAndClose}>
-                {DASHBOARD_CHAT_UI_TEXT.saveDraftYesLabel}
+                {DASHBOARD_CHAT_UI_TEXT.addToDraftsLabel}
               </Button>
             </div>
           </div>
@@ -756,6 +965,21 @@ export function DashboardPage() {
         stopLabel={DASHBOARD_CHAT_UI_TEXT.voiceRecordingStopButton}
       />
 
+      {isImageProcessing ? (
+        <div
+          className='fixed inset-0 z-[70] flex items-center justify-center bg-black/35 px-6 backdrop-blur-[2px]'
+          role='status'
+          aria-live='polite'
+          aria-label='Processing uploaded image'
+        >
+          <div className='flex w-full max-w-xs flex-col items-center gap-3 rounded-2xl border border-[var(--bg-border)] bg-[var(--bg-card)] px-6 py-7 text-center shadow-2xl'>
+            <LoaderCircle className='h-8 w-8 animate-spin text-[var(--brand-primary)]' aria-hidden='true' />
+            <p className='text-sm font-semibold text-[var(--text-primary)]'>Processing image…</p>
+            <p className='text-xs text-[var(--text-muted)]'>Reading the receipt before opening chat.</p>
+          </div>
+        </div>
+      ) : null}
+
       <BottomSheet
         isOpen={showChatSheet}
         onClose={handleCloseChat}
@@ -764,27 +988,80 @@ export function DashboardPage() {
         {renderChatAssistantContent()}
       </BottomSheet>
 
+      {transactionSuccess ? (
+        <TransactionSuccessOverlay
+          message={transactionSuccess.message}
+          expiresAt={transactionSuccess.expiresAt}
+          onClose={closeTransactionSuccess}
+          onContinue={continueChatting}
+          onEditTransaction={transactionSuccess.transactionId ? editCompletedTransaction : undefined}
+        />
+      ) : null}
+      {showMemorySuggestions && memorySuggestions.length > 0 && !transactionSuccess ? (
+        <div className='fixed inset-0 z-[60] flex items-center justify-center overflow-y-auto bg-black/60 p-4' role='dialog' aria-modal='true' aria-label='Memory suggestions'>
+          <div className='w-full max-w-lg space-y-3'>
+            <MemorySuggestionsPanel suggestions={memorySuggestions} />
+            <div className='flex justify-center'>
+              <Button type='button' variant='secondary' onClick={() => setShowMemorySuggestions(false)}>Close suggestions</Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <BottomSheet
         isOpen={showAddSheet}
         onClose={() => {
           setShowAddSheet(false);
           setProposalForSheet(null);
+          setProposalQueue([]);
+          setProposalBatchTotal(0);
+          setProposalBatchCompleted(0);
           setProposalSheetMode('standard');
+          setEditingTransactionId(null);
+          setEditingTransactionValues(undefined);
         }}
-        title={SHEET_TITLES.addTransaction}
+        title={
+          proposalBatchTotal > 1
+            ? `${SHEET_TITLES.addTransaction} (${proposalBatchCompleted + 1} of ${proposalBatchTotal})`
+            : SHEET_TITLES.addTransaction
+        }
       >
         <CreateTransactionForm
           mode='sheet'
           showHeading={false}
-          initialValues={proposalInitialValues}
+          initialValues={editingTransactionValues ?? proposalInitialValues}
+          transactionId={editingTransactionId ?? undefined}
+          trackReviewEvent={Boolean(editingTransactionId)}
           prefillMode={proposalSheetMode}
+          enableSplit={proposalBatchTotal <= 1}
           submitLabel={proposalForSheet ? 'Confirm & Add' : 'Add transaction'}
-          onSuccess={() => {
+          onSuccess={(_transaction, splitRequested) => {
+            if (proposalQueue.length > 1) {
+              const remainingQueue = proposalQueue.slice(1);
+              setProposalQueue(remainingQueue);
+              setProposalBatchCompleted((completed) => completed + 1);
+              setProposalForSheet(remainingQueue[0]);
+              return;
+            }
+            if (proposalBatchTotal > 0) {
+              setShowAddSheet(false);
+              setProposalForSheet(null);
+              setProposalQueue([]);
+              setProposalBatchTotal(0);
+              setProposalBatchCompleted(0);
+              setProposalSheetMode('standard');
+              return;
+            }
             setShowAddSheet(false);
+            setEditingTransactionId(null);
+            setEditingTransactionValues(undefined);
             setProposalForSheet(null);
+            setProposalQueue([]);
+            setProposalBatchTotal(0);
+            setProposalBatchCompleted(0);
             setProposalSheetMode('standard');
             setShowChatSheet(false);
-            navigate('/transactions');
+            if (!splitRequested) navigate('/transactions');
           }}
         />
       </BottomSheet>

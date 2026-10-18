@@ -1,17 +1,28 @@
 # AffordAbled — Final Execution Plan
 
-_Last reconciled: 2026-10-14_
+_Last reconciled: 2026-10-19_
 
-This plan is the execution source of truth for the next product iteration. It distinguishes code that exists today from roadmap items that are only partially implemented or not implemented.
+**Current continuation context:** the active worktree is `feature/shared-memory`, at committed HEAD `170f242`, with shared-memory, smart receipt split, profile, and related chat/UI changes in progress. `HANDOFF_2026-10-15.md` is a historical snapshot, not current branch state. See [docs/V1_RELEASE_CHECKLIST.md](docs/V1_RELEASE_CHECKLIST.md) for the current release gates.
+
+The roadmap below records earlier phase planning and may contain stale implementation claims. The release checklist is the source of truth for current v1 readiness.
+
+## Current checkpoint (2026-10-19)
+
+- Current branch: `feature/shared-memory`; the latest commit shared with `feature/smart-receipt-splits` is `170f242`. The current worktree contains uncommitted shared preference memory, smart receipt item allocations, and related chat/UI work.
+- Implemented capabilities on the branch include the memory review-event/outbox pipeline, confirmed and forgettable user memories, itemized receipt split proposals and paise allocation, and associated API/UI/LangGraph changes. Their final integration and release acceptance are not yet confirmed.
+- The user has previously tested the split repayment flow and export/import flow. That does not replace migration, regression, security, and full browser checks for the current combined code.
+- A frontend production build and TypeScript check passed during release preparation. Backend tests and lint are running; see the v1 checklist for the recorded results and remaining gates.
+- Next priority: finish automated checks, apply and verify migrations on fresh and supported databases, run desktop/mobile acceptance including receipt splits and memory, then decide whether to tag `v1.0.0`.
+
+**Not yet a release claim:** the current combined branch has not completed the release checklist, including database migration verification and complete browser acceptance.
 
 ## 1. Git baseline and working rules
 
 - Repository: `AffordAbled`
-- Baseline branch: `main`
-- Baseline commit: `1948d9e` — merge of PR #10 (`feature/langgraph-multi-step-supervisor`) into `main`.
-- Current branch: clean `main` at `1948d9e`; no feature work is currently in progress.
+- Baseline branch/commit details below describe the October 15 snapshot only; inspect Git before rebasing or branching.
+- Current implementation branch: `feature/smart-receipt-splits`; report export/import and subsequent UI/category resume fixes are committed. Smart receipt split work is in progress.
 - The feature branches `feature/advanced-guardrail`, `feature/chat-result-followups`, `feature/langgraph-supervisor`, and `feature/langgraph-multi-step-supervisor` have been merged. Do not continue feature work directly on `main`.
-- Before each task: fetch/update `main`, verify clean status and current HEAD, then branch from the latest `origin/main`.
+- Before a new independent phase: verify status, fetch/update `main`, then branch from the latest `origin/main`. For this continuation, preserve the dirty feature branch; do not pull/checkout/reset or recreate it from main.
 - Branch naming: `feature/<short-scope>`; use a separate branch for each independently reviewable phase.
 - Commit in small, coherent slices using Conventional Commit summaries (`feat:`, `fix:`, `test:`, `docs:`, `chore:`). Do not push or open a PR until the user requests it.
 - Never stage `.env`, credentials, generated artifacts, or unrelated edits. Review `git diff --check`, staged diff, and status before committing.
@@ -20,6 +31,7 @@ This plan is the execution source of truth for the next product iteration. It di
 
 | Commit | Change |
 |---|---|
+| `f4d7b12` | Merge PR #11: reconcile Phase 2 documentation/status |
 | `616821f` | Merge PR #8: structured analytics result follow-ups and table formatting |
 | `e88fae8` | Merge PR #9: bounded single-dispatch supervisor and standalone category management |
 | `1948d9e` | Merge PR #10: bounded multi-step supervisor loop |
@@ -36,7 +48,7 @@ The exact PR merge ancestry is available in Git; the table records the verified 
 ## 2. Locked contracts and safety constraints
 
 1. `POST /api/v1/chat` is the only endpoint that invokes LangGraph.
-2. Voice and image are two-step ingestion: their endpoints return transcript/OCR text; the user can review it and then submit text through chat.
+2. Voice and image endpoints return transcript/OCR data without invoking LangGraph. The current chat image flow automatically submits the OCR-derived prompt to chat; preserve transaction confirmation before any write.
 3. Financial values are computed from database-backed deterministic tools. The LLM may interpret intent and compose wording, but may not invent or recalculate balances/totals.
 4. Transaction writes require explicit HITL confirmation through the transaction service.
 5. Authenticated user identity and ownership scope come from server-side request/graph state, never LLM tool arguments.
@@ -54,6 +66,10 @@ The exact PR merge ancestry is available in Git; the table records the verified 
 - Recent conversation context supplied to routing/query planning; previous finance-query plan/result can be reused for drill-down and table formatting.
 - A bounded multi-step supervisor and standalone category-management workflow are merged to `main` (PRs #9 and #10).
 - Supervisor dispatch uses a registered workflow allowlist, bounded typed observations, a maximum of three handoffs, repeat-call protection, a decision timeout, and checkpointed clarification/resume.
+- Analytics includes database-derived supported period comparisons, top-category summaries, authenticated-user account-balance reads, spending-by-account breakdowns, explicit capped-result disclosure, and clearer empty results. This work remains subject to the focused ambiguity/query checks listed below and is not claimed as merged.
+- Split domain, API, migrations, tools, specialist, UI, and repayment-to-transaction linkage are implemented on the current feature branch.
+- Profile editing and a lazy latest-five transaction summary are implemented; the profile summary does not wait for the profile form data.
+- Chat persistence includes stored conversation messages and tool observations in graph state; split and category clarification follow-ups have targeted regression coverage.
 - Response validation against database-produced finance facts.
 - LangGraph checkpointing, chat thread/message persistence, ownership checks, guardrail decision logging, and agent correction records.
 - Voice transcription path and basic image-to-text ingestion.
@@ -64,16 +80,17 @@ The exact PR merge ancestry is available in Git; the table records the verified 
 ### Partially implemented / still needs end-to-end work
 
 - **Workflow coverage:** standalone category creation and bounded multi-step supervisor are merged. Live-model/PostgreSQL analytics → category integration remains an optional verification.
-- **Analytics:** summary/list paths are present. Comparison-to-period, user baselines/patterns, account balance query tools, robust table formatting, and large-result exports are not implemented as a complete analytics graph.
+- **Analytics:** summary/list paths, supported period comparisons, top-category breakdowns, active-account balances, spending-by-account breakdowns, capped-result disclosure, and clearer empty results are implemented on the uncommitted feature branch. Consistent ambiguity UX, broader live-model evaluation, user baselines/patterns, pagination beyond fixed caps, and large-result exports remain incomplete.
+- **Browser identity isolation:** user-scoped local drafts, legacy unowned-draft removal, identity-keyed chat state, and auth cache resets are implemented but need a same-browser multi-user journey check. Backend repository/checkpoint ownership appeared scoped; browser local storage was the likely exposure source.
+- **Batch transaction review:** 2–10 supported ledger rows produce all-or-nothing ordered proposals and sequential per-transaction forms in both chat surfaces. No write occurs until an individual form is saved. Cancel/close clears the remainder; queue persistence and live-model/browser verification remain outstanding.
 - **Receipt AI:** basic image-to-text exists; the staged Document Intelligence/layout → light LLM normalization → conditional vision fallback pipeline is not complete.
 - **Exports:** re-download lookup is present; creating PDF/XLSX, blob upload, artifact creation, and chat handoff are absent.
 - **Proactive insights:** summary/list insights exist; anomaly, recurring spend, budget threshold intelligence is not complete.
-- **Intent workflow coverage:** the intent taxonomy includes split/report/account/memory categories, but matching specialist workflows are not all registered and executable.
+- **Intent workflow coverage:** transaction, category, analytics, account, and split capabilities exist. Export and memory workflows are still not implemented; confirm any remaining registry gaps against the current graph before adding specialists.
 
 ### Not implemented (confirmed by current router/service/file inventory)
 
-- Split domain/API/AI workflow and complete split frontend: `SplitsPage` remains a placeholder.
-- Episodic/semantic/procedural memory services, storage, graph, and memory UI.
+- OCR receipt upload and chat-based transaction logging already exist. Item-level split allocation and user-confirmed contact dietary preferences are being implemented on `feature/smart-receipt-splits`; live model and receipt verification remains. Episodic/semantic/procedural memory and notification delivery are not implemented. Report export/import is implemented on `feature/report-exports`; the user reports its live application checks are complete.
 - Full Celery worker/Beat notifications and delivery pipeline. A retention loop is not a notification system.
 - Redis-backed per-user/per-endpoint rate limits.
 - LangSmith evaluation dataset and scheduled improvement loop.
@@ -230,42 +247,63 @@ Use stubbed supervisor decisions in normal CI. Keep real-model workflow evaluati
 
 **Merged implementation:** action/result Pydantic contracts, fixed workflow registry, deterministic dispatcher and observer, three-handoff cap, duplicate workflow guard, supervisor decision timeout, and same-thread ask-user interrupt/resume. Tests cover analytics → `format_previous`, bounded summaries that do not expose transaction rows to the supervisor, unknown/repeated/over-budget/hard-blocked dispatch, transaction proposal stop behavior, contract validation, timeout fallback, and HTTP interrupt/resume. The graph asset is regenerated. Focused validation (16 tests) and Ruff passed. The full backend run was interrupted and not rerun before merge at the user's direction; this is not treated as a remaining task.
 
-### Next: Phase 3 — Complete Analytics specialist
+### Phase 3 — Complete Analytics specialist (implemented; acceptance checks remain)
 
-**Branch:** create `feature/analytics-workflows` from the latest clean `origin/main` before implementation.
+**Branch:** analytics work is present in the current worktree; inspect status before separating or committing it.
 
-Implement the approved Phase 3 scope below; do not start on `main`. Confirm and prioritize period comparisons, category/account breakdowns, account balance queries, clear empty/ambiguous responses, and result-size handling. Keep all figures database-authoritative and add a query evaluation set for relative dates, multi-category queries, follow-ups, and ambiguous requests.
+**Current slice:** database-derived comparisons for this-month-to-date vs matching dates last month and this-week-to-date vs matching days last week; top-five category totals; current balances for all active accounts or a requested exact name; spending breakdowns by active account; explicit overflow disclosure for transaction/account result caps; clearer zero-result replies carrying requested dates/category and verified zero totals/counts; and a deterministic query-planning evaluation matrix. Balance values come from authenticated account records, never transaction recomputation. Comparison totals, counts, deltas, and percentages come from database-backed code, with category scope applied consistently to both windows. Unsupported comparisons and multiple simultaneous category filters clarify instead of silently degrading to a one-period answer. The earlier focused comparison/account run passed 30 tests and Ruff; tests were not rerun after the latest empty-result/evaluation-matrix edits per user instruction. Ruff passes on the current working tree.
 
-### Phase 3 — Complete Analytics specialist
+**Remaining:** consistent clarification UX for ambiguous category/account/query interpretations and broader live-model/query evaluation. Keep all figures database-authoritative and expand checks for relative dates, multi-category requests, follow-ups, and adversarial/ambiguous requests.
 
-**Branch:** `feature/analytics-workflows`
+### Current branch additions — Privacy and batch transaction review
 
-Add only after reviewing product scope: period comparisons, category/account breakdowns, account balance queries, clear empty/ambiguous cases, and result-size handling. Every figure remains database-authoritative. Add a query evaluation set for natural language interpretations, including relative dates, multi-category queries, follow-ups, and adversarial/ambiguous requests.
+Alongside Phase 3, the working tree contains browser draft/auth identity isolation, ordered batch transaction proposals, and sequential transaction sheets. Preserve the existing dashboard greeting edits. Detailed file map, limitations, and continuation steps are in `HANDOFF_2026-10-15.md`.
+
+**Latest validation:** after the user reported flattened ledger input failing, a regression reproduced a newline-only detector counting six entries as one. Detection now uses date-bounded currency entries, independent of line breaks. Eleven focused chat/batch/legacy-confirmation tests passed (94 deselected), including the exact six-row input through an authenticated HTTP route with stubbed extraction/guardrail; orchestrator/test Ruff checks passed. Earlier frontend lint and TypeScript/Vite production build passed with the existing >500 kB chunk warning; no frontend code changed in this correction. This does not validate all Phase 3 edits or the full combined backend suite. Live-model batch routing, form reset/save behavior, and same-browser cross-user isolation remain to be checked. See the handoff correction for fresh-thread retry guidance.
 
 **Acceptance:** deterministic tool tests for math/filtering/timezones/ownership; planner tests for structured plans; response fact-preservation tests; live-model evaluation is a separate opt-in/nightly job.
 
-### Phase 4 — Splits (if product priority confirmed)
+### Phase 4 — Splits (implementation complete; final acceptance checks remain)
 
 **Branch:** `feature/splits-mvp`
 
-Build split schema/domain/service/repositories/routes, contacts, equal/custom calculation, settlement, balance reconciliation, confirmation UX, and tracker UI. Defer smart bill-line splitting until ordinary split creation/settlement is reliable.
+Implemented: split schema/domain/service/repositories/routes, participant contacts, equal/custom shares, edit flow, outstanding totals, repayment and linked categorized income transaction, transaction navigation, and tracker UI. LangGraph can create a split after recording an expense, resolve participant names from existing contacts or add new people, and answer outstanding-split questions with user-scoped data. The transaction must exist before the AI creates its split. Marking a share repaid is final; partial repayment and undo are not supported.
 
-**Acceptance:** exact paise arithmetic including remainder allocation; owner isolation; transaction/split atomicity; confirm/cancel; settlement state; browser journey.
+Receipt item allocation using remembered participant preferences is planned in Phase 6. The current split model stores participant totals, so that feature will also need a reviewed item-to-person allocation before those totals are saved.
+
+**Acceptance already covered by code/tests:** exact paise arithmetic and remainder allocation, owner isolation, custom-share validation, edits preserving linked repayments, repayment transaction/category linkage, and protection of linked repayment transactions. `apps/api/tests/test_splits.py` contains the API coverage. The user manually confirmed the split UI and repayment flow work.
+
+**Remaining acceptance:** test a fresh-thread chat request such as "spent 1000 on dinner with X and Y" end to end; confirm expense is recorded before split creation, contact matching/new participant creation is correct, the UI refreshes to show the split, and a follow-up such as "elaborate" reuses verified split details. Also verify failure behavior if the transaction succeeds but split creation fails. Run broader backend/browser gates during release hardening.
 
 ### Phase 5 — Exports and receipt pipeline
 
 Separate branches: `feature/report-exports` and `feature/receipt-extraction`.
 
+**Report export/import implementation on `feature/report-exports`:** CSV/XLSX/PDF transaction exports, local date filtering, signed owner-scoped download links, retention through the existing scheduler, and chat report handoff are implemented. Generated reports exclude internal IDs, hashes, and notes; older report downloads are retired by version check and migration. CSV/XLSX transaction import now has preview, row validation, account/category ownership checks, one-transaction batch confirmation, and exact-file duplicate protection, including same-user report re-import via a server-side fingerprint. Edited files are not checked for duplicate rows; the UI explains this limit. See `docs/TRANSACTION_FILES.md` for limits, deployment, and test steps. Report bytes currently use PostgreSQL; a blob adapter remains an optional scaling step. Receipt extraction remains a separate feature.
+
 - Exports: deterministic PDF/XLSX rendering, blob storage adapter, artifact record creation/expiry, owner-scoped fresh download URL, chat handoff, cleanup.
-- Receipt pipeline: OCR/layout extraction first, normalization second, vision fallback only for low-confidence cases. Keep image endpoint’s two-step review contract unless explicitly changed.
+- Receipt pipeline: build on the existing Azure Document Intelligence OCR and chat transaction flow. Normalize OCR into structured line items, prices, quantity, tax/fees, and extraction confidence for later item-level splits. Add vision fallback only for low-confidence cases. Preserve the current image endpoint contract unless explicitly changed.
 
 External-service work must document provisioning, env vars/secrets, and a concrete verification checklist before implementation is considered complete.
 
 ### Phase 6 — Memory and intelligence
 
-Branches: `feature/finance-memory`, then `feature/proactive-insights-eval`.
+Branches: `feature/finance-memory`, then `feature/split-participant-memory` after the structured receipt pipeline, then `feature/proactive-insights-eval`.
 
 Implement memory types only with explicit user controls, retention/deletion, ownership tests, and data minimization. Add anomaly/recurring/budget insights only when baseline data and a Budget domain are defined. Evaluation telemetry must avoid secrets/PII and include a documented opt-out/retention policy.
+
+#### Split participant preferences and smart receipt splits
+
+Current branch implementation: user-owned named contacts can store an explicitly confirmed dietary preference; the Splits page can edit or delete it and can show repeated-allocation suggestions for confirmation. OCR item lines are preserved for chat, the split tool calculates exact paise allocations from proposed items, pauses for review, and saves item breakdowns after confirmation. API preview/create endpoints and ownership tests exist. The current review is a chat question, not a dedicated editable item grid. Contacts are matched by normalized name rather than linked by a stable contact ID, and preference provenance beyond confirmation time is not stored. Live receipt/model testing and these remaining UX/data-model refinements are still needed before this section's full acceptance can be claimed.
+
+- Store preferences for a stable, authenticated-user-owned split contact, rather than matching names alone. Start with user-approved dietary preferences such as vegetarian; allow the user to view, edit, or delete each preference. Record where it came from and when it was confirmed. Do not turn a single receipt or the model's guess into a permanent fact about a person.
+- After receipt extraction, the user can say, for example, “Dinner with Isha and Piyush.” Resolve the contacts, retrieve the owner's approved preferences, classify receipt items only where the evidence is clear, and draft item-to-person assignments. If Isha is stored as vegetarian, exclude meat items from her suggested share. A vegetarian preference alone does not prove that she consumed every vegetarian item; ask for or show editable assignments when consumption is unclear.
+- Extend the split proposal and review UI to show each receipt item, assigned people, each person's calculated share, shared tax/tip/fees, and the total. Calculate allocations deterministically in paise, including remainder handling. The LLM may suggest item labels and assignments, but may not invent prices or calculate final amounts. Require review before saving the transaction-linked split.
+- Keep participant preferences and receipt allocations scoped to the authenticated user. Handle duplicate names, missing contacts, uncertain item labels, incomplete receipts, and conflicting preferences with a focused clarification or an editable equal-split fallback.
+
+**Acceptance:** with an approved “Isha is vegetarian” preference and a receipt containing vegetarian and meat items, Isha's proposed allocation excludes meat; the displayed participant shares plus the owner's share exactly match the verified receipt total, including shared charges and rounding. A change or deletion of Isha's preference changes future proposals only, never historical splits. Cross-user tests prove another account cannot read or alter the preference or the resulting split.
+
+The profile's transaction summary currently uses only the authenticated user's latest five transactions and loads independently of the profile form. When memory is implemented, consider an optional, user-controlled summary that can draw on longer-term patterns. Keep a deterministic latest-five fallback, define what is remembered and for how long, and let users inspect/delete memory before using it for profile copy.
 
 ### Phase 7 — Notifications, rate limits, reliability
 
@@ -328,7 +366,7 @@ Branch: `chore/release-hardening` or final release branch selected by maintainer
 
 ## 8. Open decisions before later phases
 
-- Whether Splits or report exports should be the first major product workflow after analytics/supervisor completion.
 - Whether tables are represented as Markdown text or a structured message block in the chat API/UI.
 - Whether memory should be in the first release; confirm product consent, retention, deletion, and export behavior first.
+- Which participant preferences the app should store beyond dietary restrictions, and how the user confirms or corrects proposed receipt item assignments.
 - Production provider choices and provisioning for blob, OCR, notifications, email, push, and Redis rate limiting.

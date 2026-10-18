@@ -1,11 +1,15 @@
-import { ImagePlus, Mic } from 'lucide-react';
+import { ImagePlus, LoaderCircle, Mic } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 
+import { useAppSelector } from '../../app/hooks';
+import { Button } from '../../components/atoms/Button';
 import { BottomSheet } from '../../components/molecules/BottomSheet';
 import { AssistantReplyIndicator } from '../../components/molecules/AssistantReplyIndicator';
 import { AssistantMessageContent } from '../../components/molecules/AssistantMessageContent';
 import { VoiceCaptureModal } from '../../components/molecules/VoiceCaptureModal';
+import { TransactionSuccessOverlay } from '../../components/molecules/TransactionSuccessOverlay/TransactionSuccessOverlay';
+import { MemorySuggestionsPanel } from '../../components/molecules/MemorySuggestionsPanel/MemorySuggestionsPanel';
 import { CreateTransactionForm } from '../../components/organisms/CreateTransactionForm';
 import { Card } from '../../components/atoms/Card';
 import { CollapseToggle } from '../../components/atoms/CollapseToggle';
@@ -13,6 +17,7 @@ import { Input } from '../../components/atoms/Input';
 import { DASHBOARD_CHAT_UI_TEXT, SHEET_TITLES, VOICE_CAPTURE_EVENT_NAME } from '../../constants';
 import {
   useAnalyzeImageMutation,
+  useLazyGetChatThreadQuery,
   type ChatTransactionProposal,
   useSendChatMessageMutation,
   useTranscribeVoiceMutation,
@@ -29,6 +34,8 @@ import {
   type ChatDraftMessage,
 } from '../../features/chat/chatDrafts';
 import { useVoiceCapture } from '../../features/chat/useVoiceCapture';
+import { useListMemorySuggestionsQuery } from '../../features/memory/memoryApi';
+import { useListTransactionsQuery } from '../../features/transactions/transactionsApi';
 
 type ChatListFilter = 'finance' | 'drafts';
 
@@ -65,21 +72,53 @@ function formatDraftDeadline(draft: ChatDraft): string | null {
 }
 
 export function ChatPage() {
+  const userId = useAppSelector((state) => state.auth.user?.id ?? null);
+
+  if (!userId) {
+    return <div className='p-6 text-sm text-[var(--text-muted)]'>Loading your chat…</div>;
+  }
+
+  return <ChatWorkspace key={userId} userId={userId} />;
+}
+
+function ChatWorkspace({ userId }: { userId: string }) {
   const navigate = useNavigate();
   const location = useLocation();
   const [sendChatMessage, { isLoading: isSendingChatMessage }] = useSendChatMessageMutation();
+  const [getChatThread] = useLazyGetChatThreadQuery();
   const [transcribeVoice, { isLoading: isTranscribingVoice }] = useTranscribeVoiceMutation();
   const [analyzeImage, { isLoading: isAnalyzingImage }] = useAnalyzeImageMutation();
-  const [drafts, setDrafts] = useState<ChatDraft[]>(() => listChatDrafts());
+  const [drafts, setDrafts] = useState<ChatDraft[]>(() => listChatDrafts(userId));
   const [selectedDraftId, setSelectedDraftId] = useState<string | null>(null);
   const [activeFilter, setActiveFilter] = useState<ChatListFilter>('finance');
   const [isSideToolCollapsed, setIsSideToolCollapsed] = useState(false);
   const [chatInput, setChatInput] = useState('');
   const [chatError, setChatError] = useState<string | null>(null);
+  const receiptUploadRef = useRef(false);
   const [showProposalSheet, setShowProposalSheet] = useState(false);
   const [proposalForSheet, setProposalForSheet] = useState<ChatTransactionProposal | null>(null);
+  const [proposalQueue, setProposalQueue] = useState<ChatTransactionProposal[]>([]);
+  const [proposalBatchTotal, setProposalBatchTotal] = useState(0);
+  const [proposalBatchCompleted, setProposalBatchCompleted] = useState(0);
   const [proposalSheetMode, setProposalSheetMode] = useState<'standard' | 'manual_low_confidence'>('standard');
+  const [taskSuccess, setTaskSuccess] = useState<{ message: string; expiresAt: number; transactionId: string | null } | null>(null);
+  const [editingTransactionId, setEditingTransactionId] = useState<string | null>(null);
+  const [editingTransactionValues, setEditingTransactionValues] = useState<Record<string, string> | undefined>();
+  const [showMemorySuggestions, setShowMemorySuggestions] = useState(true);
+  const { data: memorySuggestions = [] } = useListMemorySuggestionsQuery(undefined, { pollingInterval: 10_000 });
+  useEffect(() => {
+    if (memorySuggestions.length === 0) return;
+    const reminderTimer = window.setInterval(() => {
+      setShowMemorySuggestions(true);
+    }, 5 * 60 * 1000);
+    return () => window.clearInterval(reminderTimer);
+  }, [memorySuggestions.length]);
+
+  const { data: transactions = [] } = useListTransactionsQuery();
   const imageFileInputRef = useRef<HTMLInputElement | null>(null);
+  const chatMessagesRef = useRef<HTMLDivElement | null>(null);
+  const transactionRedirectTimerRef = useRef<number | null>(null);
+  const selectedThreadRequestRef = useRef(0);
   const [openingGreeting] = useState(() => {
     const options = DASHBOARD_CHAT_UI_TEXT.rotatingGreetings;
     const selectedGreeting = options[Math.floor(Math.random() * options.length)];
@@ -87,17 +126,20 @@ export function ChatPage() {
     return selectedGreeting ?? DASHBOARD_CHAT_UI_TEXT.emptyState;
   });
 
+  const scopedDrafts = drafts;
   const selectedDraft = useMemo(
-    () => drafts.find((draft) => draft.id === selectedDraftId) ?? null,
-    [drafts, selectedDraftId],
+    () => scopedDrafts.find((draft) => draft.id === selectedDraftId) ?? null,
+    [scopedDrafts, selectedDraftId],
   );
 
   const groupedDrafts = useMemo(() => {
     return {
-      financeChats: drafts.filter((draft) => draft.lifecycle === 'conversation' && draft.kind === 'general'),
-      draftChats: drafts.filter((draft) => draft.lifecycle === 'draft'),
+      // Transaction-specific chats are reopened from their transaction and
+      // stay out of the general chat list unless the user promotes them.
+      financeChats: scopedDrafts.filter((draft) => draft.kind === 'general' && draft.lifecycle === 'conversation'),
+      draftChats: scopedDrafts.filter((draft) => draft.lifecycle === 'draft'),
     };
-  }, [drafts]);
+  }, [scopedDrafts]);
 
   const filteredItems = activeFilter === 'finance' ? groupedDrafts.financeChats : groupedDrafts.draftChats;
   const messageList = selectedDraft?.messages ?? [];
@@ -112,7 +154,7 @@ export function ChatPage() {
     : 'grid-cols-1 md:grid-cols-[340px_minmax(0,1fr)]';
 
   const refreshDrafts = (preferredDraftId: string | null = selectedDraftId) => {
-    const nextDrafts = listChatDrafts();
+    const nextDrafts = listChatDrafts(userId);
     setDrafts(nextDrafts);
 
     if (!preferredDraftId) {
@@ -129,13 +171,14 @@ export function ChatPage() {
       return selectedDraft;
     }
 
-    const createdDraft = createChatDraft('general', null, { lifecycle: 'conversation' });
+    const createdDraft = createChatDraft(userId, 'general', null, { lifecycle: 'conversation' });
     refreshDrafts(createdDraft.id);
     setActiveFilter('finance');
     return createdDraft;
   };
 
   const handleCreateNewChat = () => {
+    selectedThreadRequestRef.current += 1;
     setSelectedDraftId(null);
     setActiveFilter('finance');
     setChatInput('');
@@ -143,9 +186,96 @@ export function ChatPage() {
   };
 
   const handleDeleteDraft = (draftId: string) => {
-    deleteChatDraft(draftId);
+    if (selectedDraftId === draftId) {
+      selectedThreadRequestRef.current += 1;
+    }
+    deleteChatDraft(userId, draftId);
     refreshDrafts(selectedDraftId === draftId ? null : selectedDraftId);
     setChatError(null);
+  };
+
+  const clearTaskSuccessTimer = () => {
+    if (transactionRedirectTimerRef.current !== null) {
+      window.clearTimeout(transactionRedirectTimerRef.current);
+      transactionRedirectTimerRef.current = null;
+    }
+  };
+
+  const closeTaskSuccess = () => {
+    clearTaskSuccessTimer();
+    if (memorySuggestions.length > 0) {
+      setTaskSuccess(null);
+      setShowMemorySuggestions(true);
+      return;
+    }
+    setTaskSuccess(null);
+    navigate('/');
+  };
+
+  const continueChatting = () => {
+    clearTaskSuccessTimer();
+    setTaskSuccess(null);
+  };
+
+  const editCompletedTransaction = () => {
+    const transaction = transactions.find((item) => item.id === taskSuccess?.transactionId);
+    if (!transaction) return;
+    clearTaskSuccessTimer();
+    setTaskSuccess(null);
+    setEditingTransactionId(transaction.id);
+    setEditingTransactionValues({
+      accountId: transaction.account_id,
+      type: transaction.type,
+      amountRupees: String(transaction.amount_paise / 100),
+      occurredAt: transaction.occurred_at,
+      categoryId: transaction.category_id ?? '',
+      toAccountId: transaction.to_account_id ?? '',
+      merchant: transaction.merchant ?? '',
+      note: transaction.note ?? '',
+    });
+    setShowProposalSheet(true);
+  };
+
+  const handleSelectDraft = async (draft: ChatDraft) => {
+    const requestId = selectedThreadRequestRef.current + 1;
+    selectedThreadRequestRef.current = requestId;
+    setSelectedDraftId(draft.id);
+    setChatError(null);
+
+    if (!draft.thread_id) {
+      return;
+    }
+
+    try {
+      const detail = await getChatThread(draft.thread_id).unwrap();
+      if (selectedThreadRequestRef.current !== requestId) {
+        return;
+      }
+
+      const messages: ChatDraftMessage[] = detail.messages.map((message) => ({
+        id: message.id,
+        role: message.role,
+        content: message.content,
+      }));
+      const hydratedDraft = saveChatDraft({
+        userId,
+        draftId: draft.id,
+        kind: draft.kind,
+        lifecycle: draft.lifecycle,
+        transactionId: draft.transaction_id,
+        threadId: draft.thread_id,
+        messages: messages.length > 0 ? messages : draft.messages,
+        expiresAt: draft.expires_at,
+        title: detail.thread.title ?? draft.title,
+        preserveUpdatedAt: true,
+      });
+
+      setDrafts(listChatDrafts(userId));
+      setSelectedDraftId(hydratedDraft.id);
+    } catch {
+      // A locally stored conversation remains usable if server history is
+      // unavailable (for example, when the user disabled storage).
+    }
   };
 
   const persistDraftMessages = (
@@ -156,6 +286,7 @@ export function ChatPage() {
   ): ChatDraft => {
     const nextLifecycle = lifecycleOverride ?? draft.lifecycle;
     const savedDraft = saveChatDraft({
+      userId,
       draftId: draft.id,
       kind: draft.kind,
       lifecycle: nextLifecycle,
@@ -174,7 +305,6 @@ export function ChatPage() {
     if (!normalizedMessage || isSendingChatMessage) {
       return;
     }
-
     setIsSideToolCollapsed(true);
 
     const draft = ensureSelectedDraft();
@@ -191,7 +321,7 @@ export function ChatPage() {
 
     const optimisticMessages = [...draft.messages, userMessage];
     const optimisticDraft = persistDraftMessages(draft, optimisticMessages);
-    queueChatDraftTitleGeneration(optimisticDraft.id);
+    queueChatDraftTitleGeneration(userId, optimisticDraft.id);
 
     try {
       const response = await sendChatMessage({
@@ -203,20 +333,22 @@ export function ChatPage() {
       const insightSummary = (response.insights ?? [])
         .map((insight) => `• ${insight.title}: ${insight.detail}`)
         .join('\n');
+      const receiptTransactionLogged = receiptUploadRef.current && response.transaction_logged;
+      if (receiptTransactionLogged) receiptUploadRef.current = false;
       const assistantMessage: ChatDraftMessage = {
         id: createLocalMessageId(),
         role: 'assistant',
-        content: insightSummary ? `${response.message}\n${insightSummary}` : response.message,
+        content: insightSummary ? `${response.message}\n${insightSummary}` : receiptTransactionLogged
+          ? `${response.message}\nWould you like to split this expense? If yes, tell me who shared it.`
+          : response.message,
       };
 
-      if (optimisticDraft.lifecycle === 'draft' && response.transaction_logged) {
-        deleteChatDraft(optimisticDraft.id);
-        refreshDrafts(null);
-        return;
-      }
-
       if (response.pending_transaction_proposal || response.manual_transaction_input_required) {
-        setProposalForSheet(response.pending_transaction_proposal ?? null);
+        const proposalBatch = response.pending_transaction_proposals ?? [];
+        setProposalQueue(proposalBatch);
+        setProposalBatchTotal(proposalBatch.length);
+        setProposalBatchCompleted(0);
+        setProposalForSheet(proposalBatch[0] ?? response.pending_transaction_proposal ?? null);
         setProposalSheetMode(response.manual_transaction_input_required ? 'manual_low_confidence' : 'standard');
         setShowProposalSheet(true);
       }
@@ -224,12 +356,40 @@ export function ChatPage() {
       const nextLifecycle: ChatDraftLifecycle =
         optimisticDraft.lifecycle === 'draft' ? 'conversation' : optimisticDraft.lifecycle;
 
-      persistDraftMessages(
-        optimisticDraft,
-        [...optimisticMessages, assistantMessage],
-        response.thread_id,
-        nextLifecycle,
-      );
+      const completedMessages = [...optimisticMessages, assistantMessage];
+      if (response.tasks_completed) {
+        // Keep the server-backed thread, but move its local entry from the
+        // general chat list to the created transaction. It can be reopened
+        // from that transaction's dedicated chat action.
+        let savedDraft: ChatDraft;
+        if (response.transaction_logged && response.created_transaction_id) {
+          deleteChatDraft(userId, optimisticDraft.id);
+          savedDraft = saveChatDraft({
+            userId,
+            kind: 'transaction',
+            lifecycle: 'conversation',
+            transactionId: response.created_transaction_id,
+            threadId: response.thread_id,
+            messages: completedMessages,
+          });
+        } else {
+          savedDraft = persistDraftMessages(optimisticDraft, completedMessages, response.thread_id, nextLifecycle);
+        }
+        refreshDrafts(savedDraft.id);
+        setActiveFilter('finance');
+        if (response.show_completion_popup && !receiptTransactionLogged) {
+          clearTaskSuccessTimer();
+          setTaskSuccess({ message: assistantMessage.content, expiresAt: Date.now() + 12_000, transactionId: response.created_transaction_id ?? null });
+          transactionRedirectTimerRef.current = window.setTimeout(() => {
+            transactionRedirectTimerRef.current = null;
+            setTaskSuccess(null);
+            navigate('/');
+          }, 12_000);
+        }
+        return;
+      }
+
+      persistDraftMessages(optimisticDraft, completedMessages, response.thread_id, nextLifecycle);
 
       if (nextLifecycle === 'conversation') {
         setActiveFilter('finance');
@@ -254,7 +414,9 @@ export function ChatPage() {
         return;
       }
 
-      await handleSendMessage(transcript);
+      // Let the capture modal close as soon as transcription finishes. The
+      // assistant request continues independently in the chat view.
+      void handleSendMessage(transcript);
     } catch {
       setChatError(DASHBOARD_CHAT_UI_TEXT.voiceError);
     }
@@ -282,6 +444,21 @@ export function ChatPage() {
       setChatError(DASHBOARD_CHAT_UI_TEXT.voiceError);
     },
   });
+
+  useEffect(() => {
+    return () => {
+      if (transactionRedirectTimerRef.current !== null) {
+        window.clearTimeout(transactionRedirectTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    const container = chatMessagesRef.current;
+    if (container) {
+      container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
+    }
+  }, [messageList.length, isAssistantResponding]);
 
   useEffect(() => {
     const handleVoiceCaptureRequest = (event: Event) => {
@@ -321,6 +498,79 @@ export function ChatPage() {
     );
   }, [isVoiceCaptureOpen, isVoiceCaptureProcessing, location.search, navigate, startCapture]);
 
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const transactionId = params.get('transaction_id')?.trim();
+    if (!transactionId) {
+      return;
+    }
+
+    const existingDraft = listChatDrafts(userId).find(
+      (draft) => draft.kind === 'transaction' && draft.transaction_id === transactionId,
+    );
+    const transactionDraft =
+      existingDraft ?? createChatDraft(userId, 'transaction', transactionId, { lifecycle: 'conversation' });
+    const nextDrafts = listChatDrafts(userId);
+    const requestId = selectedThreadRequestRef.current + 1;
+    selectedThreadRequestRef.current = requestId;
+
+    queueMicrotask(() => {
+      if (selectedThreadRequestRef.current !== requestId) {
+        return;
+      }
+
+      setDrafts(nextDrafts);
+      setSelectedDraftId(transactionDraft.id);
+      setActiveFilter('finance');
+      setChatInput('');
+      setChatError(null);
+    });
+
+    if (transactionDraft.thread_id) {
+      void getChatThread(transactionDraft.thread_id)
+        .unwrap()
+        .then((detail) => {
+          if (selectedThreadRequestRef.current !== requestId) {
+            return;
+          }
+
+          const messages: ChatDraftMessage[] = detail.messages.map((message) => ({
+            id: message.id,
+            role: message.role,
+            content: message.content,
+          }));
+          const hydratedDraft = saveChatDraft({
+            userId,
+            draftId: transactionDraft.id,
+            kind: transactionDraft.kind,
+            lifecycle: transactionDraft.lifecycle,
+            transactionId: transactionDraft.transaction_id,
+            threadId: transactionDraft.thread_id,
+            messages: messages.length > 0 ? messages : transactionDraft.messages,
+            expiresAt: transactionDraft.expires_at,
+            title: detail.thread.title ?? transactionDraft.title,
+            preserveUpdatedAt: true,
+          });
+
+          setDrafts(listChatDrafts(userId));
+          setSelectedDraftId(hydratedDraft.id);
+        })
+        .catch(() => {
+          // Keep the locally saved transaction chat available if server history is unavailable.
+        });
+    }
+
+    params.delete('transaction_id');
+    const nextSearch = params.toString();
+    navigate(
+      {
+        pathname: '/chat',
+        search: nextSearch ? `?${nextSearch}` : '',
+      },
+      { replace: true },
+    );
+  }, [getChatThread, location.search, navigate, userId]);
+
   const handleImageFileSelected = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const imageFile = event.target.files?.[0];
     event.target.value = '';
@@ -344,7 +594,15 @@ export function ChatPage() {
         return;
       }
 
-      await handleSendMessage(imagePrompt);
+      const instructions = chatInput.trim();
+      const combinedPrompt = instructions ? `${imagePrompt}\nMy instructions: ${instructions}` : imagePrompt;
+      if (combinedPrompt.length > 8000) {
+        setChatError('Receipt text and instructions are too long. Shorten your message and try again.');
+        return;
+      }
+      if (instructions) setChatInput('');
+      receiptUploadRef.current = true;
+      await handleSendMessage(combinedPrompt);
     } catch {
       setChatError(DASHBOARD_CHAT_UI_TEXT.imageError);
     }
@@ -438,7 +696,7 @@ export function ChatPage() {
                               <button
                                 type='button'
                                 onClick={() => {
-                                  setSelectedDraftId(draft.id);
+                                  void handleSelectDraft(draft);
                                 }}
                                 className='min-w-0 flex-1 text-left'
                               >
@@ -519,7 +777,10 @@ export function ChatPage() {
             ) : null}
           </div>
 
-              <div className='mb-3 min-h-0 flex-1 space-y-2 overflow-y-auto rounded-2xl border border-[var(--bg-border)] bg-[var(--bg-elevated)] p-3'>
+              <div
+                ref={chatMessagesRef}
+                className='mb-3 min-h-0 flex-1 space-y-2 overflow-y-auto rounded-2xl border border-[var(--bg-border)] bg-[var(--bg-elevated)] p-3'
+              >
                 {messageList.length === 0 ? (
                   <div className='flex h-full flex-col items-center justify-center px-5 text-center'>
                     <p className='mb-2 text-base font-semibold text-[var(--text-primary)]'>{openingGreeting}</p>
@@ -572,10 +833,15 @@ export function ChatPage() {
               disabled={isSendingChatMessage || isAnalyzingImage}
               onClick={() => imageFileInputRef.current?.click()}
             >
-              <ImagePlus className='h-4 w-4' strokeWidth={2.2} aria-hidden='true' />
+              {isAnalyzingImage ? (
+                <LoaderCircle className='h-4 w-4 animate-spin' strokeWidth={2.2} aria-hidden='true' />
+              ) : (
+                <ImagePlus className='h-4 w-4' strokeWidth={2.2} aria-hidden='true' />
+              )}
             </button>
             <Input
               value={chatInput}
+              maxLength={8000}
               placeholder={DASHBOARD_CHAT_UI_TEXT.inputPlaceholder}
               onChange={(event) => setChatInput(event.target.value)}
               onKeyDown={(event) => {
@@ -622,19 +888,50 @@ export function ChatPage() {
         stopLabel={DASHBOARD_CHAT_UI_TEXT.voiceRecordingStopButton}
       />
 
+      {taskSuccess ? (
+        <TransactionSuccessOverlay
+          message={taskSuccess.message}
+          expiresAt={taskSuccess.expiresAt}
+          onClose={closeTaskSuccess}
+          onContinue={continueChatting}
+          onEditTransaction={taskSuccess.transactionId ? editCompletedTransaction : undefined}
+        />
+      ) : null}
+      {showMemorySuggestions && memorySuggestions.length > 0 && !taskSuccess ? (
+        <div className='fixed inset-0 z-[60] flex items-center justify-center overflow-y-auto bg-black/60 p-4' role='dialog' aria-modal='true' aria-label='Memory suggestions'>
+          <div className='w-full max-w-lg space-y-3'>
+            <MemorySuggestionsPanel suggestions={memorySuggestions} />
+            <div className='flex justify-center'>
+              <Button type='button' variant='secondary' onClick={() => setShowMemorySuggestions(false)}>Close suggestions</Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <BottomSheet
         isOpen={showProposalSheet}
         onClose={() => {
           setShowProposalSheet(false);
           setProposalForSheet(null);
+          setProposalQueue([]);
+          setProposalBatchTotal(0);
+          setProposalBatchCompleted(0);
           setProposalSheetMode('standard');
+          setEditingTransactionId(null);
+          setEditingTransactionValues(undefined);
         }}
-        title={SHEET_TITLES.addTransaction}
+        title={
+          proposalBatchTotal > 1
+            ? `${SHEET_TITLES.addTransaction} (${proposalBatchCompleted + 1} of ${proposalBatchTotal})`
+            : SHEET_TITLES.addTransaction
+        }
       >
         <CreateTransactionForm
           mode='sheet'
           showHeading={false}
-          initialValues={proposalInitialValues}
+          initialValues={editingTransactionValues ?? proposalInitialValues}
+          transactionId={editingTransactionId ?? undefined}
+          trackReviewEvent={Boolean(editingTransactionId)}
           proposalCategory={
             proposalForSheet && proposalForSheet.type !== 'transfer'
               ? {
@@ -647,9 +944,33 @@ export function ChatPage() {
           prefillMode={proposalSheetMode}
           submitLabel={proposalForSheet ? 'Confirm & Add' : 'Add transaction'}
           onSuccess={() => {
+            if (proposalQueue.length > 1) {
+              const remainingQueue = proposalQueue.slice(1);
+              setProposalQueue(remainingQueue);
+              setProposalBatchCompleted((completed) => completed + 1);
+              setProposalForSheet(remainingQueue[0]);
+              refreshDrafts(selectedDraftId);
+              return;
+            }
+            setEditingTransactionId(null);
+            setEditingTransactionValues(undefined);
+            if (proposalBatchTotal > 0) {
+              setShowProposalSheet(false);
+              setProposalForSheet(null);
+              setProposalQueue([]);
+              setProposalBatchTotal(0);
+              setProposalBatchCompleted(0);
+              setProposalSheetMode('standard');
+              refreshDrafts(selectedDraftId);
+              return;
+            }
             setShowProposalSheet(false);
             setProposalForSheet(null);
+            setProposalQueue([]);
+            setProposalBatchTotal(0);
+            setProposalBatchCompleted(0);
             setProposalSheetMode('standard');
+            refreshDrafts(selectedDraftId);
             navigate('/transactions');
           }}
         />

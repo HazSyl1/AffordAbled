@@ -1,0 +1,39 @@
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	guardrails(guardrails)
+	supervisor(supervisor)
+	category(category)
+	account(account)
+	transaction(transaction)
+	split(split)
+	analytics(analytics)
+	export(export)
+	formatting(formatting)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> guardrails;
+	account --> supervisor;
+	analytics --> supervisor;
+	category --> supervisor;
+	export --> supervisor;
+	formatting --> supervisor;
+	guardrails -.-> __end__;
+	guardrails -.-> supervisor;
+	split --> supervisor;
+	supervisor -.-> __end__;
+	supervisor -.-> account;
+	supervisor -.-> analytics;
+	supervisor -.-> category;
+	supervisor -.-> export;
+	supervisor -.-> formatting;
+	supervisor -.-> split;
+	supervisor -.-> transaction;
+	transaction --> supervisor;
+	supervisor -.-> supervisor;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc

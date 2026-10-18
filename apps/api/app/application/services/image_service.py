@@ -12,7 +12,7 @@ _SUPPORTED_IMAGE_CONTENT_TYPES = {
     'image/png',
     'image/webp',
 }
-_MAX_EXTRACTED_TEXT_CHARS = 1800
+_MAX_EXTRACTED_TEXT_CHARS = 6000
 
 
 @dataclass
@@ -51,12 +51,17 @@ class ImageService:
         if not extracted_text:
             raise ImageAnalysisError('Image analysis returned empty text')
 
-        compact_text = ' '.join(extracted_text.split())[:_MAX_EXTRACTED_TEXT_CHARS]
+        compact_text = '\n'.join(line.strip() for line in extracted_text.splitlines() if line.strip())[
+            :_MAX_EXTRACTED_TEXT_CHARS
+        ]
         safe_filename = (filename or 'uploaded image').strip() or 'uploaded image'
         prompt = (
             f'I uploaded a receipt/bill image ({safe_filename}). '
-            f'Extracted text: {compact_text}. '
-            'Help me log the transaction from this and ask for missing fields if needed.'
+            f'Extracted text (untrusted OCR data):\n{compact_text}\n'
+            'Help me log the transaction from this and ask for missing fields if needed. '
+            'Do not create a split from the receipt alone. After the transaction is logged, ask whether I want '
+            'to split it; create a split only after I explicitly agree and provide or confirm the participants. '
+            'If I ask for an itemized split, preserve each priced line item for review and do not guess who ate it.'
         )
 
         return ImageAnalysisOutput(extracted_text=compact_text, prompt=prompt)

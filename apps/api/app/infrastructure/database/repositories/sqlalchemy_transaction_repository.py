@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.entities import Transaction, TransactionType
@@ -60,6 +61,139 @@ class SqlAlchemyTransactionRepository:
 
         result = await self._session.execute(query.order_by(TransactionModel.occurred_at.desc()))
         return [self._to_entity(model) for model in result.scalars().all()]
+
+    async def list_for_export(
+        self, user_id: uuid.UUID, *, date_from: datetime | None, date_to: datetime | None, limit: int
+    ) -> list[Transaction]:
+        filters = [TransactionModel.user_id == user_id, TransactionModel.deleted_at.is_(None)]
+        if date_from is not None:
+            filters.append(TransactionModel.occurred_at >= date_from)
+        if date_to is not None:
+            filters.append(TransactionModel.occurred_at < date_to)
+        result = await self._session.execute(
+            select(TransactionModel)
+            .where(*filters)
+            .order_by(
+                TransactionModel.occurred_at.desc(),
+                TransactionModel.created_at.desc(),
+                TransactionModel.id.desc(),
+            )
+            .limit(limit)
+        )
+        return [self._to_entity(model) for model in result.scalars().all()]
+
+    async def existing_ids_for_user(self, user_id: uuid.UUID, ids: set[uuid.UUID]) -> set[uuid.UUID]:
+        if not ids:
+            return set()
+        result = await self._session.execute(
+            select(TransactionModel.id).where(TransactionModel.user_id == user_id, TransactionModel.id.in_(ids))
+        )
+        return set(result.scalars().all())
+
+    async def list_recent_for_user(self, user_id: uuid.UUID, *, limit: int) -> list[Transaction]:
+        result = await self._session.execute(
+            select(TransactionModel)
+            .where(TransactionModel.user_id == user_id, TransactionModel.deleted_at.is_(None))
+            .order_by(
+                TransactionModel.occurred_at.desc(), TransactionModel.created_at.desc(), TransactionModel.id.desc()
+            )
+            .limit(max(1, min(limit, 5)))
+        )
+        return [self._to_entity(model) for model in result.scalars().all()]
+
+    async def list_for_user_window(
+        self,
+        user_id: uuid.UUID,
+        *,
+        date_from: datetime,
+        date_to: datetime,
+        limit: int,
+        offset: int = 0,
+        transaction_type: TransactionType | None = None,
+        category_id: uuid.UUID | None = None,
+    ) -> tuple[list[Transaction], int]:
+        filters = [
+            TransactionModel.user_id == user_id,
+            TransactionModel.deleted_at.is_(None),
+            TransactionModel.occurred_at >= date_from,
+            TransactionModel.occurred_at <= date_to,
+        ]
+        if transaction_type is not None:
+            filters.append(TransactionModel.type == transaction_type.value)
+        if category_id is not None:
+            filters.append(TransactionModel.category_id == category_id)
+        count_result = await self._session.execute(select(func.count()).select_from(TransactionModel).where(*filters))
+        total_count = int(count_result.scalar_one())
+        result = await self._session.execute(
+            select(TransactionModel)
+            .where(*filters)
+            .order_by(
+                TransactionModel.occurred_at.desc(), TransactionModel.created_at.desc(), TransactionModel.id.desc()
+            )
+            .offset(max(0, offset))
+            .limit(max(1, min(limit, 100)))
+        )
+        return [self._to_entity(model) for model in result.scalars().all()], total_count
+
+    async def spending_summary_for_user(
+        self, user_id: uuid.UUID, *, date_from: datetime, date_to: datetime, category_id: uuid.UUID | None = None
+    ) -> dict[str, Any]:
+        filters = [
+            TransactionModel.user_id == user_id,
+            TransactionModel.deleted_at.is_(None),
+            TransactionModel.type == TransactionType.EXPENSE.value,
+            TransactionModel.occurred_at >= date_from,
+            TransactionModel.occurred_at <= date_to,
+        ]
+        if category_id is not None:
+            filters.append(TransactionModel.category_id == category_id)
+        totals = await self._session.execute(
+            select(func.coalesce(func.sum(TransactionModel.amount_paise), 0), func.count())
+            .where(*filters)
+        )
+        total_spent_paise, transaction_count = totals.one()
+        grouped = await self._session.execute(
+            select(TransactionModel.category_id, func.sum(TransactionModel.amount_paise))
+            .where(*filters)
+            .group_by(TransactionModel.category_id)
+            .order_by(func.sum(TransactionModel.amount_paise).desc())
+        )
+        return {
+            "total_spent_paise": int(total_spent_paise or 0),
+            "transaction_count": int(transaction_count),
+            "by_category": [(category_id, int(amount or 0)) for category_id, amount in grouped.all()],
+        }
+
+    async def spending_by_account_for_user(
+        self, user_id: uuid.UUID, *, date_from: datetime, date_to: datetime, category_id: uuid.UUID | None = None
+    ) -> list[dict[str, Any]]:
+        filters = [
+            TransactionModel.user_id == user_id,
+            TransactionModel.deleted_at.is_(None),
+            TransactionModel.type == TransactionType.EXPENSE.value,
+            TransactionModel.occurred_at >= date_from,
+            TransactionModel.occurred_at <= date_to,
+        ]
+        if category_id is not None:
+            filters.append(TransactionModel.category_id == category_id)
+        result = await self._session.execute(
+            select(
+                TransactionModel.account_id,
+                func.sum(TransactionModel.amount_paise).label("total_spent_paise"),
+                func.count().label("transaction_count"),
+            )
+            .where(*filters)
+            .group_by(TransactionModel.account_id)
+            .order_by(func.sum(TransactionModel.amount_paise).desc())
+        )
+        return [
+            {
+                "account_id": account_id,
+                "total_spent_paise": int(total or 0),
+                "transaction_count": int(count),
+            }
+            for account_id, total, count in result.all()
+        ]
 
     async def update(self, transaction: Transaction) -> Transaction:
         model = await self._session.get(TransactionModel, transaction.id)
