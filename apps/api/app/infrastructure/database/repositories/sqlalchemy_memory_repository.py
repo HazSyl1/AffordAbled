@@ -4,11 +4,11 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.application.services.memory_service import candidates_for_event, fingerprint
+from app.application.services.memory_service import candidates_for_event, fingerprint, is_self_split_subject
 from app.infrastructure.database.models import MemoryModel, MemoryOutboxModel, MemoryReviewEventModel
 
 
@@ -90,8 +90,19 @@ class SqlAlchemyMemoryRepository:
         query = select(MemoryModel).where(MemoryModel.user_id == user_id)
         if status:
             query = query.where(MemoryModel.status == status)
+            if status == 'suggested':
+                # A pattern is user-visible only after three distinct reviewed events.
+                query = query.where(MemoryModel.evidence_count >= 3)
+        else:
+            query = query.where(
+                MemoryModel.status.in_({'suggested', 'confirmed', 'dismissed'}),
+                or_(MemoryModel.status != 'suggested', MemoryModel.evidence_count >= 3),
+            )
         result = await self.session.scalars(query.order_by(MemoryModel.updated_at.desc(), MemoryModel.id.desc()))
-        return list(result.all())
+        return [
+            memory for memory in result.all()
+            if not (memory.memory_type == 'split_method' and is_self_split_subject(memory.subject_key))
+        ]
 
     async def relevant_confirmed(
         self, user_id: uuid.UUID, *, subjects: list[str], scopes: list[str], limit: int = 20,
@@ -105,7 +116,10 @@ class SqlAlchemyMemoryRepository:
         if normalized_subjects:
             query = query.where(MemoryModel.subject_key.in_(normalized_subjects))
         result = await self.session.scalars(query.order_by(MemoryModel.updated_at.desc()).limit(limit))
-        return list(result.all())
+        return [
+            memory for memory in result.all()
+            if not (memory.memory_type == 'split_method' and is_self_split_subject(memory.subject_key))
+        ]
 
     async def confirm(self, user_id: uuid.UUID, memory_id: uuid.UUID) -> MemoryModel | None:
         memory = await self.session.scalar(select(MemoryModel).where(
@@ -198,8 +212,8 @@ class SqlAlchemyMemoryRepository:
                     id=uuid.uuid4(), user_id=event.user_id,
                     scope=candidate.scope, subject_key=candidate.subject_key,
                     memory_type=candidate.memory_type, value_json=candidate.value_json,
-                    fingerprint=candidate.fingerprint, status='suggested',
-                    confidence=1 / 3, evidence_count=0, source_event_ids=[],
+                    fingerprint=candidate.fingerprint, status='pending',
+                    confidence=0.0, evidence_count=0, source_event_ids=[],
                 )
                 self.session.add(memory)
             source_ids = list(memory.source_event_ids or [])
