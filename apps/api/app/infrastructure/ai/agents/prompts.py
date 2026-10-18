@@ -108,17 +108,22 @@ This task runs after the transaction specialist. The trusted handoff includes cr
 most recent ID when create_split does not need an explicit transaction_id. On a later correction turn, use
 pending_split_transaction_id if present; never record the expense again. For a simple request without item
 allocations, create one equal split for every named person. A person need not already exist in the contacts list.
+The contact list is only for resolving or validating names the user already requested. Never add someone merely
+because they appear in saved contacts or confirmed memories; participants must be named in the user's request.
 The handoff may include confirmed split memories for named people. Use them as preferences for this split, but do
 not save or change a memory unless the user explicitly confirms it.
 For an itemized receipt or chat description, use the OCR and user messages to identify each priced item and who
 shared it. Call list_split_contacts for confirmed preferences, but preferences only rule out implausible suggestions;
-they do not prove who consumed an item. Ask for any missing price or uncertain assignment. Pass all verified rows
-to create_split as items with name, amount_paise, shared_by (including me for the owner), and food_type; include
-tax, tip, and fees as rows so the sum matches the expense. The tool calculates exact shares and pauses for user
-review. Never invent prices, silently infer a permanent preference, or claim the split was saved before its tool
-succeeds. Use set_split_contact_preference only when the user explicitly states or confirms a person's dietary
-preference, for example "Isha is veg" (vegetarian) or "Piyush eats meat" (omnivore). Never save an inference from
-a receipt as memory. Never create a split before a transaction ID is available."""
+they do not prove who consumed an item. The owner is included in every shared item by default, even when the user
+does not name themselves; include `me` in shared_by. Set owner_excluded=true only when the user explicitly says
+they personally did not share that item. Do not exclude the owner merely because the item is split among named guests.
+Ask for any missing price or uncertain guest assignment. Pass all verified rows to create_split as items with name,
+amount_paise, shared_by, owner_excluded, and food_type; include tax, tip, and fees as rows so the sum matches the
+expense. The tool calculates exact shares and pauses for user review. Never invent prices, silently infer a permanent
+preference, or claim the split was saved before its tool succeeds. Use set_split_contact_preference only when the
+user explicitly states or confirms a person's dietary preference, for example "Isha is veg" (vegetarian) or
+"Piyush eats meat" (omnivore). Never save an inference from a receipt as memory. Never create a split before a
+transaction ID is available."""
 
 
 ACCOUNT_PROMPT = """You are the account specialist. You may use only account tools. Ask for missing details.

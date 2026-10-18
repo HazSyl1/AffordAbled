@@ -13,6 +13,7 @@ from langgraph.types import Command
 
 from app.application.services.image_service import ImageService
 from app.application.services.itemized_split import ItemAllocation, calculate_itemized_split
+from app.application.services.split_service import ParticipantShare
 from app.infrastructure.ai.agents.contracts import HandoffContext
 from app.infrastructure.ai.agents.runtime import ToolBoundSpecialistRuntime
 from app.infrastructure.ai.agents.split import SplitToolset
@@ -51,6 +52,34 @@ def test_itemized_calculation_uses_exact_paise_and_flags_dietary_conflicts() -> 
         calculate_itemized_split(301, ['Isha'], [ItemAllocation('Pizza', 300, ['me', 'Isha'])])
 
 
+def test_itemized_split_includes_owner_by_default_but_honors_explicit_exclusion() -> None:
+    calculation = calculate_itemized_split(
+        350000,
+        ['Shreyas', 'Sudhansu', 'Rujul', 'Sujal'],
+        [
+            ItemAllocation('Alcohol', 200000, ['Rujul', 'Sudhansu']),
+            ItemAllocation('Non-alcoholic items', 150000, ['Rujul', 'Shreyas', 'Sudhansu', 'Sujal']),
+        ],
+    )
+
+    assert calculation.owner_share_paise == 96667
+    assert calculation.participant_shares == {
+        'Shreyas': 30000,
+        'Sudhansu': 96666,
+        'Rujul': 96667,
+        'Sujal': 30000,
+    }
+    assert sum(calculation.participant_shares.values()) + calculation.owner_share_paise == 350000
+
+    owner_did_not_share = calculate_itemized_split(
+        10000,
+        ['Sujal'],
+        [ItemAllocation('Alcohol', 10000, ['Sujal'], owner_excluded=True)],
+    )
+    assert owner_did_not_share.owner_share_paise == 0
+    assert owner_did_not_share.participant_shares == {'Sujal': 10000}
+
+
 def test_supervisor_keeps_itemized_and_preference_tasks_distinct() -> None:
     itemized = _split_task_for_request('Spent 990 on dinner with Isha and Piyush. Isha had veg pizza.')
     assert itemized is not None and 'itemized split' in itemized
@@ -61,6 +90,23 @@ def test_supervisor_keeps_itemized_and_preference_tasks_distinct() -> None:
     assert _obvious_specialist('Isha is veg') == 'split'
     assert _obvious_specialist('Piyush eats meat') == 'split'
     assert _required_tools('Piyush eats meat', 'split') == {'set_split_contact_preference'}
+
+
+def test_split_rejects_saved_contacts_not_named_in_the_request() -> None:
+    context = HandoffContext(
+        user_id=uuid.uuid4(),
+        request='Spent 2000 on dinner with Isha and Piyush',
+        constraints={
+            'original_request': 'Spent 2000 on dinner with Isha and Piyush',
+            'latest_user_reply': 'Actually include Sarthak too',
+        },
+    )
+    people = [ParticipantShare(name, 0) for name in ('Isha', 'Piyush')]
+    SplitToolset._validate_requested_people(people, context)
+
+    SplitToolset._validate_requested_people([*people, ParticipantShare('Sarthak', 0)], context)
+    with pytest.raises(ValueError, match='Rahul'):
+        SplitToolset._validate_requested_people([*people, ParticipantShare('Rahul', 0)], context)
 
 
 @pytest.mark.asyncio

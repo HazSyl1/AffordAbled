@@ -9,6 +9,7 @@ class ItemAllocation:
     amount_paise: int
     shared_by: list[str]
     food_type: str = 'unknown'
+    owner_excluded: bool = False
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,12 @@ def calculate_itemized_split(
             raise ValueError('Unsupported receipt item food type.')
         members = [name.strip().casefold() for name in item.shared_by]
         members = ['me' if name == 'you' else name for name in members]
+        if item.owner_excluded and 'me' in members:
+            raise ValueError(f'The owner cannot be both included and excluded from {label}.')
+        if not item.owner_excluded and 'me' not in members:
+            # The payer is part of a shared item by default. The AI must not
+            # silently assign the owner a zero share just because it omitted "me".
+            members.append('me')
         if not members or len(set(members)) != len(members) or any(name not in shares for name in members):
             raise ValueError(f'Choose valid, distinct people for {label}.')
         ordered = sorted(members, key=lambda name: (name != 'me', name))

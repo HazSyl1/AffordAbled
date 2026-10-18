@@ -66,8 +66,9 @@ class SplitContactPreferenceResponse(BaseModel):
 class ItemAllocationRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     amount_paise: int = Field(gt=0)
-    shared_by: list[str] = Field(min_length=1, max_length=21)
+    shared_by: list[str] = Field(default_factory=list, max_length=21)
     food_type: Literal['vegetarian', 'vegan', 'contains_meat', 'unknown', 'shared_charge'] = 'unknown'
+    owner_excluded: bool = False
 
 
 class ItemizedSplitRequest(BaseModel):

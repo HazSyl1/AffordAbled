@@ -650,6 +650,7 @@ class ToolBoundSpecialistRuntime:
                 request=(state.get("task_queue") or [state["task_request"]])[0],
                 timezone=state.get("timezone", "UTC"),
                 constraints={
+                    "latest_user_reply": str(state["messages"][-1].content) if state.get("messages") else "",
                     "last_transaction_window": state.get("last_transaction_window"),
                     "original_request": state.get("task_request"),
                     "created_transaction_ids": state.get("created_transaction_ids", []),

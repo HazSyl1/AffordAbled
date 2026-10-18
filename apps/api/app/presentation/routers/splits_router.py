@@ -98,7 +98,10 @@ async def _itemized_calculation(
     return calculate_itemized_split(
         payload.amount_paise,
         payload.participants,
-        [ItemAllocation(item.name, item.amount_paise, item.shared_by, item.food_type) for item in payload.items],
+        [
+            ItemAllocation(item.name, item.amount_paise, item.shared_by, item.food_type, item.owner_excluded)
+            for item in payload.items
+        ],
         preferences,
     )
 
