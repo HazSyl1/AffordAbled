@@ -202,6 +202,11 @@ export function SplitsPage() {
     setError('');
   }
 
+  function finishNewPerson(index: number, name: string) {
+    const trimmedName = name.trim();
+    if (trimmedName) updatePerson(index, { name: trimmedName, isNew: false });
+  }
+
   function addPerson() {
     if (mode === 'custom' && (ownerAmount !== null || people.some((person) => person.amount !== null))) {
       setOwnerAmount(displayedOwnerAmount);
@@ -319,7 +324,10 @@ export function SplitsPage() {
                     placeholder='Choose a person'
                     invalid={showValidation && invalidNames[index]}
                     options={[
-                      { value: NEW_PERSON, label: person.isNew && person.name ? `New: ${person.name}` : '+ Add new person' },
+                      { value: NEW_PERSON, label: person.isNew && person.name ? person.name : '+ Add new person' },
+                      ...(!person.isNew && person.name && !contacts.some((contact) => contact.toLowerCase() === person.name.toLowerCase())
+                        ? [{ value: person.name, label: person.name }]
+                        : []),
                       ...contacts.filter((contact) => !people.some((other, row) => row !== index && other.name.toLowerCase() === contact.toLowerCase()))
                         .map((contact) => ({ value: contact, label: contact })),
                     ]}
@@ -331,7 +339,15 @@ export function SplitsPage() {
               {person.isNew && <input className={`${inputClass} ${showValidation && invalidNames[index] ? 'border-red-400/70' : ''}`}
                 aria-label={`New person ${index + 1} name`} aria-invalid={showValidation && invalidNames[index]}
                 placeholder='Person name' maxLength={100} value={person.name}
-                onChange={(event) => updatePerson(index, { name: event.target.value })} />}
+                onChange={(event) => updatePerson(index, { name: event.target.value })}
+                onBlur={(event) => finishNewPerson(index, event.currentTarget.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    finishNewPerson(index, event.currentTarget.value);
+                    event.currentTarget.blur();
+                  }
+                }} />}
               {mode === 'custom' && <label className='block space-y-1 text-xs text-[var(--text-secondary)]'>Share (₹)
                 <input className={`${inputClass} ${customShares[index] === null || (customShares[index] ?? 0) <= 0 ? 'border-red-400/70' : ''}`}
                   inputMode='decimal' aria-label={`Amount for person ${index + 1} in rupees`}

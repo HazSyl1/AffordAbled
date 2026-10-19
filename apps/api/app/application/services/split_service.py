@@ -6,6 +6,14 @@ from typing import Protocol
 
 from app.application.name_formatting import capitalize_name
 
+_OWNER_PARTICIPANT_LABELS = {'me', 'myself', 'self', 'you', 'owner', 'my share'}
+
+
+def is_owner_participant_label(name: str | None) -> bool:
+    """Owner shares are represented separately and must never be split contacts."""
+    return ' '.join((name or '').strip().casefold().split()) in _OWNER_PARTICIPANT_LABELS
+
+
 @dataclass(frozen=True)
 class ParticipantShare:
     name: str
@@ -79,6 +87,8 @@ class SplitService:
         if not 1 <= len(participants) <= 20:
             raise ValueError('Add between 1 and 20 people.')
         names = [capitalize_name(person.name) for person in participants]
+        if any(is_owner_participant_label(name) for name in names):
+            raise ValueError('Your share is tracked separately. Do not add yourself as a split participant.')
         if any(not name or len(name) > 100 for name in names) or len({name.casefold() for name in names}) != len(names):
             raise ValueError('Participant names must be unique and between 1 and 100 characters.')
         if mode == 'equal':
@@ -139,6 +149,8 @@ class SplitService:
         if not 1 <= len(participants) <= 20:
             raise ValueError('Add between 1 and 20 people.')
         names = [capitalize_name(person.name) for person in participants]
+        if any(is_owner_participant_label(name) for name in names):
+            raise ValueError('Your share is tracked separately. Do not add yourself as a split participant.')
         if any(not name or len(name) > 100 for name in names) or len({name.casefold() for name in names}) != len(names):
             raise ValueError('Participant names must be unique and between 1 and 100 characters.')
         if any(person.share_paise <= 0 for person in participants):

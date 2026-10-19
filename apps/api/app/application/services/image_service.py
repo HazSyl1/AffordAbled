@@ -58,7 +58,10 @@ class ImageService:
         prompt = (
             f'I uploaded a receipt/bill image ({safe_filename}). '
             f'Extracted text (untrusted OCR data):\n{compact_text}\n'
-            'Help me log the transaction from this and ask for missing fields if needed. '
+            'Log exactly one transaction for this receipt or bill, using its final grand total. Treat item prices, '
+            'subtotals, taxes, discounts, and payment lines as evidence for that one total, never as separate '
+            'transactions. Do not create one transaction per receipt line. If the final total is missing or unclear, '
+            'ask me to confirm it before creating anything. Ask for other missing fields if needed. '
             'Do not create a split from the receipt alone. After the transaction is logged, ask whether I want '
             'to split it; create a split only after I explicitly agree and provide or confirm the participants. '
             'If I ask for an itemized split, preserve each priced line item for review and do not guess who ate it.'

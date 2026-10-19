@@ -49,6 +49,7 @@ export interface ChatThreadDetail {
   thread: {
     thread_id: string;
     title: string | null;
+    transaction_id?: string | null;
     created_at: string;
     updated_at: string;
     message_count: number;
@@ -91,6 +92,13 @@ const chatApi = apiClient.injectEndpoints({
     getChatThread: builder.query<ChatThreadDetail, string>({
       query: (threadId) => `/threads/${encodeURIComponent(threadId)}`,
     }),
+    openTransactionChat: builder.mutation<ChatThreadDetail, { transactionId: string; threadId?: string | null }>({
+      query: ({ transactionId, threadId }) => ({
+        url: `/threads/transaction/${encodeURIComponent(transactionId)}`,
+        method: 'POST',
+        body: { thread_id: threadId ?? undefined },
+      }),
+    }),
     transcribeVoice: builder.mutation<VoiceTranscriptionResponse, VoiceTranscriptionRequest>({
       query: ({ audio, locale = 'en-IN' }) => {
         const formData = new FormData();
@@ -122,6 +130,7 @@ const chatApi = apiClient.injectEndpoints({
 export const {
   useSendChatMessageMutation,
   useLazyGetChatThreadQuery,
+  useOpenTransactionChatMutation,
   useTranscribeVoiceMutation,
   useAnalyzeImageMutation,
 } = chatApi;

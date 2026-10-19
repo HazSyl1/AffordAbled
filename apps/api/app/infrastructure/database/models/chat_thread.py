@@ -11,7 +11,10 @@ from app.infrastructure.database.base import Base
 
 class ChatThreadModel(Base):
     __tablename__ = 'chat_threads'
-    __table_args__ = (UniqueConstraint('user_id', 'thread_id', name='uq_chat_threads_user_thread'),)
+    __table_args__ = (
+        UniqueConstraint('user_id', 'thread_id', name='uq_chat_threads_user_thread'),
+        UniqueConstraint('user_id', 'transaction_id', name='uq_chat_threads_user_transaction'),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(
@@ -21,6 +24,9 @@ class ChatThreadModel(Base):
     )
     thread_id: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
     title: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    transaction_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey('transactions.id', ondelete='SET NULL'), nullable=True, index=True,
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

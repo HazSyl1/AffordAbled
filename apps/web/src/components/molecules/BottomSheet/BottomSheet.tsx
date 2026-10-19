@@ -16,6 +16,8 @@ export function BottomSheet({ isOpen, onClose, title, children }: BottomSheetPro
   const sheetRef = useRef<HTMLDivElement>(null);
   const dragStartY = useRef<number | null>(null);
   const dragStartHeight = useRef<number | null>(null);
+  const dragFrame = useRef<number | null>(null);
+  const pendingHeight = useRef<number | null>(null);
   const suppressHandleClick = useRef(false);
 
   useEffect(() => {
@@ -26,6 +28,9 @@ export function BottomSheet({ isOpen, onClose, title, children }: BottomSheetPro
       setIsDismissing(false);
       dragStartY.current = null;
       dragStartHeight.current = null;
+      if (dragFrame.current !== null) cancelAnimationFrame(dragFrame.current);
+      dragFrame.current = null;
+      pendingHeight.current = null;
       return;
     }
 
@@ -51,7 +56,7 @@ export function BottomSheet({ isOpen, onClose, title, children }: BottomSheetPro
       />
 
       <div className={[
-        'relative flex w-full flex-col overflow-hidden rounded-t-3xl border-x border-t border-[var(--bg-border)] bg-[var(--bg-card)] pb-[env(safe-area-inset-bottom)] transition-[height,max-height,border-radius,transform] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]',
+        'relative flex w-full flex-col overflow-hidden rounded-t-3xl border-x border-t border-[var(--bg-border)] bg-[var(--bg-card)] pb-[env(safe-area-inset-bottom)] transition-[height,max-height,border-radius,transform] duration-[350ms] ease-[cubic-bezier(0.22,1,0.36,1)]',
         isExpanded ? 'h-[calc(100dvh-env(safe-area-inset-top))] max-h-none' : 'max-h-[85dvh]',
         isDismissing ? 'translate-y-full' : 'translate-y-0',
         'lg:h-auto lg:max-h-[70vh] lg:max-w-2xl lg:rounded-3xl lg:border lg:pb-0 lg:shadow-[0_24px_60px_rgba(0,0,0,0.55)]',
@@ -67,12 +72,13 @@ export function BottomSheet({ isOpen, onClose, title, children }: BottomSheetPro
           }
         }}
       >
-        <div className='flex shrink-0 justify-center pt-2 pb-2 lg:hidden'>
+        <div className='flex shrink-0 justify-center px-3 lg:hidden'>
           <button
             type='button'
             aria-label={isExpanded ? 'Collapse sheet' : 'Expand sheet'}
             aria-expanded={isExpanded}
-            className='flex h-8 w-20 touch-none items-center justify-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)]'
+            aria-controls='bottom-sheet-content'
+            className='group flex h-12 w-full touch-none select-none items-center justify-center rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)]'
             onPointerDown={(event) => {
               dragStartY.current = event.clientY;
               dragStartHeight.current = sheetRef.current?.getBoundingClientRect().height ?? null;
@@ -85,13 +91,22 @@ export function BottomSheet({ isOpen, onClose, title, children }: BottomSheetPro
               const deltaY = event.clientY - dragStartY.current;
               const minHeight = 160;
               const maxHeight = window.innerHeight - 8;
-              setDraggedHeight(Math.max(minHeight, Math.min(maxHeight, dragStartHeight.current - deltaY)));
+              pendingHeight.current = Math.max(minHeight, Math.min(maxHeight, dragStartHeight.current - deltaY));
+              if (dragFrame.current === null) {
+                dragFrame.current = requestAnimationFrame(() => {
+                  dragFrame.current = null;
+                  if (pendingHeight.current !== null) setDraggedHeight(pendingHeight.current);
+                });
+              }
             }}
             onPointerUp={(event) => {
               if (dragStartY.current === null) return;
               const deltaY = event.clientY - dragStartY.current;
               dragStartY.current = null;
               dragStartHeight.current = null;
+              if (dragFrame.current !== null) cancelAnimationFrame(dragFrame.current);
+              dragFrame.current = null;
+              pendingHeight.current = null;
               setIsDragging(false);
               if (Math.abs(deltaY) > 24) {
                 suppressHandleClick.current = true;
@@ -106,6 +121,9 @@ export function BottomSheet({ isOpen, onClose, title, children }: BottomSheetPro
             onPointerCancel={() => {
               dragStartY.current = null;
               dragStartHeight.current = null;
+              if (dragFrame.current !== null) cancelAnimationFrame(dragFrame.current);
+              dragFrame.current = null;
+              pendingHeight.current = null;
               setIsDragging(false);
               setDraggedHeight(null);
             }}
@@ -117,11 +135,11 @@ export function BottomSheet({ isOpen, onClose, title, children }: BottomSheetPro
               setIsExpanded((expanded) => !expanded);
             }}
           >
-            <span className='h-1 w-10 rounded-full bg-[var(--bg-border)]' />
+            <span className='h-1.5 w-12 rounded-full bg-[var(--text-muted)] transition-colors group-hover:bg-[var(--text-secondary)]' />
           </button>
         </div>
 
-        <div className='min-h-0 flex-1 overflow-y-auto px-4 pb-5 touch-scroll lg:px-5 lg:pb-5' onClick={(event) => event.stopPropagation()}>
+        <div id='bottom-sheet-content' className='min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pb-5 touch-scroll lg:px-5 lg:pb-5' onClick={(event) => event.stopPropagation()}>
           {title ? (
             <div className='mb-4 mt-4 flex items-center justify-between'>
               <h2 className='text-lg font-bold text-[var(--text-primary)]'>{title}</h2>

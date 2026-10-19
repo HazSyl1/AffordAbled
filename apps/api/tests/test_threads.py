@@ -93,6 +93,43 @@ async def test_threads_router_crud_and_ownership(client: AsyncClient) -> None:
     assert final_list_response.json() == []
 
 
+async def test_transaction_chat_thread_is_reused_across_devices_and_user_scoped(client: AsyncClient) -> None:
+    owner_token = await register_and_get_token(client, 'transaction-chat-owner@example.com')
+    other_token = await register_and_get_token(client, 'transaction-chat-other@example.com')
+    account_response = await client.post(
+        '/api/v1/accounts', json={'name': 'Main', 'type': 'wallet', 'balance_paise': 100000},
+        headers=auth_headers(owner_token),
+    )
+    assert account_response.status_code == 201
+    category_response = await client.post(
+        '/api/v1/categories', json={'name': 'Food', 'type': 'expense'}, headers=auth_headers(owner_token),
+    )
+    assert category_response.status_code == 201
+    transaction_response = await client.post(
+        '/api/v1/transactions', json={
+            'account_id': account_response.json()['id'], 'category_id': category_response.json()['id'],
+            'type': 'expense', 'amount_paise': 31166, 'merchant': 'Brickhaus Tansabrews',
+            'occurred_at': '2026-10-20T00:06:00+05:30',
+        }, headers=auth_headers(owner_token),
+    )
+    assert transaction_response.status_code == 201
+    transaction_id = transaction_response.json()['id']
+
+    phone_open = await client.post(
+        f'/api/v1/threads/transaction/{transaction_id}', json={}, headers=auth_headers(owner_token),
+    )
+    laptop_open = await client.post(
+        f'/api/v1/threads/transaction/{transaction_id}', json={}, headers=auth_headers(owner_token),
+    )
+    assert phone_open.status_code == laptop_open.status_code == 200
+    assert phone_open.json()['thread']['thread_id'] == laptop_open.json()['thread']['thread_id']
+    assert phone_open.json()['thread']['title'].startswith('Brickhaus Tansabrews')
+    other_open = await client.post(
+        f'/api/v1/threads/transaction/{transaction_id}', json={}, headers=auth_headers(other_token),
+    )
+    assert other_open.status_code == 404
+
+
 async def test_chat_messages_are_persisted_in_thread_history(client: AsyncClient, app: FastAPI) -> None:
     token = await register_and_get_token(client, 'threads-chat-persistence@example.com')
     app.dependency_overrides[get_semantic_guardrail] = lambda: AllowingGuardrail()

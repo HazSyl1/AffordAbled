@@ -120,6 +120,7 @@ def test_split_allows_clear_typo_resolution_to_a_saved_contact() -> None:
     )
     SplitToolset._validate_requested_people([ParticipantShare('Piyush', 0)], context)
 
+
 @pytest.mark.asyncio
 async def test_receipt_ocr_keeps_item_lines_within_chat_request_limit() -> None:
     class FakeOcr:
@@ -131,6 +132,9 @@ async def test_receipt_ocr_keeps_item_lines_within_chat_request_limit() -> None:
         b'png', content_type='image/png', filename='dinner.png',
     )
     assert 'Item 0 10.00\nItem 1 10.00' in result.prompt
+    assert 'exactly one transaction' in result.prompt
+    assert 'final grand total' in result.prompt
+    assert 'ask me to confirm it' in result.prompt
     assert len(result.prompt) < 8000
 
 
@@ -193,6 +197,38 @@ async def test_chat_itemized_split_requires_review_before_create(monkeypatch: py
                    'shared_by': ['me', 'Isha'], 'food_type': 'vegetarian'}],
     })
     assert len(saved) == 3
+
+
+@pytest.mark.asyncio
+async def test_chat_split_never_saves_owner_as_external_participant() -> None:
+    transaction_id = uuid.uuid4()
+    saved: list[tuple] = []
+
+    class FakeSplits:
+        async def create(self, *args):
+            saved.append(args)
+            return SimpleNamespace(
+                id=uuid.uuid4(), transaction_id=transaction_id, title=args[2], owner_share_paise=5000,
+                participants=[SimpleNamespace(name=person.name, share_paise=person.share_paise)
+                              for person in args[5]],
+            )
+
+    class FakeTransactions:
+        async def get_transaction(self, _user_id, _transaction_id):
+            return SimpleNamespace(id=transaction_id, type=SimpleNamespace(value='expense'),
+                                   amount_paise=10000, merchant='Dinner', note=None)
+
+    context = HandoffContext(
+        user_id=uuid.uuid4(), request='Split dinner with me and Isha',
+        constraints={'created_transaction_ids': [str(transaction_id)]},
+    )
+    result = await SplitToolset(FakeSplits(), FakeTransactions()).create_split(context, {
+        'participants': ['Me', 'Isha'], 'mode': 'equal',
+    })
+
+    assert len(saved) == 1
+    assert [person.name for person in saved[0][5]] == ['Isha']
+    assert result['split']['participants'] == [{'name': 'Isha', 'share_paise': 0}]
 
 
 @pytest.mark.asyncio

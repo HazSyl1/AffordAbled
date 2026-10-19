@@ -3,7 +3,8 @@ import { createApi, fetchBaseQuery } from '@reduxjs/toolkit/query/react';
 
 import { API_BASE_URL } from './env';
 import type { RootState } from '../app/store';
-import { clearCredentials, setCredentials } from '../features/auth/authSlice';
+import { clearCredentials, setAuthNotice, setCredentials } from '../features/auth/authSlice';
+import { AUTH_UI_TEXT } from '../constants';
 
 const rawBaseQuery = fetchBaseQuery({
   baseUrl: `${API_BASE_URL}/api/v1`,
@@ -24,9 +25,14 @@ const baseQueryWithReauth: BaseQueryFn<string | FetchArgs, unknown, FetchBaseQue
   api,
   extraOptions,
 ) => {
+  const hadAccessToken = Boolean((api.getState() as RootState).auth.accessToken);
   let result = await rawBaseQuery(args, api, extraOptions);
 
-  if (result.error?.status === 401) {
+  const requestUrl = typeof args === 'string' ? args : args.url;
+  const isAuthEntryRequest = ['/auth/login', '/auth/register', '/auth/google/callback', '/auth/refresh']
+    .some((path) => requestUrl.endsWith(path));
+
+  if (result.error?.status === 401 && !isAuthEntryRequest) {
     const refreshResult = await rawBaseQuery(
       { url: '/auth/refresh', method: 'POST' },
       api,
@@ -37,8 +43,16 @@ const baseQueryWithReauth: BaseQueryFn<string | FetchArgs, unknown, FetchBaseQue
       const { access_token: accessToken } = refreshResult.data as { access_token: string };
       api.dispatch(setCredentials({ accessToken }));
       result = await rawBaseQuery(args, api, extraOptions);
+      if (result.error?.status === 401) {
+        api.dispatch(clearCredentials());
+        api.dispatch(setAuthNotice(AUTH_UI_TEXT.sessionExpiredError));
+        api.dispatch(apiClient.util.resetApiState());
+      }
     } else {
       api.dispatch(clearCredentials());
+      if (hadAccessToken) {
+        api.dispatch(setAuthNotice(AUTH_UI_TEXT.sessionExpiredError));
+      }
       api.dispatch(apiClient.util.resetApiState());
     }
   }

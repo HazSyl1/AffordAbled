@@ -18,6 +18,7 @@ import { DASHBOARD_CHAT_UI_TEXT, SHEET_TITLES, VOICE_CAPTURE_EVENT_NAME } from '
 import {
   useAnalyzeImageMutation,
   useLazyGetChatThreadQuery,
+  useOpenTransactionChatMutation,
   type ChatTransactionProposal,
   useSendChatMessageMutation,
   useTranscribeVoiceMutation,
@@ -86,6 +87,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
   const location = useLocation();
   const [sendChatMessage, { isLoading: isSendingChatMessage }] = useSendChatMessageMutation();
   const [getChatThread] = useLazyGetChatThreadQuery();
+  const [openTransactionChat] = useOpenTransactionChatMutation();
   const [transcribeVoice, { isLoading: isTranscribingVoice }] = useTranscribeVoiceMutation();
   const [analyzeImage, { isLoading: isAnalyzingImage }] = useAnalyzeImageMutation();
   const [drafts, setDrafts] = useState<ChatDraft[]>(() => listChatDrafts(userId));
@@ -528,8 +530,15 @@ function ChatWorkspace({ userId }: { userId: string }) {
     const existingDraft = listChatDrafts(userId).find(
       (draft) => draft.kind === 'transaction' && draft.transaction_id === transactionId,
     );
+    const transaction = transactions.find((item) => item.id === transactionId);
+    const transactionTitle = transaction
+      ? `${transaction.merchant || 'Expense'} - INR ${(transaction.amount_paise / 100).toFixed(2)}`
+      : undefined;
     const transactionDraft =
-      existingDraft ?? createChatDraft(userId, 'transaction', transactionId, { lifecycle: 'conversation' });
+      existingDraft ?? createChatDraft(userId, 'transaction', transactionId, {
+        lifecycle: 'conversation',
+        ...(transactionTitle ? { title: transactionTitle } : {}),
+      });
     const nextDrafts = listChatDrafts(userId);
     const requestId = selectedThreadRequestRef.current + 1;
     selectedThreadRequestRef.current = requestId;
@@ -546,8 +555,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
       setChatError(null);
     });
 
-    if (transactionDraft.thread_id) {
-      void getChatThread(transactionDraft.thread_id)
+    void openTransactionChat({ transactionId, threadId: transactionDraft.thread_id })
         .unwrap()
         .then((detail) => {
           if (selectedThreadRequestRef.current !== requestId) {
@@ -565,7 +573,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
             kind: transactionDraft.kind,
             lifecycle: transactionDraft.lifecycle,
             transactionId: transactionDraft.transaction_id,
-            threadId: transactionDraft.thread_id,
+            threadId: detail.thread.thread_id,
             messages: messages.length > 0 ? messages : transactionDraft.messages,
             expiresAt: transactionDraft.expires_at,
             title: detail.thread.title ?? transactionDraft.title,
@@ -576,9 +584,8 @@ function ChatWorkspace({ userId }: { userId: string }) {
           setSelectedDraftId(hydratedDraft.id);
         })
         .catch(() => {
-          // Keep the locally saved transaction chat available if server history is unavailable.
+          // Keep local transaction chats usable if conversation storage is disabled or unavailable.
         });
-    }
 
     params.delete('transaction_id');
     const nextSearch = params.toString();
@@ -589,7 +596,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
       },
       { replace: true },
     );
-  }, [getChatThread, location.search, navigate, userId]);
+  }, [location.search, navigate, openTransactionChat, transactions, userId]);
 
   const handleImageFileSelected = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const imageFile = event.target.files?.[0];

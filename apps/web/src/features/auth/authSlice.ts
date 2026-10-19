@@ -14,11 +14,13 @@ export interface AuthState {
   // cookie the browser manages automatically and this app never reads.
   accessToken: string | null;
   user: AuthUser | null;
+  authNotice: string | null;
 }
 
 const initialState: AuthState = {
   accessToken: null,
   user: null,
+  authNotice: null,
 };
 
 const authSlice = createSlice({
@@ -31,6 +33,7 @@ const authSlice = createSlice({
     ) {
       const identityTokenChanged = state.accessToken !== action.payload.accessToken;
       state.accessToken = action.payload.accessToken;
+      state.authNotice = null;
       if (action.payload.user !== undefined) {
         state.user = action.payload.user;
       } else if (identityTokenChanged) {
@@ -40,6 +43,9 @@ const authSlice = createSlice({
     setUser(state, action: PayloadAction<AuthUser | null>) {
       state.user = action.payload;
     },
+    setAuthNotice(state, action: PayloadAction<string | null>) {
+      state.authNotice = action.payload;
+    },
     clearCredentials(state) {
       state.accessToken = null;
       state.user = null;
@@ -47,5 +53,5 @@ const authSlice = createSlice({
   },
 });
 
-export const { setCredentials, setUser, clearCredentials } = authSlice.actions;
+export const { setCredentials, setUser, setAuthNotice, clearCredentials } = authSlice.actions;
 export default authSlice.reducer;

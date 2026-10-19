@@ -1,6 +1,6 @@
 import { zodResolver } from '@hookform/resolvers/zod';
 import type { FetchBaseQueryError } from '@reduxjs/toolkit/query';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { Link, useNavigate } from 'react-router-dom';
 
@@ -10,7 +10,8 @@ import { FormField } from '../../components/molecules/FormField';
 import { AuthPageShell } from '../../components/molecules/AuthPageShell/AuthPageShell';
 import { useLoginMutation } from '../../features/auth/authApi';
 import { setCredentials } from '../../features/auth/authSlice';
-import { useAppDispatch } from '../../app/hooks';
+import { setAuthNotice } from '../../features/auth/authSlice';
+import { useAppDispatch, useAppSelector } from '../../app/hooks';
 import { loginSchema } from './LoginPage.schema';
 import type { LoginFormValues } from './LoginPage.schema';
 import { AUTH_UI_TEXT } from '../../constants';
@@ -25,9 +26,10 @@ function resolveLoginErrorMessage(error: unknown): string {
       ? String(fetchError.data.detail)
       : '';
 
-    if (status === 401 || detail === 'InvalidCredentialsError' || /invalid (email or )?password|invalid credentials/i.test(detail)) {
+    if (status === 401 || detail === 'InvalidCredentialsError' || /invalid (email or )?password|invalid credentials|login failed|unauthorized/i.test(detail)) {
       return AUTH_UI_TEXT.invalidCredentialsError;
     }
+    if (status === 403) return AUTH_UI_TEXT.unauthorizedError;
     return AUTH_UI_TEXT.serviceUnavailableError;
   }
 
@@ -36,9 +38,16 @@ function resolveLoginErrorMessage(error: unknown): string {
 
 export function LoginPage() {
   const dispatch = useAppDispatch();
+  const authNotice = useAppSelector((state) => state.auth.authNotice);
   const navigate = useNavigate();
   const [login] = useLoginMutation();
   const [formError, setFormError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!authNotice) return;
+    setFormError(authNotice);
+    dispatch(setAuthNotice(null));
+  }, [authNotice, dispatch]);
 
   const {
     register,

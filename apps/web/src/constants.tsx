@@ -54,6 +54,8 @@ export const AUTH_UI_TEXT = {
   alreadyHaveAccountPrompt: 'Already have an account?',
   loginLinkLabel: 'Log in',
   invalidCredentialsError: 'Invalid email or password.',
+  unauthorizedError: 'You are not authorized to do that. Please check your access and try again.',
+  sessionExpiredError: 'Your session expired. Please log in again to continue.',
   serviceUnavailableError: 'Service is currently unavailable. Please try again in some time.',
   registrationError: 'Could not create an account with those details.',
 } as const;

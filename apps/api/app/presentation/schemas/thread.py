@@ -35,6 +35,7 @@ class ThreadResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     message_count: int = 0
+    transaction_id: str | None = None
 
     @classmethod
     def from_entity(cls, thread: ChatThread, *, message_count: int = 0) -> Self:
@@ -44,6 +45,7 @@ class ThreadResponse(BaseModel):
             created_at=thread.created_at,
             updated_at=thread.updated_at,
             message_count=message_count,
+            transaction_id=str(thread.transaction_id) if thread.transaction_id else None,
         )
 
 

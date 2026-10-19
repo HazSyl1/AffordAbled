@@ -9,7 +9,7 @@ from typing import Any
 from langgraph.types import interrupt
 
 from app.application.services.itemized_split import ItemAllocation, calculate_itemized_split
-from app.application.services.split_service import ParticipantShare, SplitService
+from app.application.services.split_service import ParticipantShare, SplitService, is_owner_participant_label
 from app.application.services.transaction_service import TransactionService
 from app.infrastructure.ai.agents.contracts import HandoffContext
 
@@ -135,7 +135,14 @@ class SplitToolset:
                 raise ValueError("Each participant must include a name.")
             if isinstance(share, float):
                 share = round(share * 100)
-            people.append(ParticipantShare(str(name).strip(), int(share)))
+            participant_name = str(name).strip()
+            # The model can copy the item's owner marker into the external
+            # participant list. The owner share is tracked separately.
+            if is_owner_participant_label(participant_name):
+                continue
+            people.append(ParticipantShare(participant_name, int(share)))
+        if not people:
+            raise ValueError('Name at least one other person; your own share is tracked separately.')
         self._validate_requested_people(people, context)
         mode = str(args.get("mode") or "equal").lower()
         owner_share = args.get("owner_share_paise")
