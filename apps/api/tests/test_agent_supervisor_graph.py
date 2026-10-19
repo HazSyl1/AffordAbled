@@ -16,6 +16,7 @@ from app.infrastructure.ai.agents.contracts import HandoffContext, SpecialistDec
 from app.infrastructure.ai.agents.runtime import SpecialistRuntime
 from app.infrastructure.ai.agents.supervisor_graph import (
     AgenticSupervisorGraph,
+    _append_conversation_history,
     _category_creation_satisfied,
     _explicit_action_clauses,
     _obvious_specialist,
@@ -124,6 +125,73 @@ def test_new_category_reply_keeps_the_pending_expense_queued() -> None:
     assert task_queue == ["spent 99 on drugs"]
     assert resumes is True
     assert creates_category is True
+
+
+def test_affirmative_continuation_restores_unfinished_transaction_task() -> None:
+    task_request, task_queue, resumes, creates_category = _pending_transaction_followup(
+        {
+            "task_request": "yes",
+            "tasks_completed": True,
+            "final_response": (
+                'The "Food" category has been created. You can now proceed with recording the ₹999 expense.'
+            ),
+            "conversation_history": [
+                {"role": "assistant", "content": 'You can now proceed with recording the ₹999 expense.'}
+            ],
+            "tool_event_history": [
+                {
+                    "tool": "ask_user",
+                    "ok": True,
+                    "task": "record a 999 expense in the Food category",
+                    "request": "spent 999 on food",
+                },
+                {"tool": "create_account", "ok": True, "task": "create Axis account with 6000"},
+            ],
+        },
+        "yes",
+    )
+
+    assert task_request == "spent 999 on food"
+    assert task_queue == ["record a 999 expense in the Food category"]
+    assert resumes is True
+    assert creates_category is False
+
+    remaining, satisfied = _reconcile_task_queue(
+        task_queue,
+        [
+            {
+                "tool": "create_transaction",
+                "ok": True,
+                "data": {
+                    "transaction": {
+                        "amount_paise": 99900,
+                        "merchant": None,
+                        "id": str(uuid.uuid4()),
+                    }
+                },
+            }
+        ],
+        original_request=task_request,
+        latest_reply="yes",
+        available_categories=[{"name": "Food", "type": "expense"}],
+        verify_categories=False,
+    )
+    assert remaining == []
+    assert satisfied == task_queue
+
+
+def test_conversation_history_reducer_appends_parallel_updates_and_bounds_history() -> None:
+    existing = [{"role": "user", "content": "first"}]
+    update = [{"role": "assistant", "content": "question"}, {"role": "user", "content": "answer"}]
+
+    assert _append_conversation_history(existing, update) == [*existing, *update]
+    repeated_message = {"role": "user", "content": "yes"}
+    assert _append_conversation_history([repeated_message], [repeated_message]) == [repeated_message]
+    assert _append_conversation_history(
+        [repeated_message], [repeated_message, {"role": "user", "content": "yes"}]
+    ) == [repeated_message, {"role": "user", "content": "yes"}]
+    assert _append_conversation_history(existing, [*existing, *update]) == [*existing, *update]
+    assert len(_append_conversation_history([{"role": "user", "content": str(i)} for i in range(100)], update)) == 100
 
 
 def test_report_request_routes_to_export_and_requires_verified_report() -> None:
@@ -293,6 +361,11 @@ async def test_category_type_reply_keeps_category_creation_as_supervisor_task() 
     completed = await graph.invoke(user_id=user_id, thread_id="category-only", message="expense")
 
     assert completed["final_response"] == "I could not verify that the requested task was completed."
+    assert completed["conversation_history"] == [
+        {"role": "user", "content": 'create new category "Enterntainment"'},
+        {"role": "assistant", "content": "Expense or income category?"},
+        {"role": "user", "content": "expense"},
+    ]
     assert len(supervisor.calls) == 2
     assert supervisor.calls[1][0].request == 'create new category "Enterntainment"'
     assert supervisor.calls[1][0].constraints["latest_user_reply"] == "expense"
