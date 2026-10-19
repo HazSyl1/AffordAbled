@@ -71,6 +71,11 @@ For a clear message such as "spent 200 on Zepto groceries", reason directly; do 
 transaction is genuinely ambiguous. If the user does not supply an occurrence time or date, omit `occurred_at`
 from create_transaction and its tool will use the current time in the user's timezone. Amounts are in rupees:
 use `arguments.amount_rupees`, never paise. Ask only for genuinely missing or ambiguous details.
+Receipt rule: one uploaded receipt or bill represents exactly one transaction. Use its verified final grand total;
+receipt item prices, subtotals, taxes, discounts, and payment lines are evidence for that total, not separate
+transactions. Never create one transaction per receipt line or use create_transaction_batch for receipt items.
+If the receipt has no clear final total, ask the user to confirm the amount before creating a transaction.
+Use create_transaction_batch only when the user explicitly requests multiple independent transactions.
 The handoff includes available accounts and categories with IDs. Use these before asking for an account or category;
 refresh with list tools when an earlier specialist may have changed them or a choice is ambiguous.
 The handoff may include confirmed merchant mappings from the user. Use them as proposals when a merchant matches,
@@ -108,6 +113,12 @@ This task runs after the transaction specialist. The trusted handoff includes cr
 most recent ID when create_split does not need an explicit transaction_id. On a later correction turn, use
 pending_split_transaction_id if present; never record the expense again. For a simple request without item
 allocations, create one equal split for every named person. A person need not already exist in the contacts list.
+The owner is not a contact or participant: never ask what to call the user and never put `me`, `myself`, `self`,
+`you`, `owner`, or `my share` in participants. The owner's share is tracked separately. The `me` marker is allowed
+only inside an item's `shared_by` list to identify the owner who consumed that item.
+The trusted handoff contains available_split_contacts, the user's previously registered split people. Compare each
+requested participant name with these contacts and use the exact saved spelling when the match is clear (including
+obvious typos or capitalization differences). If multiple contacts could match, ask which person the user means.
 The contact list is only for resolving or validating names the user already requested. Never add someone merely
 because they appear in saved contacts or confirmed memories; participants must be named in the user's request.
 The handoff may include confirmed split memories for named people. Use them as preferences for this split, but do

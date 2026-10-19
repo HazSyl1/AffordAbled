@@ -14,6 +14,7 @@ from app.domain.repositories import (
     ChatMessageRepository,
     ChatThreadRepository,
     GuardrailLogRepository,
+    TransactionRepository,
     UserRepository,
 )
 
@@ -44,6 +45,7 @@ class ChatService:
     chat_message_repository: ChatMessageRepository
     agent_correction_repository: AgentCorrectionRepository
     guardrail_log_repository: GuardrailLogRepository
+    transaction_repository: TransactionRepository | None = None
 
     @traceable(name="chat_service.send_message", run_type="chain")
     async def send_message(
@@ -70,19 +72,38 @@ class ChatService:
         if user is not None and user.conversation_storage_enabled:
             now = datetime.now(UTC)
             existing_thread = await self.chat_thread_repository.get_for_user(user_id, resolved_thread_id)
+            created_transaction = None
+            if result.created_transaction_id and self.transaction_repository is not None:
+                try:
+                    created_transaction = await self.transaction_repository.get_for_user(
+                        uuid.UUID(result.created_transaction_id), user_id,
+                    )
+                except (ValueError, TypeError):
+                    created_transaction = None
+            transaction_title = None
+            if created_transaction is not None:
+                transaction_title = (
+                    f'{created_transaction.merchant or "Expense"} - '
+                    f'INR {created_transaction.amount_paise / 100:,.2f}'
+                )[:160]
             if existing_thread is None:
                 await self.chat_thread_repository.create(
                     ChatThread(
                         id=uuid.uuid4(),
                         user_id=user_id,
                         thread_id=resolved_thread_id,
-                        title=normalized_message[:160],
+                        title=transaction_title or normalized_message[:160],
                         created_at=now,
                         updated_at=now,
+                        transaction_id=created_transaction.id if created_transaction else None,
                     )
                 )
             else:
                 await self.chat_thread_repository.touch_for_user(user_id, resolved_thread_id)
+                if created_transaction is not None and existing_thread.transaction_id is None:
+                    await self.chat_thread_repository.link_transaction_for_user(
+                        user_id, resolved_thread_id, created_transaction.id, transaction_title or 'Transaction chat',
+                    )
 
             await self.chat_message_repository.create(
                 ChatMessage(

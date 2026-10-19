@@ -119,6 +119,17 @@ async def test_custom_split_validation_and_owner_isolation(client: AsyncClient) 
     assert (await client.get('/api/v1/splits/contacts', headers=auth_headers(owner))).json() == ['Sam']
 
 
+async def test_owner_alias_is_rejected_as_split_contact(client: AsyncClient) -> None:
+    token = await register_and_get_token(client, 'split-no-owner-contact@example.com')
+    _, transaction_id = await _expense(client, token, amount=1000)
+    response = await client.post('/api/v1/splits', headers=auth_headers(token), json={
+        'transaction_id': transaction_id, 'title': 'Dinner', 'amount_paise': 1000,
+        'mode': 'equal', 'participants': [{'name': 'me'}],
+    })
+    assert response.status_code == 422
+    assert 'tracked separately' in response.json()['detail']
+
+
 async def test_edit_split_preserves_linked_repayments_and_participant_ids(client: AsyncClient) -> None:
     token = await register_and_get_token(client, 'split-edit@example.com')
     headers = auth_headers(token)

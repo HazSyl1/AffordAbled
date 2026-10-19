@@ -386,6 +386,7 @@ def get_chat_service(
     chat_message_repository: SqlAlchemyChatMessageRepository = Depends(get_chat_message_repository),
     agent_correction_repository: SqlAlchemyAgentCorrectionRepository = Depends(get_agent_correction_repository),
     guardrail_log_repository: SqlAlchemyGuardrailLogRepository = Depends(get_guardrail_log_repository),
+    transaction_repository: SqlAlchemyTransactionRepository = Depends(get_transaction_repository),
 ) -> ChatService:
     return ChatService(
         orchestrator=orchestrator,
@@ -394,6 +395,7 @@ def get_chat_service(
         chat_message_repository=chat_message_repository,
         agent_correction_repository=agent_correction_repository,
         guardrail_log_repository=guardrail_log_repository,
+        transaction_repository=transaction_repository,
     )
 
 

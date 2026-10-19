@@ -13,3 +13,4 @@ class ChatThread:
     title: str | None
     created_at: datetime
     updated_at: datetime
+    transaction_id: uuid.UUID | None = None

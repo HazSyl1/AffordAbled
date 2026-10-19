@@ -1,6 +1,7 @@
 import { zodResolver } from '@hookform/resolvers/zod';
 import { AlertCircle } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useForm, useWatch } from 'react-hook-form';
 import { useNavigate } from 'react-router-dom';
 
@@ -123,6 +124,8 @@ export function CreateTransactionForm({
   const isSheetMode = mode === 'sheet';
   const isEditing = Boolean(transactionId);
   const [splitAfterSave, setSplitAfterSave] = useState(false);
+  const [isSplitPromptOpen, setIsSplitPromptOpen] = useState(false);
+  const formRef = useRef<HTMLFormElement>(null);
   const [createTransaction] = useCreateTransactionMutation();
   const [updateTransaction] = useUpdateTransactionMutation();
   const [createAccount, { isLoading: isCreatingAccount }] = useCreateAccountMutation();
@@ -350,7 +353,7 @@ export function CreateTransactionForm({
   };
 
   return (
-    <form className='w-full' onSubmit={onSubmit} noValidate>
+    <form ref={formRef} className='w-full' onSubmit={onSubmit} noValidate>
       {showHeading ? (
         <>
           <h2 className='text-base font-semibold text-[var(--text-primary)]'>
@@ -621,21 +624,71 @@ export function CreateTransactionForm({
       ) : null}
 
       {enableSplit && splitsReady && transactionType === 'expense' && !hasSplit ? (
-        <label className='mb-4 flex cursor-pointer items-start gap-3 rounded-xl border border-[var(--bg-border)] bg-[var(--bg-elevated)] p-3 text-sm text-[var(--text-primary)]'>
+        <label className={`mb-4 flex min-h-16 cursor-pointer touch-manipulation items-start gap-3 rounded-xl border p-3 text-sm text-[var(--text-primary)] transition-colors ${
+          splitAfterSave
+            ? 'border-[var(--brand-primary)] bg-[var(--brand-subtle)]'
+            : 'border-[var(--bg-border)] bg-[var(--bg-elevated)] hover:border-[var(--brand-primary)]/60'
+        }`}>
           <input
             type='checkbox'
-            className='mt-1'
+            className='mt-1 h-5 w-5 shrink-0 cursor-pointer accent-[var(--brand-primary)]'
             checked={splitAfterSave}
-            onChange={(event) => setSplitAfterSave(event.target.checked)}
+            onChange={(event) => {
+              const shouldSplit = event.target.checked;
+              setSplitAfterSave(shouldSplit);
+              setIsSplitPromptOpen(shouldSplit);
+            }}
           />
-          <span><span className='block font-semibold'>Split this expense</span>
-            <span className='block text-xs text-[var(--text-muted)]'>After saving, choose people and review their shares.</span></span>
+          <span className='min-w-0'>
+            <span className='block font-semibold'>Split this expense</span>
+            <span className='block text-xs text-[var(--text-muted)]'>After saving, choose people and review their shares.</span>
+            {splitAfterSave ? <span className='mt-1 block text-xs font-semibold text-[var(--brand-primary)]'>Split setup will open after you save.</span> : null}
+          </span>
         </label>
       ) : null}
 
-      <Button type='submit' isLoading={isSubmitting} disabled={isEditing && !isDirty}>
+      <Button
+        type='submit'
+        className={isSheetMode ? 'sticky bottom-0 z-10 shadow-[0_-10px_18px_var(--bg-card)]' : ''}
+        isLoading={isSubmitting}
+        disabled={isEditing && !isDirty && !splitAfterSave}
+      >
         {splitAfterSave && transactionType === 'expense' ? 'Save and set up split' : submitLabel}
       </Button>
+      {isSplitPromptOpen ? createPortal(
+        <div className='fixed inset-0 z-[100] flex items-end justify-center bg-black/65 p-0 backdrop-blur-sm sm:items-center sm:p-4'>
+          <button
+            type='button'
+            className='absolute inset-0 cursor-default'
+            aria-label='Close split setup prompt'
+            onClick={() => setIsSplitPromptOpen(false)}
+          />
+          <section
+            role='dialog'
+            aria-modal='true'
+            aria-labelledby='split-setup-prompt-title'
+            className='relative z-10 w-full max-w-md rounded-t-3xl border border-[var(--bg-border)] bg-[var(--bg-card)] p-5 pb-[calc(1.25rem+env(safe-area-inset-bottom))] shadow-2xl sm:rounded-3xl sm:p-6'
+          >
+            <div className='mx-auto mb-4 h-1.5 w-12 rounded-full bg-[var(--text-muted)] sm:hidden' />
+            <h2 id='split-setup-prompt-title' className='text-lg font-bold text-[var(--text-primary)]'>Set up a split</h2>
+            <p className='mt-2 text-sm leading-6 text-[var(--text-secondary)]'>Save this expense first. Then you can choose who shared it and review everyone’s share.</p>
+            <div className='mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end'>
+              <Button type='button' variant='secondary' onClick={() => setIsSplitPromptOpen(false)}>Keep editing</Button>
+              <Button
+                type='button'
+                isLoading={isSubmitting}
+                onClick={() => {
+                  setIsSplitPromptOpen(false);
+                  formRef.current?.requestSubmit();
+                }}
+              >
+                Save and continue
+              </Button>
+            </div>
+          </section>
+        </div>,
+        document.body,
+      ) : null}
     </form>
   );
 }

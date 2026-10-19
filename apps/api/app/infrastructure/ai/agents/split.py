@@ -3,12 +3,13 @@ from __future__ import annotations
 import re
 import uuid
 from decimal import Decimal
+from difflib import SequenceMatcher
 from typing import Any
 
 from langgraph.types import interrupt
 
 from app.application.services.itemized_split import ItemAllocation, calculate_itemized_split
-from app.application.services.split_service import ParticipantShare, SplitService
+from app.application.services.split_service import ParticipantShare, SplitService, is_owner_participant_label
 from app.application.services.transaction_service import TransactionService
 from app.infrastructure.ai.agents.contracts import HandoffContext
 
@@ -32,6 +33,10 @@ class SplitToolset:
             )
             if value
         )
+        saved_contacts = [
+            str(name) for name in context.constraints.get('available_split_contacts', []) if name
+        ]
+        source_tokens = re.findall(r"[A-Za-z][A-Za-z'-]*", source_text)
         unrequested = [
             person.name
             for person in people
@@ -39,6 +44,14 @@ class SplitToolset:
                 rf'(?<!\w){re.escape(person.name).replace(r"\ ", r"\s+")}(?!\w)',
                 source_text,
                 re.IGNORECASE,
+            )
+            and not any(
+                saved_name.casefold() == person.name.casefold()
+                and any(
+                    SequenceMatcher(None, saved_name.casefold(), token.casefold()).ratio() >= 0.82
+                    for token in source_tokens
+                )
+                for saved_name in saved_contacts
             )
         ]
         if unrequested:
@@ -122,7 +135,14 @@ class SplitToolset:
                 raise ValueError("Each participant must include a name.")
             if isinstance(share, float):
                 share = round(share * 100)
-            people.append(ParticipantShare(str(name).strip(), int(share)))
+            participant_name = str(name).strip()
+            # The model can copy the item's owner marker into the external
+            # participant list. The owner share is tracked separately.
+            if is_owner_participant_label(participant_name):
+                continue
+            people.append(ParticipantShare(participant_name, int(share)))
+        if not people:
+            raise ValueError('Name at least one other person; your own share is tracked separately.')
         self._validate_requested_people(people, context)
         mode = str(args.get("mode") or "equal").lower()
         owner_share = args.get("owner_share_paise")

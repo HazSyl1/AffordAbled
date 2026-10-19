@@ -175,7 +175,10 @@ _TOOL_DESCRIPTIONS = {
     "extract_transaction": "Extract fields from ambiguous transaction text or receipts; skip for clear requests.",
     "list_transactions": "Read user transactions for lookup requests; do not use to create or edit records.",
     "create_transaction": "Create one user transaction after resolving IDs; amount_rupees is in rupees.",
-    "create_transaction_batch": "Create several explicit transaction rows; do not use for one transaction.",
+    "create_transaction_batch": (
+        "Create multiple independent transactions only when the user explicitly requested them. Never use this to "
+        "turn receipt line items into transactions; one receipt is one transaction for its grand total."
+    ),
     "update_transaction": "Edit a user transaction by transaction_id when explicitly requested.",
     "delete_transaction": "Soft-delete one user-owned transaction only after explicit confirmation.",
     "restore_transaction": "Restore one previously deleted user-owned transaction when explicitly requested.",
@@ -200,7 +203,9 @@ _TOOL_DESCRIPTIONS = {
     ),
     "create_split": (
         "Create a split after its expense exists. For itemized receipts, supply every item with amount_paise, "
-        "shared_by names (use me for the owner), and food_type. The tool calculates exact shares and asks the "
+        "shared_by names (use me for the owner). Never list the owner (me/myself/you) as a participant or ask "
+        "what to call the owner; the owner's share is tracked separately. Include food_type. The tool calculates "
+        "exact shares and asks the "
         "user to confirm before saving. Do not invent item prices or who ate an item."
     ),
     "create_transaction_report": (
@@ -673,6 +678,7 @@ class ToolBoundSpecialistRuntime:
                     "pending_split_transaction_id": state.get("pending_split_transaction_id"),
                     "available_categories": state.get("available_categories", []),
                     "available_accounts": state.get("available_accounts", []),
+                    "available_split_contacts": state.get("available_split_contacts", []),
                     "confirmed_memories": state.get("confirmed_memories", []),
                 },
             )
