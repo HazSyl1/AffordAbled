@@ -34,7 +34,7 @@ from app.infrastructure.ai.agents.supervisor_graph import AgenticChatOrchestrato
 from app.infrastructure.ai.intent_classifier import KeywordIntentClassifier, LlmIntentClassifier
 from app.infrastructure.ai.nemo_semantic_guardrail import NemoSemanticGuardrail
 from app.infrastructure.ai.tools import CategoryTools, TransactionQueryTools
-from app.infrastructure.audio.ffmpeg_audio_transcoder import FFmpegAudioTranscoder
+from app.infrastructure.audio.ffmpeg_audio_transcoder import FFmpegAudioTranscoder, resolve_ffmpeg_binary
 from app.infrastructure.auth.google_oauth import GoogleAuthClient
 from app.infrastructure.auth.jwt_service import JwtTokenService
 from app.infrastructure.auth.password_hasher import Argon2PasswordHasher
@@ -137,7 +137,7 @@ def get_speech_to_text_client(settings: Settings = Depends(get_settings_dependen
 
 def get_audio_transcoder(settings: Settings = Depends(get_settings_dependency)) -> FFmpegAudioTranscoder:
     return FFmpegAudioTranscoder(
-        binary=settings.ffmpeg_binary,
+        binary=resolve_ffmpeg_binary(settings.ffmpeg_binary),
         timeout_seconds=settings.audio_transcode_timeout_seconds,
     )
 

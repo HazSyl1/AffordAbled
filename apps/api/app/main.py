@@ -3,7 +3,6 @@
 import asyncio
 import logging
 import os
-import shutil
 import subprocess
 from contextlib import asynccontextmanager, suppress
 from typing import Any
@@ -16,6 +15,7 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging
 from app.core.middleware import register_exception_handlers, register_middleware
+from app.infrastructure.audio.ffmpeg_audio_transcoder import resolve_ffmpeg_binary
 from app.infrastructure.database.session import SessionLocal
 from app.infrastructure.jobs import run_memory_outbox_loop, run_retention_cleanup_once
 from app.presentation.router import api_router
@@ -25,8 +25,8 @@ logger = logging.getLogger(__name__)
 
 async def _probe_ffmpeg_health(settings: Settings) -> dict[str, Any]:
     configured_binary = (settings.ffmpeg_binary or 'ffmpeg').strip() or 'ffmpeg'
-    resolved_binary = shutil.which(configured_binary)
-    if resolved_binary is None:
+    resolved_binary = resolve_ffmpeg_binary(configured_binary)
+    if resolved_binary == configured_binary and not os.path.isabs(resolved_binary):
         logger.warning(
             'audio.ffmpeg.health',
             extra={
