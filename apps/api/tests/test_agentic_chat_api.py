@@ -11,7 +11,7 @@ from langchain_core.runnables import RunnableLambda
 from app.core.dependencies import get_semantic_guardrail, get_transaction_extraction_llm
 from app.domain.ports import GuardrailAssessment, GuardrailDecision
 from app.infrastructure.ai.agents.contracts import SupervisorDecision
-from tests.helpers import auth_headers, register_and_get_token
+from tests.helpers import DEFAULT_CATEGORIES, auth_headers, register_and_get_token
 
 
 class AllowingGuardrail:
@@ -131,11 +131,11 @@ class QueuedCategoryLLM:
             SupervisorDecision(
                 action="route",
                 specialist="category",
-                tasks=["Create Food as an expense category", "Create Misc as an expense category"],
+                tasks=["Create Dining as an expense category", "Create Pet Care as an expense category"],
             ),
-            SupervisorDecision(action="finish", response="Created Food as an expense category."),
+            SupervisorDecision(action="finish", response="Created Dining as an expense category."),
             SupervisorDecision(action="route", specialist="category"),
-            SupervisorDecision(action="finish", response="Created Misc as an expense category."),
+            SupervisorDecision(action="finish", response="Created Pet Care as an expense category."),
         ]
         self.category_steps = 0
 
@@ -151,14 +151,14 @@ class QueuedCategoryLLM:
             assert "Category specialist" in str(messages[0].content)
             if len(messages) == 2:
                 self.category_steps += 1
-                name = "Food" if self.category_steps == 1 else "Misc"
+                name = "Dining" if self.category_steps == 1 else "Pet Care"
                 return AIMessage(
                     content="",
                     tool_calls=[
                         {
                             "name": "create_category",
                             "args": {"arguments": {"name": name, "type": "expense"}},
-                            "id": f"create-{name.lower()}",
+                            "id": f"create-{name.lower().replace(' ', '-')}",
                         }
                     ],
                 )
@@ -285,7 +285,7 @@ async def test_chat_creates_categories_from_parallel_tool_calls(client: AsyncCli
         assert response.json()["tasks_completed"] is True
         assert response.json()["show_completion_popup"] is True
         categories = await client.get("/api/v1/categories", headers=headers)
-        assert {(item["name"], item["type"]) for item in categories.json()} == {
+        assert {(item["name"], item["type"]) for item in categories.json()} == DEFAULT_CATEGORIES | {
             ("Test Snacks", "expense"),
             ("Test Drinks", "expense"),
         }
@@ -330,8 +330,6 @@ async def test_chat_routes_category_creation_even_if_first_supervisor_decision_f
 ) -> None:
     token = await register_and_get_token(client, "agentic-premature-category-finish@example.com")
     headers = auth_headers(token)
-    existing = await client.post("/api/v1/categories", json={"name": "Food", "type": "expense"}, headers=headers)
-    assert existing.status_code == 201
     llm = BatchMutationLLM(
         "category",
         ["Create Food as an expense category", "Create Drinks as an expense category"],
@@ -369,8 +367,6 @@ async def test_category_queue_completes_when_only_missing_category_needs_a_tool(
 ) -> None:
     token = await register_and_get_token(client, "agentic-existing-food-new-drinks@example.com")
     headers = auth_headers(token)
-    existing = await client.post("/api/v1/categories", json={"name": "Food", "type": "expense"}, headers=headers)
-    assert existing.status_code == 201
     llm = BatchMutationLLM(
         "category",
         ["Create Food as an expense category", "Create Drinks as an expense category"],
@@ -389,7 +385,7 @@ async def test_category_queue_completes_when_only_missing_category_needs_a_tool(
         assert llm.steps == 1
         assert len(llm.supervisor_prompts) == 2
         categories = await client.get("/api/v1/categories", headers=headers)
-        assert {(item["name"], item["type"]) for item in categories.json()} == {
+        assert {(item["name"], item["type"]) for item in categories.json()} == DEFAULT_CATEGORIES | {
             ("Food", "expense"),
             ("Drinks", "expense"),
         }
@@ -404,8 +400,6 @@ async def test_category_queue_stays_incomplete_when_requested_category_is_missin
 ) -> None:
     token = await register_and_get_token(client, "agentic-missing-drinks@example.com")
     headers = auth_headers(token)
-    existing = await client.post("/api/v1/categories", json={"name": "Food", "type": "expense"}, headers=headers)
-    assert existing.status_code == 201
     llm = BatchMutationLLM(
         "category",
         ["Create Food as an expense category", "Create Drinks as an expense category"],
@@ -423,7 +417,7 @@ async def test_category_queue_stays_incomplete_when_requested_category_is_missin
         assert response.status_code == 200, response.text
         assert response.json()["tasks_completed"] is False
         categories = await client.get("/api/v1/categories", headers=headers)
-        assert {(item["name"], item["type"]) for item in categories.json()} == {("Food", "expense")}
+        assert {(item["name"], item["type"]) for item in categories.json()} == DEFAULT_CATEGORIES
     finally:
         app.dependency_overrides.pop(get_semantic_guardrail, None)
         app.dependency_overrides.pop(get_transaction_extraction_llm, None)
@@ -497,18 +491,18 @@ async def test_agentic_chat_completes_all_queued_category_tasks(client: AsyncCli
     try:
         response = await client.post(
             "/api/v1/chat",
-            json={"message": "Create Food and Misc as expense categories"},
+                json={"message": "Create Dining and Pet Care as expense categories"},
             headers=auth_headers(token),
         )
         assert response.status_code == 200, response.text
         assert response.json()["tasks_completed"] is True
         assert response.json()["message"] == (
-            "Created Food as an expense category.\nCreated Misc as an expense category."
+            "Created Dining as an expense category.\nCreated Pet Care as an expense category."
         )
         categories = await client.get("/api/v1/categories", headers=auth_headers(token))
-        assert {(item["name"], item["type"]) for item in categories.json()} == {
-            ("Food", "expense"),
-            ("Misc", "expense"),
+        assert {(item["name"], item["type"]) for item in categories.json()} == DEFAULT_CATEGORIES | {
+            ("Dining", "expense"),
+            ("Pet Care", "expense"),
         }
     finally:
         app.dependency_overrides.pop(get_semantic_guardrail, None)
@@ -558,12 +552,6 @@ async def test_agentic_chat_creates_multiple_categories_after_interrupt_resume(
     app: FastAPI,
 ) -> None:
     token = await register_and_get_token(client, "agentic-multiple-categories@example.com")
-    existing = await client.post(
-        "/api/v1/categories",
-        json={"name": "Food", "type": "expense"},
-        headers=auth_headers(token),
-    )
-    assert existing.status_code == 201
     llm = ScriptedAgenticLLM()
     app.dependency_overrides[get_semantic_guardrail] = lambda: AllowingGuardrail()
     # The app builds dependencies once per request, so retain the model object
@@ -593,7 +581,7 @@ async def test_agentic_chat_creates_multiple_categories_after_interrupt_resume(
 
         categories = await client.get("/api/v1/categories", headers=auth_headers(token))
         assert categories.status_code == 200
-        assert {(item["name"], item["type"]) for item in categories.json()} == {
+        assert {(item["name"], item["type"]) for item in categories.json()} == DEFAULT_CATEGORIES | {
             ("Food", "expense"),
             ("Groceries", "expense"),
         }

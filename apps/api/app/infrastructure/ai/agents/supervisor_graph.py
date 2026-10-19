@@ -616,6 +616,18 @@ def _pending_transaction_followup(
     return task_request, task_queue, is_pending, is_category_create
 
 
+def _is_account_creation_reply(message: str) -> bool:
+    """Recognize a concrete create-account answer to the transaction's no-account prompt."""
+    return bool(
+        re.search(
+            r"^\s*(?:(?:yes|yeah|yep|sure|okay|ok)[, ]*)?(?:please\s+)?(?:create|add|open)\b"
+            r".+\b(?:with|balance|initial)\b.+\d",
+            message,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
 class AgentGraphState(TypedDict, total=False):
     messages: Annotated[list[BaseMessage], add_messages]
     # Chat transcript updates are append-only. A reducer is required because
@@ -629,6 +641,7 @@ class AgentGraphState(TypedDict, total=False):
     completed_tasks: list[str]
     created_transaction_ids: list[str]
     pending_split_transaction_id: str | None
+    pending_account_creation: bool
     tasks_completed: bool
     awaiting_user_input: bool
     show_completion_popup: bool
@@ -804,6 +817,19 @@ class AgenticSupervisorGraph:
             }
             if is_new_category_for_pending_transaction:
                 resume_update["task_queue"] = [message, *pending_queue]
+            account_setup_answer = bool(
+                isinstance(interrupt_payload, dict)
+                and interrupt_payload.get("agent") == "transaction"
+                and re.search(r"\bno accounts?\b|\bcreate (?:an? )?account\b", pending_question, re.I)
+                and _is_account_creation_reply(message)
+            )
+            if account_setup_answer:
+                transaction_task = (prior_state.get("task_queue") or [prior_task_request])[0]
+                resume_update["task_queue"] = [
+                    f"Create account: {message}",
+                    str(transaction_task or prior_task_request),
+                ]
+                resume_update["pending_account_creation"] = True
             return await self.graph.ainvoke(
                 Command(resume=message, update=resume_update),
                 config=config,
@@ -964,13 +990,13 @@ class AgenticSupervisorGraph:
                 task_queue = [state.get("task_request") or str(state["messages"][-1].content)]
         if not state.get("results"):
             queued_specialist = _obvious_specialist(task_queue[0]) if task_queue else None
-            category_then_transaction = bool(
+            setup_then_transaction = bool(
                 len(task_queue) > 1
-                and queued_specialist == "category"
+                and queued_specialist in {"account", "category"}
                 and _obvious_specialist(task_queue[1]) == "transaction"
             )
             continuing_completed_work = bool(state.get("completed_tasks") and queued_specialist == "transaction")
-            if queued_specialist is not None and (category_then_transaction or continuing_completed_work) and (
+            if queued_specialist is not None and (setup_then_transaction or continuing_completed_work) and (
                 decision.action != "route" or decision.specialist != queued_specialist
             ):
                 decision = SupervisorDecision(

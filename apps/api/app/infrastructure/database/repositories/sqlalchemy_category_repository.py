@@ -27,6 +27,24 @@ class SqlAlchemyCategoryRepository:
         await self._session.refresh(model)
         return self._to_entity(model)
 
+    async def create_many(self, categories: list[Category]) -> list[Category]:
+        models = [
+            CategoryModel(
+                id=category.id,
+                user_id=category.user_id,
+                name=category.name,
+                icon=category.icon,
+                color=category.color,
+                type=category.type.value,
+            )
+            for category in categories
+        ]
+        self._session.add_all(models)
+        await self._session.commit()
+        for model in models:
+            await self._session.refresh(model)
+        return [self._to_entity(model) for model in models]
+
     async def get_for_user(self, category_id: uuid.UUID, user_id: uuid.UUID) -> Category | None:
         result = await self._session.execute(
             select(CategoryModel).where(CategoryModel.id == category_id, CategoryModel.user_id == user_id)

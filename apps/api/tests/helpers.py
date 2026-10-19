@@ -3,6 +3,18 @@ from __future__ import annotations
 from httpx import AsyncClient
 
 REGISTER_URL = '/api/v1/auth/register'
+DEFAULT_CATEGORIES = {
+    ('Food', 'expense'),
+    ('Groceries', 'expense'),
+    ('Transport', 'expense'),
+    ('Bills', 'expense'),
+    ('Shopping', 'expense'),
+    ('Health', 'expense'),
+    ('Entertainment', 'expense'),
+    ('Misc', 'expense'),
+    ('Salary', 'income'),
+    ('Other Income', 'income'),
+}
 
 
 async def register_and_get_token(client: AsyncClient, email: str, password: str = 'SuperSecret123') -> str:

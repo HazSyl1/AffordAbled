@@ -5,15 +5,29 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
 from app.application.dto import LoginInput, RegisterUserInput, TokenPair
-from app.domain.entities import RefreshSession, User
+from app.domain.entities import Category, CategoryType, RefreshSession, User
 from app.domain.exceptions import InvalidCredentialsError, InvalidTokenError, UserAlreadyExistsError
 from app.domain.ports import GoogleOAuthClient, PasswordHasher, TokenService
-from app.domain.repositories import RefreshSessionRepository, UserRepository
+from app.domain.repositories import CategoryRepository, RefreshSessionRepository, UserRepository
+
+DEFAULT_CATEGORIES: tuple[tuple[str, CategoryType], ...] = (
+    ('Food', CategoryType.EXPENSE),
+    ('Groceries', CategoryType.EXPENSE),
+    ('Transport', CategoryType.EXPENSE),
+    ('Bills', CategoryType.EXPENSE),
+    ('Shopping', CategoryType.EXPENSE),
+    ('Health', CategoryType.EXPENSE),
+    ('Entertainment', CategoryType.EXPENSE),
+    ('Misc', CategoryType.EXPENSE),
+    ('Salary', CategoryType.INCOME),
+    ('Other Income', CategoryType.INCOME),
+)
 
 
 @dataclass
 class AuthService:
     user_repository: UserRepository
+    category_repository: CategoryRepository
     refresh_session_repository: RefreshSessionRepository
     password_hasher: PasswordHasher
     token_service: TokenService
@@ -33,6 +47,7 @@ class AuthService:
             created_at=datetime.now(UTC),
         )
         user = await self.user_repository.create(user)
+        await self._create_default_categories(user.id)
         return await self._issue_tokens(user.id)
 
     async def login(self, data: LoginInput) -> TokenPair:
@@ -59,6 +74,7 @@ class AuthService:
                 created_at=datetime.now(UTC),
             )
             user = await self.user_repository.create(user)
+            await self._create_default_categories(user.id)
         return await self._issue_tokens(user.id)
 
     async def refresh(self, refresh_token: str) -> TokenPair:
@@ -86,3 +102,19 @@ class AuthService:
             RefreshSession(id=uuid.uuid4(), user_id=user_id, jti=jti, expires_at=expires_at, revoked_at=None)
         )
         return TokenPair(access_token=access_token, refresh_token=refresh_token)
+
+    async def _create_default_categories(self, user_id: uuid.UUID) -> None:
+        now = datetime.now(UTC)
+        categories = [
+            Category(
+                id=uuid.uuid4(),
+                user_id=user_id,
+                name=name,
+                icon=None,
+                color=None,
+                type=category_type,
+                created_at=now,
+            )
+            for name, category_type in DEFAULT_CATEGORIES
+        ]
+        await self.category_repository.create_many(categories)

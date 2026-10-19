@@ -3,8 +3,15 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Annotated, Any, TypedDict
 
 import pytest
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.runnables import RunnableLambda
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import END, START, StateGraph
+from langgraph.graph.message import add_messages
+from langgraph.types import Command
 from pydantic import ValidationError
 
 from app.infrastructure.ai.agents.analytics import AnalyticsToolset
@@ -42,6 +49,61 @@ async def test_specialist_cannot_call_tool_outside_its_registry() -> None:
 
     assert result.status == "failed"
     assert "tool_not_permitted:create_transaction" in result.errors
+
+
+@pytest.mark.asyncio
+async def test_transaction_account_answer_hands_control_back_to_parent_supervisor() -> None:
+    class SharedState(TypedDict, total=False):
+        specialist_messages: Annotated[list[BaseMessage], add_messages]
+        specialist_steps: int
+        pending_account_creation: bool
+        routed: bool
+
+    class AskForAccountModel:
+        def bind_tools(self, _tools: list[Any], **_kwargs: Any) -> RunnableLambda:
+            return RunnableLambda(
+                lambda _messages: AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "ask_user",
+                            "args": {"question": "No accounts are available. Would you like to create one?"},
+                            "id": "no-account-question",
+                        }
+                    ],
+                )
+            )
+
+    runtime = ToolBoundSpecialistRuntime(
+        name="transaction",
+        llm=AskForAccountModel(),
+        system_prompt="",
+        tools={},
+    )
+    child = runtime.build_persistent_subgraph(SharedState)
+    parent = StateGraph(SharedState)
+    parent.add_node("transaction", child)
+    parent.add_node("supervisor", lambda _state: {"routed": True})
+    parent.add_edge(START, "transaction")
+    parent.add_edge("supervisor", END)
+    graph = parent.compile(checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": "account-answer-handoff"}}
+
+    interrupted = await graph.ainvoke(
+        {
+            "specialist_messages": [
+                SystemMessage(content="Ask for the missing account."),
+                HumanMessage(content="Spent 999 on Food"),
+            ],
+            "pending_account_creation": True,
+        },
+        config,
+    )
+    assert interrupted["__interrupt__"]
+
+    resumed = await graph.ainvoke(Command(resume="Create Axis with 6000"), config)
+
+    assert resumed["routed"] is True
 
 
 def test_specialist_decision_schema_exposes_only_registered_tool_names() -> None:
