@@ -111,6 +111,7 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
   const [editingTransactionId, setEditingTransactionId] = useState<string | null>(null);
   const [editingTransactionValues, setEditingTransactionValues] = useState<Record<string, string> | undefined>();
   const [showMemorySuggestions, setShowMemorySuggestions] = useState(true);
+  const [isNotificationCenterOpen, setIsNotificationCenterOpen] = useState(false);
   const { data: memorySuggestions = [] } = useListMemorySuggestionsQuery(undefined, { pollingInterval: 10_000 });
   useEffect(() => {
     if (memorySuggestions.length === 0) return;
@@ -697,7 +698,10 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
             type='button'
             className='relative flex h-11 w-11 items-center justify-center rounded-full border border-[var(--bg-border)] bg-[var(--bg-card)] text-lg text-[var(--text-secondary)] active:scale-[0.98]'
             aria-label='Notifications'
-            onClick={() => setShowMemorySuggestions(true)}
+            onClick={() => {
+              setIsNotificationCenterOpen(true);
+              setShowMemorySuggestions(true);
+            }}
           >
             🔔
             {memorySuggestions.length > 0 ? (
@@ -935,16 +939,20 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
                 ×
               </button>
             </div>
-            <p className='mt-2 text-sm text-[var(--text-secondary)]'>{DASHBOARD_CHAT_UI_TEXT.closeChatPrompt}</p>
+            <p className='mt-2 text-sm text-[var(--text-secondary)]'>
+              {isSendingChatMessage
+                ? 'Your request is still processing. Closing will not cancel it. Keep this chat in Chats now; you can discard it or move it to Drafts after the reply arrives.'
+                : DASHBOARD_CHAT_UI_TEXT.closeChatPrompt}
+            </p>
 
             <div className='mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3'>
-              <Button type='button' variant='secondary' onClick={handleDiscardDraftAndClose}>
+              <Button type='button' variant='secondary' disabled={isSendingChatMessage} onClick={handleDiscardDraftAndClose}>
                 {DASHBOARD_CHAT_UI_TEXT.discardAndCloseLabel}
               </Button>
               <Button type='button' variant='secondary' onClick={handleAddChatAndClose}>
                 {DASHBOARD_CHAT_UI_TEXT.addToChatsLabel}
               </Button>
-              <Button type='button' onClick={handleSaveDraftAndClose}>
+              <Button type='button' disabled={isSendingChatMessage} onClick={handleSaveDraftAndClose}>
                 {DASHBOARD_CHAT_UI_TEXT.addToDraftsLabel}
               </Button>
             </div>
@@ -997,12 +1005,22 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
           onEditTransaction={transactionSuccess.transactionId ? editCompletedTransaction : undefined}
         />
       ) : null}
-      {showMemorySuggestions && memorySuggestions.length > 0 && !transactionSuccess ? (
-        <div className='fixed inset-0 z-[60] flex items-center justify-center overflow-y-auto bg-black/60 p-4' role='dialog' aria-modal='true' aria-label='Memory suggestions'>
+      {(isNotificationCenterOpen || (showMemorySuggestions && memorySuggestions.length > 0)) && !transactionSuccess ? (
+        <div className='fixed inset-0 z-[60] flex items-center justify-center overflow-y-auto bg-black/60 p-4' role='dialog' aria-modal='true' aria-label='Notifications'>
           <div className='w-full max-w-lg space-y-3'>
-            <MemorySuggestionsPanel suggestions={memorySuggestions} />
+            {memorySuggestions.length > 0 ? (
+              <MemorySuggestionsPanel suggestions={memorySuggestions} />
+            ) : (
+              <Card className='border-[color:rgba(168,85,247,0.35)] p-5'>
+                <h3 className='font-semibold text-[var(--text-primary)]'>You’re all caught up</h3>
+                <p className='mt-1 text-sm text-[var(--text-muted)]'>No notifications right now.</p>
+              </Card>
+            )}
             <div className='flex justify-center'>
-              <Button type='button' variant='secondary' onClick={() => setShowMemorySuggestions(false)}>Close suggestions</Button>
+              <Button type='button' variant='secondary' className='!bg-[var(--bg-elevated)] hover:!bg-[var(--bg-card)]' onClick={() => {
+                setIsNotificationCenterOpen(false);
+                setShowMemorySuggestions(false);
+              }}>Close</Button>
             </div>
           </div>
         </div>

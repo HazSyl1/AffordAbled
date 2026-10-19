@@ -18,8 +18,13 @@ import { apiClient } from '../../lib/apiClient';
 
 function resolveLoginErrorMessage(error: unknown): string {
   if (typeof error === 'object' && error !== null && 'status' in error) {
-    const status = (error as FetchBaseQueryError).status;
-    if (status === 401) {
+    const fetchError = error as FetchBaseQueryError;
+    const status = fetchError.status === 'PARSING_ERROR' ? fetchError.originalStatus : fetchError.status;
+    const detail = 'data' in fetchError && typeof fetchError.data === 'object' && fetchError.data !== null && 'detail' in fetchError.data
+      ? String(fetchError.data.detail)
+      : '';
+
+    if (status === 401 || detail === 'InvalidCredentialsError' || /invalid (email or )?password|invalid credentials/i.test(detail)) {
       return AUTH_UI_TEXT.invalidCredentialsError;
     }
     return AUTH_UI_TEXT.serviceUnavailableError;
