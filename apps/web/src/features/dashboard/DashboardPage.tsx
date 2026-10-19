@@ -106,6 +106,7 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
   const [chatTransactionId, setChatTransactionId] = useState<string | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatError, setChatError] = useState<string | null>(null);
+  const [manualFallbackMessage, setManualFallbackMessage] = useState<string | null>(null);
   const receiptUploadRef = useRef(false);
   const [transactionSuccess, setTransactionSuccess] = useState<{ message: string; expiresAt: number; transactionId: string | null } | null>(null);
   const [editingTransactionId, setEditingTransactionId] = useState<string | null>(null);
@@ -151,6 +152,19 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
     () => (proposalForSheet ? mapProposalToCreateTransactionValues(proposalForSheet) : undefined),
     [proposalForSheet],
   );
+
+  const openManualTransactionFallback = (message: string) => {
+    receiptUploadRef.current = false;
+    setProposalForSheet(null);
+    setProposalQueue([]);
+    setProposalBatchTotal(0);
+    setProposalBatchCompleted(0);
+    setProposalSheetMode('standard');
+    setEditingTransactionId(null);
+    setEditingTransactionValues(undefined);
+    setManualFallbackMessage(message);
+    setShowAddSheet(true);
+  };
 
   const categoryNameById = useMemo(() => {
     return new Map((categories ?? []).map((category) => [category.id, category.name]));
@@ -402,6 +416,7 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
       }
     } catch {
       setChatError(DASHBOARD_CHAT_UI_TEXT.assistantError);
+      openManualTransactionFallback('The assistant could not finish this request. You can enter the transaction manually. If the request may have reached the server, check Transactions first to avoid adding it twice.');
     }
   };
 
@@ -431,6 +446,7 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
       const transcript = transcription.transcript.trim();
       if (!transcript) {
         setChatError(DASHBOARD_CHAT_UI_TEXT.voiceError);
+        openManualTransactionFallback('Voice transcription returned no text. Enter the transaction details manually.');
         return;
       }
 
@@ -440,6 +456,7 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
       void sendMessageToAssistant(transcript);
     } catch {
       setChatError(DASHBOARD_CHAT_UI_TEXT.voiceError);
+      openManualTransactionFallback('Voice processing failed. Enter the transaction details manually.');
     }
   };
 
@@ -501,6 +518,7 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
 
       if (!imagePrompt) {
         setChatError(DASHBOARD_CHAT_UI_TEXT.imageError);
+        openManualTransactionFallback('The receipt could not be read. Enter the transaction details manually.');
         return;
       }
 
@@ -510,6 +528,7 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
       await sendMessageToAssistant(imagePrompt);
     } catch {
       setChatError(DASHBOARD_CHAT_UI_TEXT.imageError);
+      openManualTransactionFallback('Receipt processing failed. Enter the transaction details manually.');
     } finally {
       setIsImageProcessing(false);
     }
@@ -1030,6 +1049,7 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
         isOpen={showAddSheet}
         onClose={() => {
           setShowAddSheet(false);
+          setManualFallbackMessage(null);
           setProposalForSheet(null);
           setProposalQueue([]);
           setProposalBatchTotal(0);
@@ -1044,6 +1064,11 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
             : SHEET_TITLES.addTransaction
         }
       >
+        {manualFallbackMessage ? (
+          <div className='mb-4 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-[var(--text-primary)]' role='status'>
+            {manualFallbackMessage}
+          </div>
+        ) : null}
         <CreateTransactionForm
           mode='sheet'
           showHeading={false}
@@ -1071,6 +1096,7 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
               return;
             }
             setShowAddSheet(false);
+            setManualFallbackMessage(null);
             setEditingTransactionId(null);
             setEditingTransactionValues(undefined);
             setProposalForSheet(null);
