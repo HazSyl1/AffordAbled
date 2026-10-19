@@ -7,6 +7,7 @@ import { useAppDispatch } from '../../app/hooks';
 import { Button } from '../../components/atoms/Button';
 import { Input } from '../../components/atoms/Input';
 import { FormField } from '../../components/molecules/FormField';
+import { AuthPageShell } from '../../components/molecules/AuthPageShell/AuthPageShell';
 import { AUTH_UI_TEXT } from '../../constants';
 import { useRegisterMutation } from '../../features/auth/authApi';
 import { setCredentials } from '../../features/auth/authSlice';
@@ -32,7 +33,7 @@ export function RegisterPage() {
       const result = await registerUser(values).unwrap();
       dispatch(apiClient.util.resetApiState());
       dispatch(setCredentials({ accessToken: result.access_token }));
-      navigate('/', { replace: true });
+      navigate('/dashboard', { replace: true });
     } catch {
       setFormError(AUTH_UI_TEXT.registrationError);
     }
@@ -41,9 +42,14 @@ export function RegisterPage() {
   const maxDob = new Date().toISOString().slice(0, 10);
 
   return (
-    <div className='flex min-h-screen items-center justify-center p-4'>
-      <form className='w-full max-w-[360px]' onSubmit={onSubmit} noValidate>
-        <h1 className='mb-6 text-2xl font-semibold text-[var(--text-primary)]'>{AUTH_UI_TEXT.registerTitle}</h1>
+    <AuthPageShell
+      catchphrase='A fresh start for your everyday finances.'
+      description='Bring your accounts, transactions, and shared expenses together, then let helpful insights make the picture clearer.'
+    >
+      <form className='mx-auto w-full max-w-[420px]' onSubmit={onSubmit} noValidate>
+        <p className='mb-1 text-xs font-semibold uppercase tracking-[0.16em] text-[var(--brand-primary)]'>Your next money habit starts here</p>
+        <h2 className='mb-2 text-2xl font-semibold text-[var(--text-primary)]'>{AUTH_UI_TEXT.registerTitle}</h2>
+        <p className='mb-6 text-sm text-[var(--text-secondary)]'>Create a personal space for tracking, understanding, and sharing expenses.</p>
 
         <FormField label={AUTH_UI_TEXT.nameLabel} htmlFor='name' error={errors.name?.message}>
           <Input id='name' type='text' autoComplete='name' {...register('name')} />
@@ -78,6 +84,6 @@ export function RegisterPage() {
           </Link>
         </p>
       </form>
-    </div>
+    </AuthPageShell>
   );
 }

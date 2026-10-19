@@ -31,7 +31,7 @@ interface NavItem {
 }
 
 export const NAV_ITEMS: readonly NavItem[] = [
-  { path: '/', label: 'Home', icon: House },
+  { path: '/dashboard', label: 'Home', icon: House },
   { path: '/chat', label: 'Chat', icon: MessageCircle },
   { path: '/transactions', label: 'Trans', icon: Landmark },
   { path: '/splits', label: 'Splits', icon: GitBranch },

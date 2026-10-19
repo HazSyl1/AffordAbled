@@ -4,6 +4,7 @@ import { AccountsPage } from '../pages/AccountsPage';
 import { ChatPage } from '../pages/ChatPage';
 import { DashboardPage } from '../pages/DashboardPage';
 import { LoginPage } from '../pages/LoginPage';
+import { LandingPage } from '../pages/LandingPage/LandingPage';
 import { ProfilePage } from '../pages/ProfilePage';
 import { RegisterPage } from '../pages/RegisterPage';
 import { SplitsPage } from '../pages/SplitsPage';
@@ -11,12 +12,13 @@ import { TransactionsPage } from '../pages/TransactionsPage';
 import { ProtectedRoute } from './ProtectedRoute';
 
 export const router = createBrowserRouter([
+  { path: '/', element: <LandingPage /> },
   { path: '/login', element: <LoginPage /> },
   { path: '/register', element: <RegisterPage /> },
   {
     element: <ProtectedRoute />,
     children: [
-      { path: '/', element: <DashboardPage /> },
+      { path: '/dashboard', element: <DashboardPage /> },
       { path: '/chat', element: <ChatPage /> },
       { path: '/accounts', element: <AccountsPage /> },
       { path: '/transactions', element: <TransactionsPage /> },
