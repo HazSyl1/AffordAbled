@@ -7,6 +7,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { Button } from '../../components/atoms/Button';
 import { Input } from '../../components/atoms/Input';
 import { FormField } from '../../components/molecules/FormField';
+import { AuthPageShell } from '../../components/molecules/AuthPageShell/AuthPageShell';
 import { useLoginMutation } from '../../features/auth/authApi';
 import { setCredentials } from '../../features/auth/authSlice';
 import { useAppDispatch } from '../../app/hooks';
@@ -51,16 +52,21 @@ export function LoginPage() {
       const result = await login(values).unwrap();
       dispatch(apiClient.util.resetApiState());
       dispatch(setCredentials({ accessToken: result.access_token }));
-      navigate('/', { replace: true });
+      navigate('/dashboard', { replace: true });
     } catch (error) {
       setFormError(resolveLoginErrorMessage(error));
     }
   });
 
   return (
-    <div className="flex min-h-screen items-center justify-center p-4">
-      <form className="w-full max-w-[360px]" onSubmit={onSubmit} noValidate>
-        <h1 className="mb-6 text-2xl font-semibold text-[var(--text-primary)]">{AUTH_UI_TEXT.loginTitle}</h1>
+    <AuthPageShell
+      catchphrase='Welcome back. Let’s make money feel manageable.'
+      description='Pick up your money routine with a clear view of your accounts, spending, and shared expenses.'
+    >
+      <form className='mx-auto w-full max-w-[420px]' onSubmit={onSubmit} noValidate>
+        <p className='mb-1 text-xs font-semibold uppercase tracking-[0.16em] text-[var(--brand-primary)]'>Your wallet is waiting</p>
+        <h2 className='mb-2 text-2xl font-semibold text-[var(--text-primary)]'>{AUTH_UI_TEXT.loginTitle}</h2>
+        <p className='mb-6 text-sm text-[var(--text-secondary)]'>Sign in to continue managing your money in one place.</p>
 
         <FormField label={AUTH_UI_TEXT.emailLabel} htmlFor="email" error={errors.email?.message}>
           <Input id="email" type="email" autoComplete="email" {...register('email')} />
@@ -87,6 +93,6 @@ export function LoginPage() {
           </Link>
         </p>
       </form>
-    </div>
+    </AuthPageShell>
   );
 }

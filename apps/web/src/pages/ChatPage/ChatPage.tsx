@@ -225,7 +225,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
       return;
     }
     setTaskSuccess(null);
-    navigate('/');
+    navigate('/dashboard');
   };
 
   const continueChatting = () => {
@@ -400,7 +400,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
           transactionRedirectTimerRef.current = window.setTimeout(() => {
             transactionRedirectTimerRef.current = null;
             setTaskSuccess(null);
-            navigate('/');
+            navigate('/dashboard');
           }, 12_000);
         }
         return;
@@ -769,7 +769,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
                     {DASHBOARD_CHAT_UI_TEXT.newChatActionLabel}
                   </button>
                   <CollapseToggle
-                    className='hidden h-10 w-10 shrink-0 md:inline-flex'
+                    className='!hidden h-10 w-10 shrink-0 md:!inline-flex'
                     ariaLabel={DASHBOARD_CHAT_UI_TEXT.collapseSideToolAriaLabel}
                     direction='left'
                     onClick={() => setIsSideToolCollapsed(true)}

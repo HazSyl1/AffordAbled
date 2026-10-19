@@ -308,7 +308,7 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
     }
     setTransactionSuccess(null);
     resetChatSession();
-    navigate('/');
+    navigate('/dashboard');
   };
 
   const continueChatting = () => {
@@ -400,7 +400,7 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
           transactionRedirectTimerRef.current = null;
           setTransactionSuccess(null);
           resetChatSession();
-          navigate('/');
+          navigate('/dashboard');
         }, 12_000);
         return;
       }

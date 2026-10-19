@@ -32,7 +32,7 @@ export function AccountsPage() {
             <Button type='button' className='w-auto px-3 lg:hidden' onClick={() => setIsAddAccountSheetOpen(true)}>
               + Add
             </Button>
-            <Button type='button' variant='secondary' className='w-auto px-3' onClick={() => navigate('/')}>
+            <Button type='button' variant='secondary' className='w-auto px-3' onClick={() => navigate('/dashboard')}>
               Home
             </Button>
           </div>
