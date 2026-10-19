@@ -20,6 +20,33 @@ class SplitToolset:
         self._splits = split_service
         self._transactions = transaction_service
 
+    @staticmethod
+    def _validate_requested_people(people: list[ParticipantShare], context: HandoffContext) -> None:
+        """Contacts can resolve requested names, but must not introduce new split participants."""
+        source_text = ' '.join(
+            str(value)
+            for value in (
+                context.request,
+                context.constraints.get('original_request'),
+                context.constraints.get('latest_user_reply'),
+            )
+            if value
+        )
+        unrequested = [
+            person.name
+            for person in people
+            if not re.search(
+                rf'(?<!\w){re.escape(person.name).replace(r"\ ", r"\s+")}(?!\w)',
+                source_text,
+                re.IGNORECASE,
+            )
+        ]
+        if unrequested:
+            raise ValueError(
+                f"Do not add split contacts the user did not name: {', '.join(unrequested)}. "
+                "Use only people explicitly requested in the user's message."
+            )
+
     def registry(self) -> dict[str, Any]:
         return {
             "list_split_contacts": self.list_split_contacts,
@@ -96,6 +123,7 @@ class SplitToolset:
             if isinstance(share, float):
                 share = round(share * 100)
             people.append(ParticipantShare(str(name).strip(), int(share)))
+        self._validate_requested_people(people, context)
         mode = str(args.get("mode") or "equal").lower()
         owner_share = args.get("owner_share_paise")
         if owner_share is None and args.get("owner_share_rupees") is not None:
@@ -110,6 +138,8 @@ class SplitToolset:
             for item in raw_items:
                 if not isinstance(item, dict) or isinstance(item.get('amount_paise'), (bool, float)):
                     raise ValueError('Each receipt item needs an integer amount_paise.')
+                if 'owner_excluded' in item and not isinstance(item['owner_excluded'], bool):
+                    raise ValueError('owner_excluded must be true or false.')
                 if not str(item.get('amount_paise') or '').isascii() or not str(
                     item.get('amount_paise') or ''
                 ).isdecimal():
@@ -117,7 +147,9 @@ class SplitToolset:
             items = [
                 ItemAllocation(
                     name=str(item['name']), amount_paise=int(item['amount_paise']),
-                    shared_by=list(item['shared_by']), food_type=str(item.get('food_type') or 'unknown'),
+                    shared_by=list(item.get('shared_by') or []),
+                    food_type=str(item.get('food_type') or 'unknown'),
+                    owner_excluded=bool(item.get('owner_excluded', False)),
                 )
                 for item in raw_items
             ]

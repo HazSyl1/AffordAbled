@@ -11,6 +11,14 @@ def normalize_key(value: str | None) -> str:
     return re.sub(r'\s+', ' ', (value or '').strip()).casefold()
 
 
+_SELF_SPLIT_SUBJECTS = {'me', 'myself', 'self', 'you', 'owner', 'my share'}
+
+
+def is_self_split_subject(value: str | None) -> bool:
+    """Return whether a split subject refers to the current user, not a contact."""
+    return normalize_key(value) in _SELF_SPLIT_SUBJECTS
+
+
 def canonical_json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=True, default=str)
 
@@ -55,7 +63,7 @@ def candidates_for_event(*, action: str, before: dict[str, Any], after: dict[str
             if not isinstance(participant, dict):
                 continue
             name = normalize_key(str(participant.get('name') or ''))
-            if not name or not mode:
+            if not name or is_self_split_subject(name) or not mode:
                 continue
             value: dict[str, Any] = {'mode': mode}
             if participant.get('share_ratio') is not None:
