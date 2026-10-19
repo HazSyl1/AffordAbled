@@ -7,6 +7,7 @@ import shutil
 import subprocess
 from contextlib import asynccontextmanager, suppress
 from typing import Any
+from urllib.parse import parse_qsl, urlencode
 
 from fastapi import FastAPI
 from langgraph.checkpoint.memory import InMemorySaver
@@ -131,13 +132,23 @@ def _normalize_langgraph_postgres_conn_string(database_url: str) -> str | None:
     if not database_url.startswith('postgresql'):
         return None
 
+    normalized_url = database_url
     if database_url.startswith('postgresql+asyncpg://'):
-        return database_url.replace('postgresql+asyncpg://', 'postgresql://', 1)
+        normalized_url = database_url.replace('postgresql+asyncpg://', 'postgresql://', 1)
+    elif database_url.startswith('postgresql+psycopg://'):
+        normalized_url = database_url.replace('postgresql+psycopg://', 'postgresql://', 1)
 
-    if database_url.startswith('postgresql+psycopg://'):
-        return database_url.replace('postgresql+psycopg://', 'postgresql://', 1)
+    # asyncpg accepts ``ssl=require`` while psycopg/libpq expects
+    # ``sslmode=require``. The same DATABASE_URL is used by both clients.
+    if '?' not in normalized_url:
+        return normalized_url
 
-    return database_url
+    base, query = normalized_url.split('?', 1)
+    parameters = parse_qsl(query, keep_blank_values=True)
+    if any(key == 'sslmode' for key, _ in parameters):
+        return normalized_url
+    parameters = [('sslmode' if key == 'ssl' else key, value) for key, value in parameters]
+    return f'{base}?{urlencode(parameters)}'
 
 
 async def _build_langgraph_checkpointer(settings: Settings) -> tuple[Any, Any | None, str]:

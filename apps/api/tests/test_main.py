@@ -58,6 +58,12 @@ def test_normalize_langgraph_postgres_conn_string() -> None:
         main_module._normalize_langgraph_postgres_conn_string('postgresql+psycopg://user:pass@localhost:5432/db')
         == 'postgresql://user:pass@localhost:5432/db'
     )
+    assert (
+        main_module._normalize_langgraph_postgres_conn_string(
+            'postgresql+asyncpg://user:pass@localhost:5432/db?ssl=require'
+        )
+        == 'postgresql://user:pass@localhost:5432/db?sslmode=require'
+    )
     assert main_module._normalize_langgraph_postgres_conn_string('sqlite+aiosqlite:///tmp/test.db') is None
 
 
