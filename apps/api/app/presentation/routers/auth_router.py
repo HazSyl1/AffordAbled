@@ -32,12 +32,16 @@ _REFRESH_COOKIE_PATH = "/api/v1/auth"
 
 
 def _set_refresh_cookie(response: Response, refresh_token: str, settings: Settings) -> None:
+    # The hosted UI and API use different sites (azurestaticapps.net and
+    # azurewebsites.net). A production refresh cookie must therefore allow
+    # cross-site requests and be Secure. Local HTTP development keeps Lax.
+    is_production = settings.app_env.lower() == 'production'
     response.set_cookie(
         key=REFRESH_TOKEN_COOKIE_NAME,
         value=refresh_token,
         httponly=True,
-        secure=settings.app_env != "development",
-        samesite="lax",
+        secure=settings.app_env.lower() != 'development',
+        samesite='none' if is_production else 'lax',
         max_age=settings.refresh_token_expire_days * 24 * 60 * 60,
         path=_REFRESH_COOKIE_PATH,
     )
