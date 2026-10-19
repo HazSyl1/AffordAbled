@@ -10,8 +10,10 @@ from app.infrastructure.database.base import Base
 
 
 class CheckpointModel(Base):
-    __tablename__ = 'checkpoints'
-    __table_args__ = (UniqueConstraint('user_id', 'thread_id', name='uq_checkpoints_user_thread'),)
+    # Keep the app-owned checkpoint table separate from LangGraph's
+    # ``checkpoints`` table in the same PostgreSQL schema.
+    __tablename__ = 'application_checkpoints'
+    __table_args__ = (UniqueConstraint('user_id', 'thread_id', name='uq_application_checkpoints_user_thread'),)
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(
