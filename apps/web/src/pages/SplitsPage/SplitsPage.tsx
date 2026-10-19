@@ -150,6 +150,7 @@ export function SplitsPage() {
   const [open, setOpen] = useState(location.pathname.endsWith('/new'));
   const [transactionId, setTransactionId] = useState(searchParams.get('transactionId') ?? '');
   const [title, setTitle] = useState('');
+  const [titleManuallyEdited, setTitleManuallyEdited] = useState(false);
   const [mode, setMode] = useState<'equal' | 'custom'>('equal');
   const [ownerAmount, setOwnerAmount] = useState<string | null>(null);
   const [people, setPeople] = useState<Person[]>([newPerson()]);
@@ -172,10 +173,15 @@ export function SplitsPage() {
     transaction.type === 'expense' && !transaction.deleted_at &&
     !splits.some((split) => split.transaction_id === transaction.id)), [transactions, splits]);
   const expense = expenses.find((item) => item.id === transactionId);
+  const expenseLabel = expense?.merchant || expense?.note || 'Expense';
   const recentExpenses = expenses.slice(0, 5);
   const selectedOlderExpense = expense && !recentExpenses.some((item) => item.id === expense.id);
   const displayedExpenses = selectedOlderExpense
     ? [expense, ...recentExpenses.slice(0, 4)] : recentExpenses;
+
+  useEffect(() => {
+    if (expense && !titleManuallyEdited) setTitle(expenseLabel);
+  }, [expense, expenseLabel, titleManuallyEdited]);
   const equalShare = expense ? Math.floor(expense.amount_paise / (people.length + 1)) : 0;
   const ownerEqualShare = expense ? equalShare + expense.amount_paise % (people.length + 1) : 0;
   const displayedOwnerAmount = ownerAmount ?? (expense ? (ownerEqualShare / 100).toFixed(2) : '');
@@ -235,7 +241,7 @@ export function SplitsPage() {
     if (!review) return;
     try {
       await createSplit(review).unwrap();
-      setOpen(false); setReview(null); setTransactionId(''); setTitle('');
+      setOpen(false); setReview(null); setTransactionId(''); setTitle(''); setTitleManuallyEdited(false);
       setPeople([newPerson()]); setOwnerAmount(null); setShowValidation(false); setError(''); navigate('/splits');
     } catch (failure) { setError(detail(failure)); }
   }
@@ -269,8 +275,13 @@ export function SplitsPage() {
     </div>
     {error && <p role='alert' className='rounded-xl bg-red-500/10 p-3 text-sm text-red-300'>{error}</p>}
     {open && <Card className='space-y-4 p-5'>
-      <h2 className='font-semibold text-[var(--text-primary)]'>Share a recorded expense</h2>
+      <h2 className='font-semibold text-[var(--text-primary)]'>
+        {expense ? `Create a split for ${expenseLabel}` : 'Share a recorded expense'}
+      </h2>
       <p className='text-xs text-[var(--text-muted)]'>The purchase is already in your account. Mark each person repaid when their share reaches you.</p>
+      {expense && <div className='rounded-lg border border-[var(--brand-primary)]/25 bg-[var(--brand-subtle)] px-3 py-2 text-sm text-[var(--text-primary)]'>
+        <span className='font-medium'>Splitting:</span> {expenseLabel} · {formatPaiseAsInr(expense.amount_paise)}
+      </div>}
       <form onSubmit={prepare} noValidate className='space-y-4'>
         <div className='space-y-1 text-sm text-[var(--text-secondary)]'>
           <label htmlFor='split-expense'>Expense</label>
@@ -280,12 +291,12 @@ export function SplitsPage() {
               value: item.id,
               label: `${item.merchant || item.note || 'Expense'} · ${formatPaiseAsInr(item.amount_paise)} · ${new Date(item.occurred_at).toLocaleDateString()}`,
             }))}
-            onChange={(value) => { setTransactionId(value); setReview(null); setError(''); }} />
+            onChange={(value) => { setTransactionId(value); setTitle(''); setTitleManuallyEdited(false); setReview(null); setError(''); }} />
         </div>
         {expenses.length > 0 && <p className='text-xs text-[var(--text-muted)]'>{selectedOlderExpense ? 'Showing the selected expense and up to 4 recent expenses.' : 'Showing up to 5 recent expenses.'} To see more, <button type='button' className='text-[var(--brand-primary)] hover:underline' onClick={() => navigate('/transactions')}>go to Transactions</button> and select an expense to split.</p>}
         {expenses.length === 0 && <p className='text-sm text-[var(--text-muted)]'>Record an expense first to split it.</p>}
         <label className='block space-y-1 text-sm text-[var(--text-secondary)]'>Title
-          <input className={inputClass} maxLength={255} value={title} onChange={(event) => { setTitle(event.target.value); setReview(null); }} placeholder='Dinner with friends' />
+          <input className={inputClass} maxLength={255} value={title} onChange={(event) => { setTitle(event.target.value); setTitleManuallyEdited(true); setReview(null); }} placeholder='Dinner with friends' />
         </label>
         <div className='flex gap-4 text-sm text-[var(--text-primary)]'>
           <label><input type='radio' checked={mode === 'equal'} onChange={() => { setMode('equal'); setReview(null); setError(''); }} /> Equal</label>
