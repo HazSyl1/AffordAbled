@@ -1,4 +1,4 @@
-import { ImagePlus, LoaderCircle, Mic } from 'lucide-react';
+import { ChevronDown, ChevronUp, ImagePlus, LoaderCircle, Mic } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 
@@ -92,6 +92,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
   const [selectedDraftId, setSelectedDraftId] = useState<string | null>(null);
   const [activeFilter, setActiveFilter] = useState<ChatListFilter>('finance');
   const [isSideToolCollapsed, setIsSideToolCollapsed] = useState(false);
+  const [isMobileHistoryOpen, setIsMobileHistoryOpen] = useState(false);
   const [chatInput, setChatInput] = useState('');
   const [chatError, setChatError] = useState<string | null>(null);
   const receiptUploadRef = useRef(false);
@@ -183,6 +184,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
     setActiveFilter('finance');
     setChatInput('');
     setChatError(null);
+    setIsMobileHistoryOpen(false);
   };
 
   const handleDeleteDraft = (draftId: string) => {
@@ -241,6 +243,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
     selectedThreadRequestRef.current = requestId;
     setSelectedDraftId(draft.id);
     setChatError(null);
+    setIsMobileHistoryOpen(false);
 
     if (!draft.thread_id) {
       return;
@@ -626,6 +629,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
         <Card
           className={[
             'flex min-h-0 flex-col overflow-hidden transition-[padding,background-color] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] md:rounded-r-none md:border-r-0',
+            isMobileHistoryOpen ? 'flex' : 'hidden md:flex',
             isSideToolCollapsed ? 'p-0' : 'p-3',
           ].join(' ')}
         >
@@ -636,6 +640,16 @@ function ChatWorkspace({ userId }: { userId: string }) {
                 isSideToolCollapsed ? 'pointer-events-none invisible opacity-0' : 'pointer-events-auto visible opacity-100',
               ].join(' ')}
             >
+              <button
+                type='button'
+                className='mb-3 inline-flex min-h-9 items-center gap-1 self-start rounded-full px-2 text-xs font-medium text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)] md:hidden'
+                aria-label='Return to chat screen'
+                onClick={() => setIsMobileHistoryOpen(false)}
+              >
+                <ChevronUp className='h-4 w-4' aria-hidden='true' />
+                Back to chat
+              </button>
+
               <div className='mb-3 flex items-center gap-2'>
                 <button
                   type='button'
@@ -736,7 +750,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
                     {DASHBOARD_CHAT_UI_TEXT.newChatActionLabel}
                   </button>
                   <CollapseToggle
-                    className='h-10 w-10 shrink-0'
+                    className='hidden h-10 w-10 shrink-0 md:inline-flex'
                     ariaLabel={DASHBOARD_CHAT_UI_TEXT.collapseSideToolAriaLabel}
                     direction='left'
                     onClick={() => setIsSideToolCollapsed(true)}
@@ -749,7 +763,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
               type='button'
               aria-label={DASHBOARD_CHAT_UI_TEXT.expandSideToolAriaLabel}
               className={[
-                'absolute inset-0 z-10 inline-flex h-full w-full items-center justify-center border-0 bg-[var(--bg-card)] p-0 text-lg font-semibold leading-none text-[var(--text-muted)] transition-[opacity,color] duration-200 ease-out active:bg-[var(--bg-card)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)]',
+                'absolute inset-0 z-10 hidden h-full w-full items-center justify-center border-0 bg-[var(--bg-card)] p-0 text-lg font-semibold leading-none text-[var(--text-muted)] transition-[opacity,color] duration-200 ease-out active:bg-[var(--bg-card)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)] md:inline-flex',
                 isSideToolCollapsed ? 'pointer-events-auto opacity-100 hover:text-[var(--text-primary)]' : 'pointer-events-none opacity-0',
               ].join(' ')}
               onClick={() => setIsSideToolCollapsed(false)}
@@ -759,7 +773,18 @@ function ChatWorkspace({ userId }: { userId: string }) {
           </div>
         </Card>
 
-        <Card className='flex min-h-0 flex-col p-4 md:rounded-l-none'>
+        <Card className={`min-h-0 flex-col p-4 md:rounded-l-none ${isMobileHistoryOpen ? 'hidden md:flex' : 'flex'}`}>
+          <button
+            type='button'
+            className='mb-3 inline-flex min-h-9 items-center gap-1 self-start rounded-full px-2 text-xs font-medium text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)] md:hidden'
+            aria-expanded={isMobileHistoryOpen}
+            aria-label='Show recent chats'
+            onClick={() => setIsMobileHistoryOpen(true)}
+          >
+            <ChevronDown className='h-4 w-4' aria-hidden='true' />
+            Recent chats
+          </button>
+
           <div className='mb-3'>
             {(selectedDraft?.title ?? '').trim().length > 0 ? (
               <h2 className='text-lg font-semibold text-[var(--text-primary)]'>{selectedDraft?.title}</h2>

@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Download, Upload } from 'lucide-react';
+import { Download, Plus, Upload } from 'lucide-react';
 
 import { Button } from '../../components/atoms/Button';
 import { Card } from '../../components/atoms/Card';
@@ -182,38 +182,35 @@ export function TransactionsPage() {
           </div>
 
           <div className='flex shrink-0 items-start gap-1.5'>
-            <Button type='button' className='!min-h-0 !w-auto flex-col !gap-0.5 !rounded-lg !px-2.5 !py-1.5 !text-[11px] !leading-none'
+            <Button type='button' className='!h-14 !min-h-14 !w-14 flex-col !gap-0.5 !rounded-xl !px-1 !py-1.5 !text-[11px] !leading-none md:!h-10 md:!min-h-0 md:!w-auto md:flex-row md:!gap-1.5 md:!rounded-lg md:!px-2.5 md:!py-1.5'
               onClick={() => setIsImportOpen(true)}>
               <Upload size={15} aria-hidden='true' />
               <span>Import</span>
             </Button>
-            <Button type='button' className='!min-h-0 !w-auto flex-col !gap-0.5 !rounded-lg !px-2.5 !py-1.5 !text-[11px] !leading-none'
+            <Button type='button' className='!h-14 !min-h-14 !w-14 flex-col !gap-0.5 !rounded-xl !px-1 !py-1.5 !text-[11px] !leading-none md:!h-10 md:!min-h-0 md:!w-auto md:flex-row md:!gap-1.5 md:!rounded-lg md:!px-2.5 md:!py-1.5'
               onClick={() => setIsExportOpen(true)}>
               <Download size={15} aria-hidden='true' />
               <span>Export</span>
-            </Button>
-            <Button type='button' className='w-auto px-3 lg:hidden' onClick={() => setIsAddTransactionSheetOpen(true)}>
-              + Add
             </Button>
           </div>
         </div>
       </header>
 
       <section className='mb-5'>
-        <div className='flex gap-3 overflow-x-auto pb-1 scrollbar-none'>
-          <Card className='min-w-[120px] flex-shrink-0 p-3'>
+        <div className='grid grid-cols-2 gap-3 pb-1 lg:grid-cols-4'>
+          <Card className='min-w-0 p-3'>
             <p className='text-lg font-bold text-[var(--negative)]'>-{formatPaiseAsInr(summary.expensePaise)}</p>
             <p className='mt-0.5 text-xs text-[var(--text-muted)]'>Expenses</p>
           </Card>
-          <Card className='min-w-[120px] flex-shrink-0 p-3'>
+          <Card className='min-w-0 p-3'>
             <p className='text-lg font-bold text-[var(--positive)]'>+{formatPaiseAsInr(summary.incomePaise)}</p>
             <p className='mt-0.5 text-xs text-[var(--text-muted)]'>Income</p>
           </Card>
-          <Card className='min-w-[120px] flex-shrink-0 p-3'>
+          <Card className='min-w-0 p-3'>
             <p className='text-lg font-bold text-[var(--text-primary)]'>{formatPaiseAsInr(summary.netPaise)}</p>
             <p className='mt-0.5 text-xs text-[var(--text-muted)]'>Net</p>
           </Card>
-          <Card className='min-w-[120px] flex-shrink-0 p-3'>
+          <Card className='min-w-0 p-3'>
             <p className='text-lg font-bold text-[var(--info)]'>{formatPaiseAsInr(summary.transferPaise)}</p>
             <p className='mt-0.5 text-xs text-[var(--text-muted)]'>Transfers</p>
           </Card>
@@ -318,6 +315,16 @@ export function TransactionsPage() {
           onSuccess={() => setIsAddTransactionSheetOpen(false)}
         />
       </BottomSheet>
+
+      <button
+        type='button'
+        aria-label='Add transaction'
+        title='Add transaction'
+        className='fixed bottom-[calc(5rem+env(safe-area-inset-bottom)+1rem)] left-4 z-40 inline-flex h-14 w-14 items-center justify-center rounded-full bg-[var(--brand-primary)] text-white shadow-[0_4px_20px_rgba(168,85,247,0.4)] transition-transform hover:scale-105 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg-app)] md:bottom-4 lg:hidden'
+        onClick={() => setIsAddTransactionSheetOpen(true)}
+      >
+        <Plus className='h-6 w-6' strokeWidth={2.5} aria-hidden='true' />
+      </button>
 
       <BottomSheet
         isOpen={Boolean(transactionBeingEdited)}

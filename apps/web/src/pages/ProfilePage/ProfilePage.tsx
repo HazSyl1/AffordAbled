@@ -94,7 +94,7 @@ export function ProfilePage() {
   const displayName = currentUser?.name?.trim() || 'Your profile';
 
   return (
-    <div className='mx-auto w-full max-w-[900px] space-y-5 px-4 py-5 md:px-6 md:py-8'>
+    <div className='mx-auto w-full min-w-0 max-w-[900px] space-y-5 overflow-x-clip px-4 py-5 md:px-6 md:py-8'>
       <header>
         <p className='text-xs font-semibold uppercase tracking-[0.18em] text-[var(--brand-primary)]'>Your space</p>
         <h1 className='mt-1 text-2xl font-bold text-[var(--text-primary)]'>Profile</h1>
@@ -114,23 +114,23 @@ export function ProfilePage() {
           </div>
         </div>
 
-        <form onSubmit={(event) => { void handleSave(event); }} className='space-y-5 px-5 py-6 md:px-7'>
+        <form onSubmit={(event) => { void handleSave(event); }} className='min-w-0 space-y-5 px-5 py-6 md:px-7'>
           <div>
             <h3 className='text-base font-semibold text-[var(--text-primary)]'>Personal details</h3>
             <p className='mt-1 text-sm text-[var(--text-muted)]'>Update how your name appears across AffordAbled.</p>
           </div>
-          <div className='grid gap-4 md:grid-cols-2'>
-            <label className='block space-y-2'>
+          <div className='grid min-w-0 gap-4 md:grid-cols-2'>
+            <label className='block min-w-0 space-y-2'>
               <span className='flex items-center gap-2 text-sm font-medium text-[var(--text-secondary)]'>
                 <UserRound className='h-4 w-4' aria-hidden='true' /> Full name
               </span>
               <Input value={name} maxLength={120} required autoComplete='name' onChange={(event) => { setNameDraft(event.target.value); setSaved(false); }} />
             </label>
-            <label className='block space-y-2'>
+            <label className='block min-w-0 space-y-2'>
               <span className='flex items-center gap-2 text-sm font-medium text-[var(--text-secondary)]'>
                 <CalendarDays className='h-4 w-4' aria-hidden='true' /> Date of birth
               </span>
-              <Input type='date' value={dateOfBirth} max={new Date().toISOString().slice(0, 10)} onChange={(event) => { setDateOfBirthDraft(event.target.value); setSaved(false); }} />
+              <Input type='date' className='block w-full min-w-0 max-w-full' value={dateOfBirth} max={new Date().toISOString().slice(0, 10)} onChange={(event) => { setDateOfBirthDraft(event.target.value); setSaved(false); }} />
             </label>
           </div>
           <div>
