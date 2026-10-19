@@ -33,6 +33,21 @@
   -webkit-tap-highlight-color: transparent;
 }
 
+/* Native date controls can keep a wider intrinsic value area on iOS Safari. */
+input[type='date'] {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+input[type='date']::-webkit-date-and-time-value {
+  min-width: 0;
+  width: 100%;
+  text-align: left;
+}
+
 button:not(:disabled):not([class*='transition-']) {
   transition: filter 150ms ease, transform 150ms ease;
 }
