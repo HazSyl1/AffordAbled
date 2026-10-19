@@ -229,6 +229,7 @@ def get_transaction_extraction_llm(settings: Settings = Depends(get_settings_dep
 
 def get_auth_service(
     user_repository: SqlAlchemyUserRepository = Depends(get_user_repository),
+    category_repository: SqlAlchemyCategoryRepository = Depends(get_category_repository),
     refresh_session_repository: SqlAlchemyRefreshSessionRepository = Depends(get_refresh_session_repository),
     password_hasher: Argon2PasswordHasher = Depends(get_password_hasher),
     token_service: JwtTokenService = Depends(get_token_service),
@@ -236,6 +237,7 @@ def get_auth_service(
 ) -> AuthService:
     return AuthService(
         user_repository=user_repository,
+        category_repository=category_repository,
         refresh_session_repository=refresh_session_repository,
         password_hasher=password_hasher,
         token_service=token_service,

@@ -15,7 +15,7 @@ from langchain_core.tools import StructuredTool
 from langgraph.errors import GraphBubbleUp
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import InjectedState, ToolNode, tools_condition
-from langgraph.types import interrupt
+from langgraph.types import Command, interrupt
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -561,6 +561,21 @@ class ToolBoundSpecialistRuntime:
 
         async def agent(state: dict[str, Any]) -> dict[str, Any]:
             steps = int(state.get("specialist_steps", 0))
+            messages = state.get("specialist_messages", [])
+            if (
+                self.name == "transaction"
+                and state.get("pending_account_creation")
+                and messages
+                and getattr(messages[-1], "name", None) == "ask_user"
+            ):
+                # The transaction subgraph cannot create an account. Return to
+                # the parent supervisor, which has queued account creation
+                # before the original transaction.
+                return Command(
+                    graph=Command.PARENT,
+                    update={"pending_account_creation": False},
+                    goto="supervisor",
+                )
             if steps >= self.max_iterations:
                 return {
                     "specialist_messages": [

@@ -56,7 +56,7 @@ export function RegisterPage() {
         </FormField>
 
         <FormField label={AUTH_UI_TEXT.dobLabel} htmlFor='date_of_birth' error={errors.date_of_birth?.message}>
-          <Input id='date_of_birth' type='date' max={maxDob} {...register('date_of_birth')} />
+          <Input id='date_of_birth' type='date' className='min-w-0 max-w-full' max={maxDob} {...register('date_of_birth')} />
         </FormField>
 
         <FormField label={AUTH_UI_TEXT.emailLabel} htmlFor='email' error={errors.email?.message}>

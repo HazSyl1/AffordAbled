@@ -19,6 +19,7 @@ from app.infrastructure.ai.agents.supervisor_graph import (
     _append_conversation_history,
     _category_creation_satisfied,
     _explicit_action_clauses,
+    _is_account_creation_reply,
     _obvious_specialist,
     _pending_transaction_followup,
     _reconcile_task_queue,
@@ -125,6 +126,37 @@ def test_new_category_reply_keeps_the_pending_expense_queued() -> None:
     assert task_queue == ["spent 99 on drugs"]
     assert resumes is True
     assert creates_category is True
+
+
+def test_account_creation_reply_is_recognized_and_account_setup_routes_first() -> None:
+    assert _is_account_creation_reply("Create axis with 6000")
+    assert _is_account_creation_reply("Yes, please create Axis account with 6000 rupees")
+    assert not _is_account_creation_reply("yes")
+
+
+@pytest.mark.asyncio
+async def test_supervisor_routes_account_setup_before_the_waiting_transaction() -> None:
+    graph = _graph()
+    graph._supervisor = ScriptedSupervisor([SupervisorDecision(action="finish")])  # type: ignore[assignment]
+
+    update = await graph._supervise(
+        {
+            "messages": [HumanMessage(content="Create axis with 6000")],
+            "user_id": str(uuid.uuid4()),
+            "task_request": "spent 999 on food",
+            "task_queue": [
+                "Create account: Create axis with 6000",
+                "record a 999 expense in the Food category",
+            ],
+            "results": [],
+        }
+    )
+
+    assert update["next_specialist"] == "account"
+    assert update["task_queue"] == [
+        "Create account: Create axis with 6000",
+        "record a 999 expense in the Food category",
+    ]
 
 
 def test_affirmative_continuation_restores_unfinished_transaction_task() -> None:
