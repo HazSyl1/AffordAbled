@@ -3,10 +3,10 @@
 import asyncio
 import logging
 import os
-import shutil
 import subprocess
 from contextlib import asynccontextmanager, suppress
 from typing import Any
+from urllib.parse import parse_qsl, urlencode
 
 from fastapi import FastAPI
 from langgraph.checkpoint.memory import InMemorySaver
@@ -15,6 +15,7 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging
 from app.core.middleware import register_exception_handlers, register_middleware
+from app.infrastructure.audio.ffmpeg_audio_transcoder import resolve_ffmpeg_binary
 from app.infrastructure.database.session import SessionLocal
 from app.infrastructure.jobs import run_memory_outbox_loop, run_retention_cleanup_once
 from app.presentation.router import api_router
@@ -24,8 +25,8 @@ logger = logging.getLogger(__name__)
 
 async def _probe_ffmpeg_health(settings: Settings) -> dict[str, Any]:
     configured_binary = (settings.ffmpeg_binary or 'ffmpeg').strip() or 'ffmpeg'
-    resolved_binary = shutil.which(configured_binary)
-    if resolved_binary is None:
+    resolved_binary = resolve_ffmpeg_binary(configured_binary)
+    if resolved_binary == configured_binary and not os.path.isabs(resolved_binary):
         logger.warning(
             'audio.ffmpeg.health',
             extra={
@@ -131,13 +132,23 @@ def _normalize_langgraph_postgres_conn_string(database_url: str) -> str | None:
     if not database_url.startswith('postgresql'):
         return None
 
+    normalized_url = database_url
     if database_url.startswith('postgresql+asyncpg://'):
-        return database_url.replace('postgresql+asyncpg://', 'postgresql://', 1)
+        normalized_url = database_url.replace('postgresql+asyncpg://', 'postgresql://', 1)
+    elif database_url.startswith('postgresql+psycopg://'):
+        normalized_url = database_url.replace('postgresql+psycopg://', 'postgresql://', 1)
 
-    if database_url.startswith('postgresql+psycopg://'):
-        return database_url.replace('postgresql+psycopg://', 'postgresql://', 1)
+    # asyncpg accepts ``ssl=require`` while psycopg/libpq expects
+    # ``sslmode=require``. The same DATABASE_URL is used by both clients.
+    if '?' not in normalized_url:
+        return normalized_url
 
-    return database_url
+    base, query = normalized_url.split('?', 1)
+    parameters = parse_qsl(query, keep_blank_values=True)
+    if any(key == 'sslmode' for key, _ in parameters):
+        return normalized_url
+    parameters = [('sslmode' if key == 'ssl' else key, value) for key, value in parameters]
+    return f'{base}?{urlencode(parameters)}'
 
 
 async def _build_langgraph_checkpointer(settings: Settings) -> tuple[Any, Any | None, str]:

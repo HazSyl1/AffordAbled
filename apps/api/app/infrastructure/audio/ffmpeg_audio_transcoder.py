@@ -2,11 +2,32 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 import subprocess
 
 from app.domain.exceptions import InvalidSpeechInputError
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_ffmpeg_binary(configured_binary: str = 'ffmpeg') -> str:
+    """Resolve FFmpeg from PATH, with the packaged Azure-friendly fallback."""
+    binary = (configured_binary or 'ffmpeg').strip() or 'ffmpeg'
+    resolved_binary = shutil.which(binary)
+    if resolved_binary:
+        return resolved_binary
+
+    # App Service's managed Python image does not include the system ffmpeg
+    # package. imageio-ffmpeg bundles a compatible executable in the artifact.
+    if binary == 'ffmpeg':
+        try:
+            import imageio_ffmpeg
+
+            return imageio_ffmpeg.get_ffmpeg_exe()
+        except (ImportError, RuntimeError, OSError):
+            logger.debug('Bundled imageio-ffmpeg executable is unavailable.', exc_info=True)
+
+    return binary
 
 
 class FFmpegAudioTranscoder:
