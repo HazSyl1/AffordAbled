@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from app.application.dto import CreateAccountInput, UpdateAccountInput
+from app.application.name_formatting import capitalize_name
 from app.domain.entities import Account
 from app.domain.exceptions import AccountNotFoundError
 from app.domain.repositories import AccountRepository
@@ -21,7 +22,7 @@ class AccountService:
         account = Account(
             id=uuid.uuid4(),
             user_id=data.user_id,
-            name=data.name,
+            name=capitalize_name(data.name),
             type=data.type,
             balance_paise=data.balance_paise,
             currency=data.currency,
@@ -45,7 +46,7 @@ class AccountService:
         account = await self.get_account(user_id, account_id)
         was_default = account.is_default
         if data.name is not None:
-            account.name = data.name
+            account.name = capitalize_name(data.name)
         if data.is_active is not None:
             account.is_active = data.is_active
             if not data.is_active and was_default:

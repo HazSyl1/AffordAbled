@@ -673,6 +673,7 @@ class ToolBoundSpecialistRuntime:
                     "pending_split_transaction_id": state.get("pending_split_transaction_id"),
                     "available_categories": state.get("available_categories", []),
                     "available_accounts": state.get("available_accounts", []),
+                    "available_split_contacts": state.get("available_split_contacts", []),
                     "confirmed_memories": state.get("confirmed_memories", []),
                 },
             )

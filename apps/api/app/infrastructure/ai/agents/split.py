@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import uuid
 from decimal import Decimal
+from difflib import SequenceMatcher
 from typing import Any
 
 from langgraph.types import interrupt
@@ -32,6 +33,10 @@ class SplitToolset:
             )
             if value
         )
+        saved_contacts = [
+            str(name) for name in context.constraints.get('available_split_contacts', []) if name
+        ]
+        source_tokens = re.findall(r"[A-Za-z][A-Za-z'-]*", source_text)
         unrequested = [
             person.name
             for person in people
@@ -39,6 +44,14 @@ class SplitToolset:
                 rf'(?<!\w){re.escape(person.name).replace(r"\ ", r"\s+")}(?!\w)',
                 source_text,
                 re.IGNORECASE,
+            )
+            and not any(
+                saved_name.casefold() == person.name.casefold()
+                and any(
+                    SequenceMatcher(None, saved_name.casefold(), token.casefold()).ratio() >= 0.82
+                    for token in source_tokens
+                )
+                for saved_name in saved_contacts
             )
         ]
         if unrequested:

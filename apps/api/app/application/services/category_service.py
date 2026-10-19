@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from app.application.dto import CreateCategoryInput, UpdateCategoryInput
+from app.application.name_formatting import capitalize_name
 from app.domain.entities import Category
 from app.domain.exceptions import CategoryNotFoundError
 from app.domain.repositories import CategoryRepository
@@ -18,7 +19,7 @@ class CategoryService:
         category = Category(
             id=uuid.uuid4(),
             user_id=data.user_id,
-            name=data.name,
+            name=capitalize_name(data.name),
             icon=data.icon,
             color=data.color,
             type=data.type,
@@ -37,7 +38,7 @@ class CategoryService:
     ) -> Category:
         category = await self._get_category(user_id, category_id)
         if data.name is not None:
-            category.name = data.name
+            category.name = capitalize_name(data.name)
         if data.icon is not None:
             category.icon = data.icon
         if data.color is not None:

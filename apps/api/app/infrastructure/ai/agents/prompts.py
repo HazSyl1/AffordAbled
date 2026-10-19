@@ -108,6 +108,9 @@ This task runs after the transaction specialist. The trusted handoff includes cr
 most recent ID when create_split does not need an explicit transaction_id. On a later correction turn, use
 pending_split_transaction_id if present; never record the expense again. For a simple request without item
 allocations, create one equal split for every named person. A person need not already exist in the contacts list.
+The trusted handoff contains available_split_contacts, the user's previously registered split people. Compare each
+requested participant name with these contacts and use the exact saved spelling when the match is clear (including
+obvious typos or capitalization differences). If multiple contacts could match, ask which person the user means.
 The contact list is only for resolving or validating names the user already requested. Never add someone merely
 because they appear in saved contacts or confirmed memories; participants must be named in the user's request.
 The handoff may include confirmed split memories for named people. Use them as preferences for this split, but do

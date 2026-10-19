@@ -647,6 +647,7 @@ class AgentGraphState(TypedDict, total=False):
     show_completion_popup: bool
     available_categories: list[dict[str, Any]]
     available_accounts: list[dict[str, Any]]
+    available_split_contacts: list[str]
     confirmed_memories: list[dict[str, Any]]
     specialist_messages: Annotated[list[BaseMessage], add_messages]
     next_specialist: str | None
@@ -682,6 +683,7 @@ class AgenticSupervisorGraph:
         self._guardrail = guardrail
         self._category_service = category_service
         self._account_service = account_service
+        self._split_service = split_service
         self._memory_repository = memory_repository
 
         # Callers may provide a single shared model or a per-agent mapping.
@@ -928,6 +930,11 @@ class AgenticSupervisorGraph:
             }
             for item in accounts
         ]
+        available_split_contacts = (
+            await self._split_service.contact_names(uuid.UUID(state["user_id"]))
+            if self._split_service is not None
+            else []
+        )
         confirmed_memories = []
         if self._memory_repository is not None:
             memories = await self._memory_repository.relevant_confirmed(
@@ -956,6 +963,7 @@ class AgenticSupervisorGraph:
                 "remaining_tasks": task_queue,
                 "available_categories": available_categories,
                 "available_accounts": available_accounts,
+                "available_split_contacts": available_split_contacts,
                 "created_transaction_ids": state.get("created_transaction_ids", []),
                 "pending_split_transaction_id": state.get('pending_split_transaction_id'),
                 "last_transaction_window": state.get("last_transaction_window"),
@@ -1249,6 +1257,7 @@ class AgenticSupervisorGraph:
             "task_queue": task_queue,
             "available_categories": available_categories,
             "available_accounts": available_accounts,
+            "available_split_contacts": available_split_contacts,
             "confirmed_memories": confirmed_memories,
             "next_specialist": decision.specialist,
             "handoff": decision.handoff,
@@ -1260,6 +1269,7 @@ class AgenticSupervisorGraph:
                     "task_queue": task_queue,
                     "available_categories": available_categories,
                     "available_accounts": available_accounts,
+                    "available_split_contacts": available_split_contacts,
                     "confirmed_memories": confirmed_memories,
                 },
                 decision.specialist,
@@ -1288,6 +1298,7 @@ class AgenticSupervisorGraph:
                 "latest_user_reply": str(state["messages"][-1].content),
                 "available_categories": state.get("available_categories", []),
                 "available_accounts": state.get("available_accounts", []),
+                "available_split_contacts": state.get("available_split_contacts", []),
                 "confirmed_memories": state.get("confirmed_memories", []),
                 "created_transaction_ids": state.get("created_transaction_ids", []),
                 "pending_split_transaction_id": state.get('pending_split_transaction_id'),

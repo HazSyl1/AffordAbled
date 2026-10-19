@@ -109,6 +109,17 @@ def test_split_rejects_saved_contacts_not_named_in_the_request() -> None:
         SplitToolset._validate_requested_people([*people, ParticipantShare('Rahul', 0)], context)
 
 
+def test_split_allows_clear_typo_resolution_to_a_saved_contact() -> None:
+    context = HandoffContext(
+        user_id=uuid.uuid4(),
+        request='Spent 2000 on dinner with Piyus',
+        constraints={
+            'original_request': 'Spent 2000 on dinner with Piyus',
+            'available_split_contacts': ['Piyush'],
+        },
+    )
+    SplitToolset._validate_requested_people([ParticipantShare('Piyush', 0)], context)
+
 @pytest.mark.asyncio
 async def test_receipt_ocr_keeps_item_lines_within_chat_request_limit() -> None:
     class FakeOcr:
