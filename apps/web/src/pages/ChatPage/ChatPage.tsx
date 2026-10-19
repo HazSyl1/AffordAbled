@@ -95,6 +95,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
   const [isMobileHistoryOpen, setIsMobileHistoryOpen] = useState(false);
   const [chatInput, setChatInput] = useState('');
   const [chatError, setChatError] = useState<string | null>(null);
+  const [manualFallbackMessage, setManualFallbackMessage] = useState<string | null>(null);
   const receiptUploadRef = useRef(false);
   const [showProposalSheet, setShowProposalSheet] = useState(false);
   const [proposalForSheet, setProposalForSheet] = useState<ChatTransactionProposal | null>(null);
@@ -149,6 +150,19 @@ function ChatWorkspace({ userId }: { userId: string }) {
     () => (proposalForSheet ? mapProposalToCreateTransactionValues(proposalForSheet) : undefined),
     [proposalForSheet],
   );
+
+  const openManualTransactionFallback = (message: string) => {
+    receiptUploadRef.current = false;
+    setProposalForSheet(null);
+    setProposalQueue([]);
+    setProposalBatchTotal(0);
+    setProposalBatchCompleted(0);
+    setProposalSheetMode('standard');
+    setEditingTransactionId(null);
+    setEditingTransactionValues(undefined);
+    setManualFallbackMessage(message);
+    setShowProposalSheet(true);
+  };
 
   const chatLayoutClass = isSideToolCollapsed
     ? 'grid-cols-1 md:grid-cols-[40px_minmax(0,1fr)]'
@@ -399,6 +413,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
       }
     } catch {
       setChatError(DASHBOARD_CHAT_UI_TEXT.assistantError);
+      openManualTransactionFallback('The assistant could not finish this request. You can enter the transaction manually. If the request may have reached the server, check Transactions first to avoid adding it twice.');
     }
   };
 
@@ -414,6 +429,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
 
       if (!transcript) {
         setChatError(DASHBOARD_CHAT_UI_TEXT.voiceError);
+        openManualTransactionFallback('Voice transcription returned no text. Enter the transaction details manually.');
         return;
       }
 
@@ -422,6 +438,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
       void handleSendMessage(transcript);
     } catch {
       setChatError(DASHBOARD_CHAT_UI_TEXT.voiceError);
+      openManualTransactionFallback('Voice processing failed. Enter the transaction details manually.');
     }
   };
 
@@ -594,6 +611,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
 
       if (!imagePrompt) {
         setChatError(DASHBOARD_CHAT_UI_TEXT.imageError);
+        openManualTransactionFallback('The receipt could not be read. Enter the transaction details manually.');
         return;
       }
 
@@ -608,6 +626,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
       await handleSendMessage(combinedPrompt);
     } catch {
       setChatError(DASHBOARD_CHAT_UI_TEXT.imageError);
+      openManualTransactionFallback('Receipt processing failed. Enter the transaction details manually.');
     }
   };
 
@@ -937,6 +956,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
         isOpen={showProposalSheet}
         onClose={() => {
           setShowProposalSheet(false);
+          setManualFallbackMessage(null);
           setProposalForSheet(null);
           setProposalQueue([]);
           setProposalBatchTotal(0);
@@ -951,6 +971,11 @@ function ChatWorkspace({ userId }: { userId: string }) {
             : SHEET_TITLES.addTransaction
         }
       >
+        {manualFallbackMessage ? (
+          <div className='mb-4 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-[var(--text-primary)]' role='status'>
+            {manualFallbackMessage}
+          </div>
+        ) : null}
         <CreateTransactionForm
           mode='sheet'
           showHeading={false}
@@ -990,6 +1015,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
               return;
             }
             setShowProposalSheet(false);
+            setManualFallbackMessage(null);
             setProposalForSheet(null);
             setProposalQueue([]);
             setProposalBatchTotal(0);

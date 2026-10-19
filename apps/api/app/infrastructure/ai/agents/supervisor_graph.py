@@ -534,10 +534,36 @@ def _last_assistant_reply(history: list[dict[str, str]]) -> str:
     return next((item.get("content", "") for item in reversed(history) if item.get("role") == "assistant"), "")
 
 
+def _append_conversation_history(
+    current: list[dict[str, str]] | None,
+    update: list[dict[str, str]] | None,
+) -> list[dict[str, str]]:
+    """Merge transcript snapshots, tolerating concurrent and stale subgraph updates."""
+    existing = current or []
+    incoming = update or []
+    # Attached specialist subgraphs can propagate the current state snapshot
+    # back to the parent. Treat that as a snapshot, not a second append.
+    if len(incoming) >= len(existing) and incoming[: len(existing)] == existing:
+        return incoming[-100:]
+    if len(existing) >= len(incoming) and existing[: len(incoming)] == incoming:
+        return existing[-100:]
+    common_prefix_length = 0
+    for old_event, new_event in zip(existing, incoming, strict=False):
+        if old_event != new_event:
+            break
+        common_prefix_length += 1
+    merged = [
+        *existing[:common_prefix_length],
+        *existing[common_prefix_length:],
+        *incoming[common_prefix_length:],
+    ]
+    return merged[-100:]
+
+
 def _pending_transaction_followup(
     prior_state: dict[str, Any], message: str
 ) -> tuple[str, list[str], bool, bool]:
-    """Identify a category-create reply to a transaction that is waiting for its category."""
+    """Restore a transaction task when the user answers a clarification or continuation prompt."""
     task_request = str(prior_state.get("task_request") or "")
     task_queue = list(prior_state.get("task_queue") or [])
     history = prior_state.get("conversation_history") or []
@@ -550,6 +576,35 @@ def _pending_transaction_followup(
         and category_question
         and _obvious_specialist(task_request) == "transaction"
     )
+    if not is_pending and re.fullmatch(
+        r"\s*(?:yes|yeah|yep|yup|sure|okay|ok|go ahead|please do|do it|proceed)[.! ]*\s*",
+        message,
+        flags=re.IGNORECASE,
+    ):
+        continuation_prompt = bool(
+            re.search(r"\b(?:proceed|continue|go ahead)\b", pending_question, flags=re.IGNORECASE)
+            and re.search(r"\b(?:expense|transaction|purchase)\b", pending_question, flags=re.IGNORECASE)
+        )
+        events = prior_state.get("tool_event_history") or []
+        pending_event_index = next(
+            (
+                index
+                for index in range(len(events) - 1, -1, -1)
+                if events[index].get("tool") == "ask_user"
+                and _obvious_specialist(str(events[index].get("task") or "")) == "transaction"
+            ),
+            None,
+        )
+        if continuation_prompt and pending_event_index is not None:
+            pending_event = events[pending_event_index]
+            transaction_was_created = any(
+                event.get("tool") == "create_transaction" and event.get("ok")
+                for event in events[pending_event_index + 1 :]
+            )
+            if not transaction_was_created:
+                task_request = str(pending_event.get("request") or task_request)
+                task_queue = [str(pending_event.get("task") or task_request)]
+                is_pending = True
     if is_pending and not task_queue:
         task_queue = [task_request]
     is_category_create = bool(
@@ -563,7 +618,10 @@ def _pending_transaction_followup(
 
 class AgentGraphState(TypedDict, total=False):
     messages: Annotated[list[BaseMessage], add_messages]
-    conversation_history: list[dict[str, str]]
+    # Chat transcript updates are append-only. A reducer is required because
+    # a resumed interrupt can apply the resume update alongside specialist
+    # state updates in the same LangGraph step.
+    conversation_history: Annotated[list[dict[str, str]], _append_conversation_history]
     user_id: str
     timezone: str
     task_request: str
@@ -732,17 +790,17 @@ class AgenticSupervisorGraph:
                 if isinstance(interrupt_payload, dict)
                 else str(interrupt_payload)
             )
+            updated_history = list(conversation_history)
             if pending_question and (
                 not conversation_history
-                or conversation_history[-1] != {"role": "assistant", "content": pending_question}
+                or conversation_history[-1].get("role") != "assistant"
+                or conversation_history[-1].get("content") != pending_question
             ):
-                conversation_history = [
-                    *conversation_history,
-                    {"role": "assistant", "content": pending_question},
-                ]
+                updated_history.append({"role": "assistant", "content": pending_question})
+            updated_history.append({"role": "user", "content": message})
             resume_update: dict[str, Any] = {
                 "messages": [HumanMessage(content=message)],
-                "conversation_history": [*conversation_history, {"role": "user", "content": message}][-100:],
+                "conversation_history": updated_history[-100:],
             }
             if is_new_category_for_pending_transaction:
                 resume_update["task_queue"] = [message, *pending_queue]
