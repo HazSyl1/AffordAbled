@@ -17,7 +17,10 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-config.set_main_option("sqlalchemy.url", get_settings().database_url)
+# Alembic stores this value through ConfigParser, where percent signs are
+# interpolation markers. Encoded credentials commonly contain values such as
+# ``%40`` for ``@`` and must therefore be escaped before insertion.
+config.set_main_option("sqlalchemy.url", get_settings().database_url.replace("%", "%%"))
 
 target_metadata = Base.metadata
 
