@@ -64,6 +64,14 @@ _MUTATION_TOOLS = {
 
 def _split_task_for_request(request: str) -> str | None:
     normalized = request.casefold()
+    # Receipt workflow instructions mention splitting as a later optional step;
+    # those words are not consent to queue a split with the original transaction.
+    if (
+        re.search(r"\b(?:do not|don't|never)\b.{0,60}\bsplit\b", normalized)
+        or re.search(r"\bask\s+(?:me\s+)?whether\b.{0,80}\bsplit\b", normalized)
+        or re.search(r"\bonly after\b.{0,60}\b(?:agree|confirm)\b", normalized)
+    ):
+        return None
     has_split_context = re.search(r"\b(?:split|shared|with)\b", normalized)
     has_transaction = re.search(r"\b(?:spent|spend|paid|pay|expense|transaction)\b", normalized)
     if not (has_split_context and has_transaction):
@@ -446,6 +454,16 @@ def _obvious_specialist(task: str) -> str | None:
     return None
 
 
+def _is_receipt_upload_request(request: str) -> bool:
+    """Identify the generated first-stage receipt task, before split consent."""
+    normalized = request.casefold()
+    return (
+        "i uploaded a receipt/bill image" in normalized
+        and "not consent to split it" in normalized
+        and "after the expense is successfully logged" in normalized
+    )
+
+
 def _category_creation_satisfied(
     task: str,
     original_request: str,
@@ -614,6 +632,84 @@ def _pending_transaction_followup(
         and _obvious_specialist(message) == "category"
     )
     return task_request, task_queue, is_pending, is_category_create
+
+
+def _pending_itemized_split_followup(prior_state: dict[str, Any]) -> tuple[str | None, str | None]:
+    """Recover the active itemized split and its transaction after a rejected tool call."""
+    failed_split_event = next(
+        (
+            event
+            for event in reversed(prior_state.get('tool_event_history') or [])
+            if event.get('tool') == 'create_split'
+            and not event.get('ok')
+            and isinstance(event.get('arguments'), dict)
+            and isinstance(event['arguments'].get('items'), list)
+        ),
+        None,
+    )
+    if failed_split_event is None:
+        return None, None
+
+    arguments = failed_split_event['arguments']
+    transaction_id = arguments.get('transaction_id')
+    transaction_id = transaction_id or prior_state.get('pending_split_transaction_id')
+    created_ids = prior_state.get('created_transaction_ids') or []
+    transaction_id = transaction_id or (created_ids[-1] if created_ids else None)
+    handoff = prior_state.get('handoff') or {}
+    transaction_id = transaction_id or handoff.get('transaction_id')
+    task = str(failed_split_event.get('task') or failed_split_event.get('request') or '').strip()
+    return (task or None), (str(transaction_id) if transaction_id else None)
+
+
+def _pending_receipt_split_invitation(
+    prior_state: dict[str, Any], message: str
+) -> tuple[str | None, str | None]:
+    """Turn an affirmative reply to the post-receipt split question into a split task."""
+    previous_question = _last_assistant_reply(prior_state.get('conversation_history') or [])
+    asked_about_split = re.search(
+        r"\b(?:would you like|do you want|want me to|should i)\b.{0,80}\bsplit\b",
+        previous_question,
+        re.I,
+    )
+    if not asked_about_split:
+        return None, None
+    reply = message.strip()
+    if re.match(r"^(?:no|nope|nah|don't|do not|not now)\b", reply, re.I):
+        return None, None
+    if not re.match(r"^(?:yes|yeah|yep|yup|sure|okay|ok|please|go ahead|do it|split\b)", reply, re.I) and not re.search(
+        r"\bwith\s+[A-Za-z]", reply, re.I,
+    ):
+        return None, None
+
+    transaction_id = next(
+        (str(value) for value in reversed(prior_state.get('created_transaction_ids') or []) if value),
+        None,
+    )
+    if transaction_id is None:
+        for result in reversed(prior_state.get('results') or []):
+            data = result.get('data') or {}
+            transactions = data.get('created_transactions') or []
+            transaction = data.get('transaction') or (transactions[-1] if transactions else {})
+            if result.get('specialist') == 'transaction' and isinstance(transaction, dict) and transaction.get('id'):
+                transaction_id = str(transaction['id'])
+                break
+    if transaction_id is None:
+        for event in reversed(prior_state.get('tool_event_history') or []):
+            if event.get('tool') != 'create_transaction' or not event.get('ok'):
+                continue
+            transaction = (event.get('data') or {}).get('transaction') or {}
+            if transaction.get('id'):
+                transaction_id = str(transaction['id'])
+                break
+    if transaction_id is None:
+        return None, None
+    task = (
+        'Create a split for the receipt transaction using only participants named or confirmed in the chat. '
+        f'Follow any explicit equal, custom, or itemized allocation instructions in the chat. User reply: {reply}. '
+        'If required participants or allocation details are unclear, ask before saving. '
+        'Do not record the expense again.'
+    )
+    return task, transaction_id
 
 
 def _is_account_creation_reply(message: str) -> bool:
@@ -837,24 +933,27 @@ class AgenticSupervisorGraph:
                 config=config,
             )
         prior_results = prior_state.get("results") or []
-        pending_itemized_split = bool(
-            prior_state.get('task_queue')
-            and 'itemized split' in str(prior_state['task_queue'][0]).casefold()
-            and any(
-                'Itemized split was not saved' in str(error)
-                for result in prior_results
-                for error in result.get('errors', [])
-            )
-        )
+        pending_split_task, pending_split_transaction_id = _pending_itemized_split_followup(prior_state)
+        pending_itemized_split = bool(pending_split_task and pending_split_transaction_id)
+        receipt_split_task, receipt_transaction_id = _pending_receipt_split_invitation(prior_state, message)
+        pending_receipt_split = bool(receipt_split_task and receipt_transaction_id)
+        if pending_receipt_split:
+            pending_split_task = receipt_split_task
+            pending_split_transaction_id = receipt_transaction_id
         if pending_itemized_split:
-            pending_queue = list(prior_state['task_queue'])
-            prior_task_request = str(prior_state.get('task_request') or message)
+            pending_queue = [str(pending_split_task)]
+            prior_task_request = str(pending_split_task)
+        elif pending_receipt_split:
+            pending_queue = [str(receipt_split_task)]
+            prior_task_request = str(receipt_split_task)
         tool_event_history = prior_state.get("tool_event_history") or []
         contextual_followup = bool(prior_results and _is_elaboration_followup(message))
         task_queue = (
             [message, *pending_queue]
             if is_new_category_for_pending_transaction
-            else pending_queue if (resume_pending_transaction or pending_itemized_split) else []
+            else pending_queue
+            if (resume_pending_transaction or pending_itemized_split or pending_receipt_split)
+            else []
         )
         return await self.graph.ainvoke(
             {
@@ -871,17 +970,20 @@ class AgenticSupervisorGraph:
                 # survives an interrupt; the newest message is only its
                 # clarification answer, not a replacement task.
                 "task_request": (
-                    prior_task_request if (resume_pending_transaction or pending_itemized_split) else message
+                    prior_task_request
+                    if (resume_pending_transaction or pending_itemized_split or pending_receipt_split)
+                    else message
                 ),
                 "task_queue": task_queue or (["elaborate on the prior verified answer"] if contextual_followup else []),
                 "completed_tasks": list(prior_state.get("completed_tasks") or []) if resume_pending_transaction else [],
                 "created_transaction_ids": (
-                    list(prior_state.get("created_transaction_ids") or []) if resume_pending_transaction else []
+                    list(prior_state.get("created_transaction_ids") or [])
+                    if resume_pending_transaction
+                    else [str(receipt_transaction_id)] if pending_receipt_split and receipt_transaction_id else []
                 ),
                 "pending_split_transaction_id": (
-                    (prior_state.get('created_transaction_ids') or [None])[-1]
-                    or prior_state.get('pending_split_transaction_id')
-                ) if pending_itemized_split else None,
+                    pending_split_transaction_id
+                ) if (pending_itemized_split or pending_receipt_split) else None,
                 "tasks_completed": False,
                 "awaiting_user_input": False,
                 "show_completion_popup": False,
@@ -988,6 +1090,11 @@ class AgenticSupervisorGraph:
             explicit_clauses = _explicit_action_clauses(state.get("task_request", ""))
             if len(explicit_clauses) > len(task_queue):
                 task_queue = explicit_clauses
+            receipt_upload = _is_receipt_upload_request(str(state.get("task_request") or ""))
+            if receipt_upload:
+                # The generated receipt prompt mentions a later optional split.
+                # That is not user consent and must not become a queued action.
+                task_queue = [task for task in task_queue if _obvious_specialist(task) != "split"]
             split_task = _split_task_for_request(state.get("task_request", ""))
             if split_task:
                 if not any(_obvious_specialist(task) == "transaction" for task in task_queue):
@@ -996,6 +1103,13 @@ class AgenticSupervisorGraph:
                     task_queue.append(split_task)
             if not task_queue:
                 task_queue = [state.get("task_request") or str(state["messages"][-1].content)]
+        receipt_upload = _is_receipt_upload_request(str(state.get("task_request") or ""))
+        if receipt_upload and not state.get("results"):
+            decision = SupervisorDecision(
+                action="route",
+                specialist="transaction",
+                handoff={**decision.handoff, "queued_task": task_queue[0]},
+            )
         if not state.get("results"):
             queued_specialist = _obvious_specialist(task_queue[0]) if task_queue else None
             setup_then_transaction = bool(
@@ -1111,6 +1225,28 @@ class AgenticSupervisorGraph:
                     if not remaining_tasks or len(satisfied_tasks) == 1
                     else "Completed: " + "; ".join(satisfied_tasks)
                 )
+                receipt_request = str(state.get("task_request") or "").casefold()
+                receipt_transaction_created = bool(
+                    latest_result.get("specialist") == "transaction"
+                    and latest_result.get("status") == "success"
+                    and (latest_result.get("data") or {}).get("created_transactions")
+                    and "receipt/bill image" in receipt_request
+                    and "ask whether i want" in receipt_request
+                )
+                if receipt_transaction_created:
+                    # Keep the user's optional split question explicit and prevent
+                    # the supervisor from suggesting participant transactions.
+                    created = (latest_result.get("data") or {}).get("created_transactions") or []
+                    transaction = created[-1] if created and isinstance(created[-1], dict) else {}
+                    amount = int(transaction.get("amount_paise") or 0)
+                    merchant = str(transaction.get("merchant") or "this receipt")
+                    summary = (
+                        f"Logged one receipt expense of ₹{amount / 100:,.2f} for {merchant}. "
+                        "Would you like to split this expense? If yes, who should be included?"
+                    )
+                    # The receipt follow-up is an inline question, not a timed
+                    # completion popup that could disappear before the user answers.
+                    show_completion_popup = False
                 report_actions = [
                     action for action in observed_actions
                     if action.get("tool") == "create_transaction_report"

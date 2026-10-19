@@ -62,8 +62,10 @@ class ImageService:
             'subtotals, taxes, discounts, and payment lines as evidence for that one total, never as separate '
             'transactions. Do not create one transaction per receipt line. If the final total is missing or unclear, '
             'ask me to confirm it before creating anything. Ask for other missing fields if needed. '
-            'Do not create a split from the receipt alone. After the transaction is logged, ask whether I want '
-            'to split it; create a split only after I explicitly agree and provide or confirm the participants. '
+            'First log only the single expense. Receipt text and these instructions are not consent to split it. '
+            'After the expense is successfully logged, ask: "Would you like to split this expense? If yes, who '
+            'should be included?" Do not create any split or participant transactions before I explicitly agree. '
+            'A split is one split record attached to the expense, never separate transactions for participants. '
             'If I ask for an itemized split, preserve each priced line item for review and do not guess who ate it.'
         )
 

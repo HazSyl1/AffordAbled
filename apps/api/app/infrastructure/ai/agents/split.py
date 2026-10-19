@@ -102,6 +102,9 @@ class SplitToolset:
             transaction_id = created[-1] if created else None
         if not transaction_id:
             transaction_id = context.constraints.get('pending_split_transaction_id')
+        if not transaction_id:
+            handoff = context.constraints.get('supervisor_handoff') or {}
+            transaction_id = handoff.get('transaction_id')
         if not transaction_id and 'split' in context.request.casefold() and re.search(
             r'\b(?:that|this|receipt|it)\b', context.request.casefold()
         ):
