@@ -48,8 +48,13 @@ def test_itemized_calculation_uses_exact_paise_and_flags_dietary_conflicts() -> 
         {'isha': 'vegetarian'},
     )
     assert 'Isha' in conflict.warnings[0]
-    with pytest.raises(ValueError, match='add up'):
+    with pytest.raises(ValueError, match='missing ₹0.01'):
         calculate_itemized_split(301, ['Isha'], [ItemAllocation('Pizza', 300, ['me', 'Isha'])])
+
+    with pytest.raises(ValueError, match=r'missing ₹312\.00'):
+        calculate_itemized_split(
+            404700, ['Isha'], [ItemAllocation('Receipt items', 373500, ['me', 'Isha'])],
+        )
 
 
 def test_itemized_split_includes_owner_by_default_but_honors_explicit_exclusion() -> None:
@@ -136,6 +141,7 @@ async def test_receipt_ocr_keeps_item_lines_within_chat_request_limit() -> None:
     assert 'final grand total' in result.prompt
     assert 'ask me to confirm it' in result.prompt
     assert len(result.prompt) < 8000
+    assert _split_task_for_request(result.prompt) is None
 
 
 @pytest.mark.asyncio
@@ -190,7 +196,7 @@ async def test_chat_itemized_split_requires_review_before_create(monkeypatch: py
     })
     assert len(saved) == 2
     corrected = HandoffContext(user_id=context.user_id, request='Create an itemized split with Isha',
-                               constraints={'pending_split_transaction_id': str(transaction_id)})
+                               constraints={'supervisor_handoff': {'transaction_id': str(transaction_id)}})
     await toolset.create_split(corrected, {
         'participants': ['Isha'],
         'items': [{'name': 'Veg meal', 'amount_paise': 30000,

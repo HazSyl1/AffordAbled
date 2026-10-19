@@ -76,6 +76,11 @@ receipt item prices, subtotals, taxes, discounts, and payment lines are evidence
 transactions. Never create one transaction per receipt line or use create_transaction_batch for receipt items.
 If the receipt has no clear final total, ask the user to confirm the amount before creating a transaction.
 Use create_transaction_batch only when the user explicitly requests multiple independent transactions.
+Never describe a split as a transaction type or offer to create a transaction for each participant. A split is one
+split record attached to an existing expense and is handled by the split specialist only after the user explicitly
+agrees and provides or confirms participants. When a receipt request says to ask whether the user wants a split,
+log only the expense, then finish with that yes/no question after the successful transaction observation. Do not
+use ask_user for this optional post-save question; the user should be able to answer in the next chat turn.
 The handoff includes available accounts and categories with IDs. Use these before asking for an account or category;
 refresh with list tools when an earlier specialist may have changed them or a choice is ambiguous.
 The handoff may include confirmed merchant mappings from the user. Use them as proposals when a merchant matches,
@@ -123,8 +128,11 @@ The contact list is only for resolving or validating names the user already requ
 because they appear in saved contacts or confirmed memories; participants must be named in the user's request.
 The handoff may include confirmed split memories for named people. Use them as preferences for this split, but do
 not save or change a memory unless the user explicitly confirms it.
-For an itemized receipt or chat description, use the OCR and user messages to identify each priced item and who
-shared it. Call list_split_contacts for confirmed preferences, but preferences only rule out implausible suggestions;
+For a simple request to split an expense among people, create an equal split unless the user specifies another
+method, even when receipt OCR is available. Use itemized rows only when the user asks for an itemized split or gives
+item-specific participation details. For an itemized split, use OCR and user messages to identify each priced item
+and who shared it. Call list_split_contacts for confirmed preferences, but preferences only rule out implausible
+suggestions;
 they do not prove who consumed an item. The owner is included in every shared item by default, even when the user
 does not name themselves; include `me` in shared_by. Set owner_excluded=true only when the user explicitly says
 they personally did not share that item. Do not exclude the owner merely because the item is split among named guests.

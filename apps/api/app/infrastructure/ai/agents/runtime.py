@@ -675,6 +675,7 @@ class ToolBoundSpecialistRuntime:
                     "original_request": state.get("task_request"),
                     "created_transaction_ids": state.get("created_transaction_ids", []),
                     "prior_specialist_results": state.get("prior_results", []),
+                    "supervisor_handoff": state.get("handoff", {}),
                     "pending_split_transaction_id": state.get("pending_split_transaction_id"),
                     "available_categories": state.get("available_categories", []),
                     "available_accounts": state.get("available_accounts", []),
