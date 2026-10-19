@@ -1,6 +1,6 @@
 import { MessageCircle, Mic } from 'lucide-react';
 import { useEffect, useState, type ReactNode } from 'react';
-import { NavLink, useNavigate } from 'react-router-dom';
+import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 
 import { CollapseToggle } from '../../atoms/CollapseToggle';
 import { useAppDispatch, useAppSelector } from '../../../app/hooks';
@@ -22,6 +22,7 @@ interface LayoutProps {
 
 export function Layout({ children }: LayoutProps) {
   const navigate = useNavigate();
+  const location = useLocation();
   const dispatch = useAppDispatch();
   const accessToken = useAppSelector((state) => state.auth.accessToken);
   const currentUser = useAppSelector((state) => state.auth.user);
@@ -216,7 +217,7 @@ export function Layout({ children }: LayoutProps) {
         </ul>
       </nav>
 
-      <div className='md:hidden'>
+      {location.pathname !== '/chat' ? <div className='md:hidden'>
         <button
           type='button'
           className='fixed bottom-[88px] right-4 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-[var(--brand-primary)] text-white shadow-[0_4px_20px_rgba(168,85,247,0.4)] active:scale-[0.98]'
@@ -240,7 +241,7 @@ export function Layout({ children }: LayoutProps) {
         >
           <Mic className='h-5 w-5' strokeWidth={2.2} aria-hidden='true' />
         </button>
-      </div>
+      </div> : null}
     </div>
   );
 }
