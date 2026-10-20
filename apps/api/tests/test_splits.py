@@ -119,6 +119,32 @@ async def test_custom_split_validation_and_owner_isolation(client: AsyncClient) 
     assert (await client.get('/api/v1/splits/contacts', headers=auth_headers(owner))).json() == ['Sam']
 
 
+async def test_standalone_money_owed_is_distinct_and_user_scoped(client: AsyncClient) -> None:
+    owner = await register_and_get_token(client, 'standalone-owed@example.com')
+    other = await register_and_get_token(client, 'standalone-owed-other@example.com')
+    created = await client.post('/api/v1/splits/owed', headers=auth_headers(owner), json={
+        'title': 'Concert tickets', 'name': 'isha', 'amount_paise': 12500,
+    })
+    assert created.status_code == 201, created.text
+    entry = created.json()
+    assert entry['kind'] == 'money_owed'
+    assert entry['transaction_id'] is None
+    assert entry['title'] == 'Concert tickets'
+    assert entry['total_paise'] == entry['outstanding_paise'] == 12500
+    assert entry['owner_share_paise'] == 0
+    assert entry['participants'][0]['name'] == 'Isha'
+    assert (await client.get('/api/v1/splits', headers=auth_headers(other))).json() == []
+    assert (await client.get(f"/api/v1/splits/{entry['id']}", headers=auth_headers(other))).status_code == 404
+
+
+async def test_standalone_money_owed_rejects_owner_as_debtor(client: AsyncClient) -> None:
+    token = await register_and_get_token(client, 'standalone-owed-owner-alias@example.com')
+    response = await client.post('/api/v1/splits/owed', headers=auth_headers(token), json={
+        'title': 'Cash', 'name': 'myself', 'amount_paise': 1000,
+    })
+    assert response.status_code == 422
+
+
 async def test_owner_alias_is_rejected_as_split_contact(client: AsyncClient) -> None:
     token = await register_and_get_token(client, 'split-no-owner-contact@example.com')
     _, transaction_id = await _expense(client, token, amount=1000)

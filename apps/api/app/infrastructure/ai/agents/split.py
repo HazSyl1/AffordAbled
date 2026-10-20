@@ -9,6 +9,7 @@ from typing import Any
 from langgraph.types import interrupt
 
 from app.application.services.itemized_split import ItemAllocation, calculate_itemized_split
+from app.application.services.quantity_split import QuantityAllocation, calculate_quantity_split
 from app.application.services.split_service import ParticipantShare, SplitService, is_owner_participant_label
 from app.application.services.transaction_service import TransactionService
 from app.infrastructure.ai.agents.contracts import HandoffContext
@@ -60,12 +61,64 @@ class SplitToolset:
                 "Use only people explicitly requested in the user's message."
             )
 
+    @staticmethod
+    def _receipt_amount_evidence(context: HandoffContext) -> set[int] | None:
+        """Return printed two-decimal amounts from user supplied receipt/OCR text, when present."""
+        user_messages = [
+            str(message.get('content') or '')
+            for message in context.history
+            if str(message.get('role') or '').casefold() == 'user'
+        ]
+        source = '\n'.join([*user_messages, context.request])
+        if not re.search(r'(?:uploaded\s+(?:a\s+)?receipt|extracted\s+text|ocr\s+data)', source, re.I):
+            return None
+        amounts: set[int] = set()
+        for match in re.finditer(r'(?<!\d)(\d[\d,]*\.\d{2})(?!\d)', source):
+            try:
+                amount_paise = int(Decimal(match.group(1).replace(',', '')) * 100)
+            except (ValueError, ArithmeticError):
+                continue
+            amounts.add(amount_paise)
+        return amounts
+
+    @staticmethod
+    def _receipt_grand_total(context: HandoffContext) -> int | None:
+        source = '\n'.join(
+            str(message.get('content') or '')
+            for message in context.history
+            if str(message.get('role') or '').casefold() == 'user'
+        )
+        if not re.search(r'(?:uploaded\s+(?:a\s+)?receipt|extracted\s+text|ocr\s+data)', source, re.I):
+            return None
+        match = re.search(r'grand\s*total\s*(?:₹\s*)?([\d,]+\.\d{2})', source, re.I)
+        if not match:
+            return None
+        return int(Decimal(match.group(1).replace(',', '')) * 100)
+
     def registry(self) -> dict[str, Any]:
         return {
             "list_split_contacts": self.list_split_contacts,
             "set_split_contact_preference": self.set_split_contact_preference,
             "create_split": self.create_split,
+            "create_owed": self.create_owed,
         }
+
+    async def create_owed(self, context: HandoffContext, args: dict[str, Any]) -> dict[str, Any]:
+        """Track an explicit receivable without fabricating a transaction or expense split."""
+        raw_amount = args.get('amount_paise')
+        if isinstance(raw_amount, bool) or not isinstance(raw_amount, int) or raw_amount <= 0:
+            raise ValueError('amount_paise must be a positive integer amount in paise.')
+        name = str(args.get('name') or '').strip()
+        if not name or is_owner_participant_label(name):
+            raise ValueError('Name the other person who owes you.')
+        self._validate_requested_people([ParticipantShare(name, raw_amount)], context)
+        title = str(args.get('title') or 'Money owed').strip()
+        split = await self._splits.create_owed(context.user_id, title, name, raw_amount)
+        return {'receivable': {
+            'id': str(split.id), 'kind': 'money_owed', 'title': split.title,
+            'amount_paise': raw_amount,
+            'person': split.participants[0].name,
+        }}
 
     async def list_split_contacts(self, context: HandoffContext, _args: dict[str, Any]) -> dict[str, Any]:
         preferences = await self._splits.list_contact_preferences(context.user_id)
@@ -94,8 +147,27 @@ class SplitToolset:
         }
 
     async def create_split(self, context: HandoffContext, args: dict[str, Any]) -> dict[str, Any]:
-        if 'itemized split' in context.request.casefold() and args.get('items') is None:
+        if (
+            'itemized split' in context.request.casefold()
+            and args.get('items') is None
+            and args.get('quantity_allocations') is None
+        ):
             raise ValueError('An itemized split needs priced items and the people who shared each item.')
+        source_request = ' '.join(str(value or '') for value in (
+            context.request, context.constraints.get('original_request'),
+        ))
+        quantity_rule = bool(
+            re.search(r'\b\d+\b.{0,80}\beach\b', source_request, re.I)
+            and re.search(r'\b(?:rest|remainder|remaining)\b', source_request, re.I)
+        )
+        if quantity_rule and not args.get('quantity_allocations'):
+            raise ValueError(
+                'This request specifies quantities per person and divides the rest equally. '
+                'Use quantity_allocations with people, quantity_per_person, and unit_price_rupees; '
+                'the tool calculates the remainder from the transaction.'
+            )
+        if args.get('quantity_allocations') is not None and args.get('items') is not None:
+            raise ValueError('Use quantity_allocations or itemized rows, not both.')
         transaction_id = args.get("transaction_id")
         if not transaction_id:
             created = context.constraints.get("created_transaction_ids") or []
@@ -123,6 +195,14 @@ class SplitToolset:
         transaction = await self._transactions.get_transaction(context.user_id, uuid.UUID(str(transaction_id)))
         if transaction.type.value != "expense":
             raise ValueError("Only expense transactions can have a split.")
+        receipt_total = self._receipt_grand_total(context)
+        if args.get('items') is not None and receipt_total is not None and transaction.amount_paise != receipt_total:
+            receipt_total_rupees = Decimal(receipt_total) / 100
+            transaction_total_rupees = Decimal(transaction.amount_paise) / 100
+            raise ValueError(
+                f'The receipt grand total is ₹{receipt_total_rupees:.2f}, but the linked transaction is '
+                f'₹{transaction_total_rupees:.2f}. Correct the transaction amount before creating an itemized split.'
+            )
         raw_people = args.get("participants") or args.get("people")
         if not isinstance(raw_people, list):
             raise ValueError("participants must be a list of person names.")
@@ -152,6 +232,51 @@ class SplitToolset:
         if owner_share is None and args.get("owner_share_rupees") is not None:
             owner_share = round(float(args["owner_share_rupees"]) * 100)
         item_breakdown = None
+        if args.get('quantity_allocations') is not None:
+            source_numbers = {
+                Decimal(value.replace(',', ''))
+                for value in re.findall(r'(?<!\d)\d[\d,]*(?:\.\d+)?(?!\d)', source_request)
+            }
+            allocations: list[QuantityAllocation] = []
+            for raw in args['quantity_allocations']:
+                if not isinstance(raw, dict):
+                    raise ValueError('Each quantity allocation needs people, quantity, and unit price.')
+                quantity = raw.get('quantity_per_person')
+                price = Decimal(str(raw.get('unit_price_rupees')))
+                price_paise = price * 100
+                if (
+                    isinstance(quantity, bool) or not isinstance(quantity, int)
+                    or Decimal(quantity) not in source_numbers or price not in source_numbers
+                    or price_paise != price_paise.to_integral_value()
+                ):
+                    raise ValueError('Quantity and unit price must match numbers in the user request.')
+                allocations.append(QuantityAllocation(
+                    people=list(raw.get('people') or []),
+                    quantity_per_person=quantity,
+                    unit_price_paise=int(price_paise),
+                ))
+            owner_share, calculated_shares, remaining_paise = calculate_quantity_split(
+                transaction.amount_paise, [person.name for person in people], allocations,
+            )
+            def amount(paise: int) -> str:
+                return f'₹{Decimal(paise) / 100:,.2f}'
+            summary = ', '.join(
+                [f'you: {amount(owner_share)}', *[
+                    f'{name}: {amount(share)}' for name, share in calculated_shares.items()
+                ]]
+            )
+            answer = interrupt({
+                'agent': 'split',
+                'question': (
+                    f'Priced items total {amount(transaction.amount_paise - remaining_paise)}; '
+                    f'{amount(remaining_paise)} is divided equally among you and {len(people)} other people. '
+                    f'Shares: {summary}. Confirm this split?'
+                ),
+            })
+            if str(answer).strip().casefold() not in {'yes', 'y', 'confirm', 'confirmed', 'proceed'}:
+                raise ValueError(f'Split was not saved. User correction or refusal: {str(answer).strip()[:400]}')
+            mode = 'custom'
+            people = [ParticipantShare(name, share) for name, share in calculated_shares.items()]
         if args.get('items') is not None:
             raw_items = args['items']
             if not isinstance(raw_items, list):
@@ -176,6 +301,16 @@ class SplitToolset:
                 )
                 for item in raw_items
             ]
+            receipt_amounts = self._receipt_amount_evidence(context)
+            if receipt_amounts is not None:
+                unsupported = [item.name for item in items if item.amount_paise not in receipt_amounts]
+                if unsupported:
+                    raise ValueError(
+                        'These itemized amounts do not appear in the uploaded receipt: '
+                        f'{", ".join(unsupported)}. Use only printed item and tax amounts. Do not invent a '
+                        '"Remaining Bill" or estimated tax/fee row to force the total to match. If printed rows '
+                        'do not add up to the transaction total, ask the user to clarify the missing charge.'
+                    )
             contacts = await self._splits.list_contact_preferences(context.user_id)
             calculation = calculate_itemized_split(
                 transaction.amount_paise, [person.name for person in people], items,

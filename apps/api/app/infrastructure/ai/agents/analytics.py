@@ -30,13 +30,20 @@ class AnalyticsToolset:
         splits = await self._splits.list_for_user(context.user_id)
         summaries = []
         total_outstanding = 0
+        expense_split_outstanding = 0
+        money_owed_outstanding = 0
         for split in splits:
             outstanding = sum(person.share_paise - person.settled_paise for person in split.participants)
             total_outstanding += outstanding
+            if split.transaction_id is None:
+                money_owed_outstanding += outstanding
+            else:
+                expense_split_outstanding += outstanding
             summaries.append({
                 "id": str(split.id),
                 "title": split.title,
-                "transaction_id": str(split.transaction_id),
+                "kind": "expense_split" if split.transaction_id else "money_owed",
+                "transaction_id": str(split.transaction_id) if split.transaction_id else None,
                 "total_paise": split.owner_share_paise + sum(person.share_paise for person in split.participants),
                 "outstanding_paise": outstanding,
                 "participants": [
@@ -49,6 +56,8 @@ class AnalyticsToolset:
             "split_count": len(summaries),
             "remaining_split_count": sum(item["outstanding_paise"] > 0 for item in summaries),
             "total_outstanding_paise": total_outstanding,
+            "expense_split_outstanding_paise": expense_split_outstanding,
+            "money_owed_outstanding_paise": money_owed_outstanding,
             "splits": summaries,
         }
 

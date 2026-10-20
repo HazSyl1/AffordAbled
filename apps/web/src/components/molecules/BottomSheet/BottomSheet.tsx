@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
+import { useBodyScrollLock } from '../../../lib/useBodyScrollLock';
 
 export interface BottomSheetProps {
   isOpen: boolean;
@@ -34,13 +35,9 @@ export function BottomSheet({ isOpen, onClose, title, children }: BottomSheetPro
       return;
     }
 
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-
-    return () => {
-      document.body.style.overflow = previousOverflow;
-    };
   }, [isOpen]);
+
+  useBodyScrollLock(isOpen);
 
   if (!isOpen) {
     return null;

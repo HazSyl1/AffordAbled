@@ -43,6 +43,7 @@ import {
   VOICE_CAPTURE_EVENT_NAME,
 } from '../../constants';
 import { formatPaiseAsInr } from '../../lib/money';
+import { useBodyScrollLock } from '../../lib/useBodyScrollLock';
 
 interface PendingSplit {
   id: string;
@@ -114,6 +115,8 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
   const [showMemorySuggestions, setShowMemorySuggestions] = useState(true);
   const [isNotificationCenterOpen, setIsNotificationCenterOpen] = useState(false);
   const { data: memorySuggestions = [] } = useListMemorySuggestionsQuery(undefined, { pollingInterval: 10_000 });
+  const isNotificationModalOpen = (isNotificationCenterOpen || (showMemorySuggestions && memorySuggestions.length > 0)) && !transactionSuccess;
+  useBodyScrollLock(isNotificationModalOpen || Boolean(transactionSuccess));
   useEffect(() => {
     if (memorySuggestions.length === 0) return;
     const reminderTimer = window.setInterval(() => {
@@ -1023,7 +1026,7 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
           onEditTransaction={transactionSuccess.transactionId ? editCompletedTransaction : undefined}
         />
       ) : null}
-      {(isNotificationCenterOpen || (showMemorySuggestions && memorySuggestions.length > 0)) && !transactionSuccess ? (
+      {isNotificationModalOpen ? (
         <div className='fixed inset-0 z-[60] flex items-center justify-center overflow-y-auto bg-black/60 p-4' role='dialog' aria-modal='true' aria-label='Notifications'>
           <div className='w-full max-w-lg space-y-3'>
             {memorySuggestions.length > 0 ? (

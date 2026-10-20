@@ -15,7 +15,9 @@ class SplitModel(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('users.id', ondelete='CASCADE'), index=True)
-    transaction_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('transactions.id', ondelete='CASCADE'))
+    transaction_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey('transactions.id', ondelete='CASCADE'), nullable=True,
+    )
     title: Mapped[str] = mapped_column(String(255))
     owner_share_paise: Mapped[int] = mapped_column(BigInteger)
     item_breakdown: Mapped[list[dict] | None] = mapped_column(JSON(none_as_null=True), nullable=True)

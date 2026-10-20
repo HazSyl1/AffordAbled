@@ -58,6 +58,7 @@ _MUTATION_TOOLS = {
     "delete_transaction",
     "restore_transaction",
     "create_split",
+    "create_owed",
     "set_split_contact_preference",
 }
 
@@ -241,6 +242,12 @@ def _matches_observed_action(task: str, action: dict[str, Any]) -> bool:
             _mentions(task, str(split.get("title") or ""))
             or any(_mentions(task, str(person.get("name") or "")) for person in split.get("participants", []))
         )
+    if tool == "create_owed":
+        receivable = data.get('receivable') or {}
+        return (
+            any(_mentions(task, word) for word in ('owe', 'owes', 'owed', 'repay me', 'pay me'))
+            and _mentions(task, str(receivable.get('person') or ''))
+        )
     if tool == "get_account_balances":
         return any(_mentions(task, word) for word in ("balance", "balances"))
     if tool == "get_transactions":
@@ -394,6 +401,8 @@ def _required_tools(task: str, specialist: str | None) -> set[str] | None:
         ):
             return {"create_transaction", "create_transaction_batch"}
     if specialist == "split":
+        if says('owe', 'owes', 'owed', 'pay me', 'repay me') and not says('split', 'shared', 'participants'):
+            return {"create_owed"}
         if says("split", "shared", "participants") and not says('remember', 'save preference'):
             return {"create_split"}
         if says('remember', 'dietary', 'vegetarian', 'vegan', 'omnivore', 'veg', 'meat', 'nonveg'):
@@ -414,6 +423,8 @@ def _obvious_specialist(task: str) -> str | None:
         for word in ("transaction", "transactions", "report", "spending", "expenses", "history")
     ):
         return "export"
+    if re.search(r"\b(?:\w+)\s+(?:owes|owed)\s+me\b|\b(?:owe|pay)\s+me\s+\d", normalized):
+        return "split"
     if "split" in normalized and not re.search(r"\b(?:spent|spend|paid|pay|record|log)\b", normalized):
         return "split"
     if re.search(r'\b(?:remember|save)\b', normalized) and re.search(
@@ -1602,6 +1613,12 @@ class AgenticSupervisorGraph:
     def _initial_specialist_messages(
         self, state: AgentGraphState, name: str, handoff: dict[str, Any]
     ) -> list[BaseMessage]:
+        # The supervisor may propose arithmetic in a dynamic handoff. The split
+        # tool must derive amounts from the saved transaction and raw user facts.
+        specialist_handoff = (
+            {key: value for key, value in handoff.items() if key == 'transaction_id'}
+            if name == 'split' else handoff
+        )
         context = HandoffContext(
             user_id=uuid.UUID(state["user_id"]),
             request=(state.get("task_queue") or [state.get("task_request") or str(state["messages"][-1].content)])[0],
@@ -1612,7 +1629,7 @@ class AgenticSupervisorGraph:
                 "prior_specialist_results": state.get("prior_results", []),
                 "recent_tool_observations": state.get("tool_event_history", [])[-12:],
                 "completed_tasks": state.get("completed_tasks", []),
-                "supervisor_handoff": handoff,
+                "supervisor_handoff": specialist_handoff,
                 "latest_user_reply": str(state["messages"][-1].content),
                 "available_categories": state.get("available_categories", []),
                 "available_accounts": state.get("available_accounts", []),

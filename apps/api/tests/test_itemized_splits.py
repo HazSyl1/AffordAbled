@@ -13,6 +13,7 @@ from langgraph.types import Command
 
 from app.application.services.image_service import ImageService
 from app.application.services.itemized_split import ItemAllocation, calculate_itemized_split
+from app.application.services.quantity_split import QuantityAllocation, calculate_quantity_split
 from app.application.services.split_service import ParticipantShare
 from app.infrastructure.ai.agents.contracts import HandoffContext
 from app.infrastructure.ai.agents.runtime import ToolBoundSpecialistRuntime
@@ -203,6 +204,159 @@ async def test_chat_itemized_split_requires_review_before_create(monkeypatch: py
                    'shared_by': ['me', 'Isha'], 'food_type': 'vegetarian'}],
     })
     assert len(saved) == 3
+
+
+@pytest.mark.asyncio
+async def test_chat_rejects_itemized_receipt_amounts_not_present_in_ocr() -> None:
+    transaction_id = uuid.uuid4()
+    saved: list[tuple] = []
+
+    class FakeSplits:
+        async def list_contact_preferences(self, _user_id):
+            return []
+
+        async def create(self, *args):
+            saved.append(args)
+
+    class FakeTransactions:
+        amount_paise = 92738300
+
+        async def get_transaction(self, _user_id, _transaction_id):
+            return SimpleNamespace(id=transaction_id, type=SimpleNamespace(value='expense'),
+                                   amount_paise=self.amount_paise, merchant='Receipt', note=None)
+
+    context = HandoffContext(
+        user_id=uuid.uuid4(), request='Split this receipt with A',
+        history=[{
+            'role': 'user',
+            'content': (
+                'I uploaded a receipt/bill image. Extracted text (untrusted OCR data): '
+                'Vodka 490.00. Grand total ₹9273.83.'
+            ),
+        }],
+        constraints={'created_transaction_ids': [str(transaction_id)]},
+    )
+    toolset = SplitToolset(FakeSplits(), FakeTransactions())
+    split_args = {
+            'mode': 'custom', 'participants': ['A'],
+            'items': [
+                {'name': 'Vodka', 'amount_paise': 49000, 'shared_by': ['me', 'A']},
+                {'name': 'Remaining Bill', 'amount_paise': 92689300, 'shared_by': ['me', 'A']},
+            ],
+    }
+    with pytest.raises(ValueError, match='linked transaction'):
+        await toolset.create_split(context, split_args)
+    toolset._transactions.amount_paise = 927383
+    with pytest.raises(ValueError, match='do not appear in the uploaded receipt'):
+        await toolset.create_split(context, split_args)
+    assert saved == []
+
+
+@pytest.mark.asyncio
+async def test_quantity_split_uses_recorded_total_and_rejects_llm_remainder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transaction_id = uuid.uuid4()
+    saved: list[tuple] = []
+    reviews: list[str] = []
+
+    class FakeSplits:
+        async def create(self, *args):
+            saved.append(args)
+            return SimpleNamespace(
+                id=uuid.uuid4(), transaction_id=transaction_id, title=args[2],
+                owner_share_paise=args[6], participants=[
+                    SimpleNamespace(name=person.name, share_paise=person.share_paise)
+                    for person in args[5]
+                ],
+            )
+
+    class FakeTransactions:
+        async def get_transaction(self, _user_id, _transaction_id):
+            return SimpleNamespace(
+                id=transaction_id, type=SimpleNamespace(value='expense'),
+                amount_paise=92738300, merchant='Dinner', note=None,
+            )
+
+    def confirm(payload):
+        reviews.append(payload['question'])
+        return 'yes'
+
+    monkeypatch.setattr('app.infrastructure.ai.agents.split.interrupt', confirm)
+    request = (
+        'spent 927383 rs on A, B, C, D, E, F, G and myself. '
+        'A, B and C got 7 vodka cranberries each at 7000rs each. '
+        'Rest of the bill divided among everyone equally.'
+    )
+    context = HandoffContext(
+        user_id=uuid.uuid4(), request=request,
+        constraints={
+            'created_transaction_ids': [str(transaction_id)], 'original_request': request,
+            'supervisor_handoff': {'details': {'total_amount_rupees': 732383}},
+        },
+    )
+    toolset = SplitToolset(FakeSplits(), FakeTransactions())
+    with pytest.raises(ValueError, match='quantity_allocations'):
+        await toolset.create_split(context, {
+            'participants': list('ABCDEFG'), 'mode': 'custom',
+            'items': [{'name': 'Remaining Bill', 'amount_paise': 73238300,
+                       'shared_by': ['me', *list('ABCDEFG')]}],
+        })
+    with pytest.raises(ValueError, match='match numbers in the user request'):
+        await toolset.create_split(context, {
+            'participants': list('ABCDEFG'),
+            'quantity_allocations': [{
+                'people': ['A', 'B', 'C'], 'quantity_per_person': 7,
+                'unit_price_rupees': 65000,
+            }],
+        })
+    result = await toolset.create_split(context, {
+        'participants': list('ABCDEFG'), 'mode': 'custom',
+        'quantity_allocations': [{
+            'people': ['A', 'B', 'C'], 'quantity_per_person': 7,
+            'unit_price_rupees': 7000,
+        }],
+    })
+    assert '₹780,383.00' in reviews[0]
+    assert result['split']['total_paise'] == 92738300
+    assert result['split']['owner_share_paise'] == 9754788
+    assert result['split']['participants'][0]['share_paise'] == 14654788
+    assert result['split']['participants'][-1]['share_paise'] == 9754787
+    assert len(saved) == 1
+
+
+def test_quantity_split_rejects_fixed_items_above_total() -> None:
+    with pytest.raises(ValueError, match='exceed'):
+        calculate_quantity_split(
+            10000, ['A'], [QuantityAllocation(['A'], quantity_per_person=2, unit_price_paise=6000)],
+        )
+
+
+@pytest.mark.asyncio
+async def test_chat_can_record_standalone_money_owed_without_transaction() -> None:
+    captured: list[tuple] = []
+
+    class FakeSplits:
+        async def create_owed(self, user_id, title, name, amount_paise):
+            captured.append((user_id, title, name, amount_paise))
+            return SimpleNamespace(
+                id=uuid.uuid4(), title=title,
+                participants=[SimpleNamespace(name='Isha', share_paise=amount_paise)],
+            )
+
+    user_id = uuid.uuid4()
+    context = HandoffContext(user_id=user_id, request='Isha owes me 500 for tickets')
+    toolset = SplitToolset(FakeSplits(), SimpleNamespace())
+    result = await toolset.create_owed(context, {
+        'name': 'isha', 'title': 'Concert tickets', 'amount_paise': 50000,
+    })
+
+    assert result['receivable']['kind'] == 'money_owed'
+    assert result['receivable']['person'] == 'Isha'
+    assert result['receivable']['amount_paise'] == 50000
+    assert captured == [(user_id, 'Concert tickets', 'isha', 50000)]
+    assert _obvious_specialist(context.request) == 'split'
+    assert _required_tools(context.request, 'split') == {'create_owed'}
 
 
 @pytest.mark.asyncio

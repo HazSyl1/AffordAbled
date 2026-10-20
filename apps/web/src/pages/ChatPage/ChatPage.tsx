@@ -37,6 +37,7 @@ import {
 import { useVoiceCapture } from '../../features/chat/useVoiceCapture';
 import { useListMemorySuggestionsQuery } from '../../features/memory/memoryApi';
 import { useListTransactionsQuery } from '../../features/transactions/transactionsApi';
+import { useBodyScrollLock } from '../../lib/useBodyScrollLock';
 
 type ChatListFilter = 'finance' | 'drafts';
 
@@ -110,6 +111,8 @@ function ChatWorkspace({ userId }: { userId: string }) {
   const [editingTransactionValues, setEditingTransactionValues] = useState<Record<string, string> | undefined>();
   const [showMemorySuggestions, setShowMemorySuggestions] = useState(true);
   const { data: memorySuggestions = [] } = useListMemorySuggestionsQuery(undefined, { pollingInterval: 10_000 });
+  const isMemorySuggestionsModalOpen = showMemorySuggestions && memorySuggestions.length > 0 && !taskSuccess;
+  useBodyScrollLock(isMemorySuggestionsModalOpen || Boolean(taskSuccess));
   useEffect(() => {
     if (memorySuggestions.length === 0) return;
     const reminderTimer = window.setInterval(() => {
@@ -948,7 +951,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
           onEditTransaction={taskSuccess.transactionId ? editCompletedTransaction : undefined}
         />
       ) : null}
-      {showMemorySuggestions && memorySuggestions.length > 0 && !taskSuccess ? (
+      {isMemorySuggestionsModalOpen ? (
         <div className='fixed inset-0 z-[60] flex items-center justify-center overflow-y-auto bg-black/60 p-4' role='dialog' aria-modal='true' aria-label='Memory suggestions'>
           <div className='w-full max-w-lg space-y-3'>
             <MemorySuggestionsPanel suggestions={memorySuggestions} />

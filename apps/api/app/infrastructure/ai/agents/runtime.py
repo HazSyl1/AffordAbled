@@ -112,6 +112,12 @@ class SplitItemArguments(BaseModel):
     food_type: Literal['vegetarian', 'vegan', 'contains_meat', 'unknown', 'shared_charge'] = 'unknown'
 
 
+class QuantitySplitArguments(BaseModel):
+    people: list[str] = Field(min_length=1, description='Named participants receiving this priced quantity.')
+    quantity_per_person: int = Field(gt=0, description='Number of items each named person received.')
+    unit_price_rupees: Decimal = Field(gt=0, description='Price of one item in rupees; code converts to paise.')
+
+
 class CreateSplitArguments(BaseModel):
     transaction_id: str | None = Field(default=None, description='Expense ID; omit for a newly recorded expense.')
     title: str | None = None
@@ -124,10 +130,27 @@ class CreateSplitArguments(BaseModel):
         default=None, max_length=20,
         description='Every verified receipt line and shared charge for an itemized split. Omit for equal splits.',
     )
+    quantity_allocations: list[QuantitySplitArguments] | None = Field(
+        default=None,
+        description=(
+            'For "N items each at X rupees; divide the rest equally". Supply only names, quantity, and unit '
+            'price. The tool calculates fixed shares and the remainder from the saved transaction.'
+        ),
+    )
 
 
 class CreateSplitToolInput(BaseModel):
     arguments: CreateSplitArguments
+
+
+class CreateOwedArguments(BaseModel):
+    name: str = Field(min_length=1, max_length=100, description='Person who owes the authenticated user.')
+    amount_paise: int = Field(gt=0, description='Amount they owe, in paise.')
+    title: str | None = Field(default=None, max_length=255, description='Optional short reason for the debt.')
+
+
+class CreateOwedToolInput(BaseModel):
+    arguments: CreateOwedArguments
 
 
 class SetSplitContactPreferenceArguments(BaseModel):
@@ -195,6 +218,7 @@ _TOOL_SCHEMAS: dict[str, type[BaseModel]] = {
     "create_category": CreateCategoryToolInput,
     "create_transaction": CreateTransactionToolInput,
     "create_split": CreateSplitToolInput,
+    "create_owed": CreateOwedToolInput,
     "set_split_contact_preference": SetSplitContactPreferenceToolInput,
     "get_transactions": GetTransactionsToolInput,
     "get_split_summary": EmptyArgumentsToolInput,
@@ -245,10 +269,18 @@ _TOOL_DESCRIPTIONS = {
     ),
     "create_split": (
         "Create a split after its expense exists. For itemized receipts, supply every item with amount_paise, "
+        "and use only amounts printed in the user's receipt/OCR; never invent a remaining-bill or residual row. "
         "shared_by names (use me for the owner). Never list the owner (me/myself/you) as a participant or ask "
         "what to call the owner; the owner's share is tracked separately. Include food_type. The tool calculates "
         "exact shares and asks the "
         "user to confirm before saving. Do not invent item prices or who ate an item."
+        " For quantity and unit-price requests with the rest split equally, provide quantity_allocations; "
+        "the tool calculates the remainder from the saved transaction."
+    ),
+    "create_owed": (
+        "Record money a named person owes the authenticated user, even when there is no expense transaction. "
+        "Use only when the user explicitly says someone owes/is to repay them; provide amount_paise and a reason. "
+        "This is a receivable tracker entry, not an expense split and does not create a transaction."
     ),
     "create_transaction_report": (
         "Generate a user-owned transaction report for download. Use for export or download requests; "
@@ -559,6 +591,7 @@ class ToolBoundSpecialistRuntime:
                 "delete_transaction",
                 "restore_transaction",
                 "create_split",
+                "create_owed",
                 "set_split_contact_preference",
                 "get_account_balances",
                 "get_transactions",
