@@ -23,7 +23,7 @@ export function TransactionSuccessOverlay({ message, expiresAt, onClose, onConti
   }, [expiresAt]);
 
   return (
-    <div className='fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/45 p-4' role='dialog' aria-modal='true' aria-labelledby='task-success-title'>
+    <div className='fixed inset-0 z-[80] flex items-center justify-center overflow-y-auto bg-black/55 p-4' role='dialog' aria-modal='true' aria-labelledby='task-success-title'>
       <div className='flex w-full max-w-3xl flex-col items-stretch justify-center gap-4 md:flex-row'>
       <Card className='w-full max-w-md border-[var(--brand-primary)] p-6 text-center shadow-2xl'>
         <CheckCircle2 className='mx-auto h-12 w-12 text-[var(--positive)]' aria-hidden='true' />

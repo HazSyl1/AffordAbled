@@ -17,7 +17,12 @@ from pydantic import ValidationError
 from app.infrastructure.ai.agents.analytics import AnalyticsToolset
 from app.infrastructure.ai.agents.brains import scoped_specialist_decision_schema
 from app.infrastructure.ai.agents.contracts import HandoffContext, SpecialistDecision, ToolAction
-from app.infrastructure.ai.agents.runtime import SpecialistRuntime, ToolBoundSpecialistRuntime, _tool_error_message
+from app.infrastructure.ai.agents.runtime import (
+    SpecialistRuntime,
+    ToolBoundSpecialistRuntime,
+    _persistent_tool_context,
+    _tool_error_message,
+)
 from app.infrastructure.ai.tools.transaction_query_tools import TransactionQueryTools
 
 
@@ -34,6 +39,28 @@ def test_tool_error_diagnostics_stay_within_observation_limit() -> None:
 
     assert len(message) == 600
     assert "SQL parameters" not in message
+
+
+def test_persistent_tool_context_includes_recent_conversation_history() -> None:
+    user_id = uuid.uuid4()
+    history = [
+        {"role": "user", "content": "spent 90 on pcm"},
+        {"role": "assistant", "content": "Which category should be used for this expense?"},
+        {"role": "user", "content": "Health"},
+    ]
+
+    context = _persistent_tool_context(
+        {
+            "user_id": user_id,
+            "task_request": "spent 90 on pcm",
+            "task_queue": ["record the pcm expense"],
+            "conversation_history": history,
+        }
+    )
+
+    assert context.history == history
+    assert context.history[-2]["content"].startswith("Which category")
+    assert len(context.history) <= 20
 
 
 @pytest.mark.asyncio

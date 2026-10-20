@@ -301,13 +301,12 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
 
   const closeTransactionSuccess = () => {
     clearTransactionRedirectTimer();
+    setTransactionSuccess(null);
+    resetChatSession();
     if (memorySuggestions.length > 0) {
-      setTransactionSuccess(null);
       setShowMemorySuggestions(true);
       return;
     }
-    setTransactionSuccess(null);
-    resetChatSession();
     navigate('/dashboard');
   };
 
