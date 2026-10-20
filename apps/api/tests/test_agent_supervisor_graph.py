@@ -18,6 +18,7 @@ from app.infrastructure.ai.agents.supervisor_graph import (
     AgenticSupervisorGraph,
     _append_conversation_history,
     _category_creation_satisfied,
+    _category_reply_memory_signal,
     _explicit_action_clauses,
     _is_account_creation_reply,
     _is_receipt_upload_request,
@@ -29,6 +30,134 @@ from app.infrastructure.ai.agents.supervisor_graph import (
     _remaining_after_observations,
     _required_tools,
 )
+
+
+@pytest.mark.parametrize("reply", ["Medicines", "Use Health", "put it under Food"])
+def test_category_answer_for_pending_transaction_gets_memory_signal(reply: str) -> None:
+    signal = _category_reply_memory_signal(
+        pending_question="Which category should I use for this expense?",
+        pending_task="spent 99 on pcm",
+        reply=reply,
+    )
+
+    assert signal == {"signal_type": "category_mapping"}
+
+
+def test_category_memory_signal_is_not_set_for_non_transaction_or_cancel() -> None:
+    question = "Which category should I use for this expense?"
+    assert _category_reply_memory_signal(
+        pending_question=question, pending_task="show category totals", reply="Medicines",
+    ) is None
+    assert _category_reply_memory_signal(
+        pending_question=question, pending_task="spent 99 on pcm", reply="cancel",
+    ) is None
+
+
+@pytest.mark.asyncio
+async def test_plain_text_category_followup_preserves_memory_signal_without_graph_interrupt() -> None:
+    graph = _graph()
+    pending_question = "Which category should I use for this expense? The available categories are Food, Medicine."
+
+    class Snapshot:
+        values = {
+            "task_request": "spent 83 on ibu",
+            "task_queue": ["record an expense for ibu"],
+            "tasks_completed": False,
+            "final_response": pending_question,
+            "conversation_history": [
+                {"role": "user", "content": "spent 83 on ibu"},
+                {"role": "assistant", "content": pending_question},
+            ],
+        }
+        interrupts: list[Any] = []
+
+    class CapturingGraph:
+        captured_input: dict[str, Any] | None = None
+
+        async def aget_state(self, _config: dict[str, Any]) -> Snapshot:
+            return Snapshot()
+
+        async def ainvoke(self, input_value: dict[str, Any], *, config: dict[str, Any]) -> dict[str, Any]:
+            self.captured_input = input_value
+            return {}
+
+    capturing_graph = CapturingGraph()
+    graph.graph = capturing_graph  # type: ignore[assignment]
+    await graph.invoke(user_id=uuid.uuid4(), thread_id="thread", message="Medicine")
+
+    assert capturing_graph.captured_input is not None
+    assert capturing_graph.captured_input["memory_review_signal"] == {"signal_type": "category_mapping"}
+
+
+@pytest.mark.asyncio
+async def test_supervisor_handoff_forwards_memory_signal_to_transaction_specialist() -> None:
+    graph = _graph()
+    supervisor = ScriptedSupervisor([SupervisorDecision(action="route", specialist="transaction")])
+    graph._supervisor = supervisor  # type: ignore[assignment]
+    state = {
+        "user_id": str(uuid.uuid4()),
+        "messages": [HumanMessage(content="Medicine")],
+        "task_request": "please continue",
+        "task_queue": ["save the pending expense"],
+        "memory_review_signal": {"signal_type": "category_mapping"},
+        "conversation_history": [
+            {"role": "user", "content": "spent 83 on ibu"},
+            {"role": "assistant", "content": "Which category should I use?"},
+            {"role": "user", "content": "Medicine"},
+        ],
+    }
+
+    await graph._supervise(state)  # type: ignore[arg-type]
+
+    assert supervisor.calls[0][0].constraints["memory_review_signal"] == {
+        "signal_type": "category_mapping",
+    }
+
+    handoff_messages = graph._initial_specialist_messages(state, "transaction", {})
+    trusted_handoff = handoff_messages[-1].content
+    assert isinstance(trusted_handoff, str)
+    serialized_handoff = trusted_handoff.split("Trusted handoff:\n", 1)[1]
+    handoff_context = json.loads(serialized_handoff)
+    assert handoff_context["constraints"]["memory_review_signal"] == {
+        "signal_type": "category_mapping",
+    }
+
+
+@pytest.mark.asyncio
+async def test_memory_review_gate_requires_signal_and_verified_transaction_creation() -> None:
+    signal = {"signal_type": "category_mapping"}
+    transaction_id = str(uuid.uuid4())
+
+    eligible = await AgenticSupervisorGraph._memory_review_gate({
+        "memory_review_signal": signal,
+        "results": [{
+            "specialist": "transaction",
+            "status": "success",
+            "data": {"created_transactions": [{"id": transaction_id}]},
+        }],
+    })
+    assert eligible == {
+        "memory_review_eligible": True,
+        "memory_review_transaction_ids": [transaction_id],
+    }
+
+    no_signal = await AgenticSupervisorGraph._memory_review_gate({
+        "results": [{
+            "specialist": "transaction",
+            "status": "success",
+            "data": {"created_transactions": [{"id": transaction_id}]},
+        }],
+    })
+    failed_transaction = await AgenticSupervisorGraph._memory_review_gate({
+        "memory_review_signal": signal,
+        "results": [{
+            "specialist": "transaction",
+            "status": "failed",
+            "data": {"created_transactions": [{"id": transaction_id}]},
+        }],
+    })
+    assert no_signal["memory_review_eligible"] is False
+    assert failed_transaction["memory_review_eligible"] is False
 
 
 class AllowingGuardrail:
@@ -90,7 +219,10 @@ async def test_supervisor_routes_to_native_specialist_then_returns_response() ->
 
     assert result["final_response"] == "I could not verify that the requested task was completed."
     assert result["tasks_completed"] is False
-    assert [item[1][-1]["specialist"] for item in supervisor.calls[1:]] == ["category"]
+    # The clear category intent is routed directly, without asking the
+    # supervisor model to repeat the deterministic route.
+    assert len(supervisor.calls) == 1
+    assert supervisor.calls[0][1][-1]["specialist"] == "category"
 
 
 @pytest.mark.asyncio
@@ -447,9 +579,9 @@ async def test_category_type_reply_keeps_category_creation_as_supervisor_task() 
         {"role": "assistant", "content": "Expense or income category?"},
         {"role": "user", "content": "expense"},
     ]
-    assert len(supervisor.calls) == 2
-    assert supervisor.calls[1][0].request == 'create new category "Enterntainment"'
-    assert supervisor.calls[1][0].constraints["latest_user_reply"] == "expense"
+    assert len(supervisor.calls) == 1
+    assert supervisor.calls[0][0].request == 'create new category "Enterntainment"'
+    assert supervisor.calls[0][0].constraints["latest_user_reply"] == "expense"
 
 
 @pytest.mark.asyncio
@@ -560,7 +692,7 @@ async def test_formatting_result_cannot_complete_a_mutation_task() -> None:
         ]
     )  # type: ignore[assignment]
 
-    result = await graph.invoke(user_id=uuid.uuid4(), thread_id="formatting-mutation", message="Create Food category")
+    result = await graph.invoke(user_id=uuid.uuid4(), thread_id="formatting-mutation", message="Make Food")
 
     assert result["tasks_completed"] is False
     assert result["task_queue"] == ["Create Food expense category"]
@@ -709,6 +841,138 @@ def test_verified_actions_consume_only_the_matching_queued_tasks() -> None:
         )
         == []
     )
+
+
+@pytest.mark.asyncio
+async def test_clear_single_specialist_request_skips_supervisor_model_call() -> None:
+    graph = _graph()
+    supervisor = ScriptedSupervisor([])
+    graph._supervisor = supervisor  # type: ignore[assignment]
+
+    update = await graph._supervise(
+        {
+            "messages": [HumanMessage(content="Spent 20 at Cafe")],
+            "user_id": str(uuid.uuid4()),
+            "task_request": "Spent 20 at Cafe",
+            "task_queue": [],
+            "results": [],
+        }
+    )
+
+    assert update["next_specialist"] == "transaction"
+    assert update["task_queue"] == ["Spent 20 at Cafe"]
+    assert supervisor.calls == []
+
+
+@pytest.mark.asyncio
+async def test_account_mention_with_transaction_query_keeps_supervisor_planning() -> None:
+    graph = _graph()
+    supervisor = ScriptedSupervisor(
+        [SupervisorDecision(action="route", specialist="analytics", tasks=["Show transactions from Axis"])]
+    )
+    graph._supervisor = supervisor  # type: ignore[assignment]
+    request = "Show transactions from my Axis account"
+
+    update = await graph._supervise(
+        {
+            "messages": [HumanMessage(content=request)],
+            "user_id": str(uuid.uuid4()),
+            "task_request": request,
+            "task_queue": [],
+            "results": [],
+        }
+    )
+
+    assert len(supervisor.calls) == 1
+    assert update["next_specialist"] == "analytics"
+
+
+@pytest.mark.asyncio
+async def test_transaction_that_also_requests_a_split_keeps_supervisor_planning() -> None:
+    graph = _graph()
+    supervisor = ScriptedSupervisor(
+        [
+            SupervisorDecision(
+                action="route",
+                specialist="transaction",
+                tasks=["Record the dinner expense", "Create a split for it with Isha"],
+            )
+        ]
+    )
+    graph._supervisor = supervisor  # type: ignore[assignment]
+    request = "Spent 1500 on dinner with Isha"
+
+    update = await graph._supervise(
+        {
+            "messages": [HumanMessage(content=request)],
+            "user_id": str(uuid.uuid4()),
+            "task_request": request,
+            "task_queue": [],
+            "results": [],
+        }
+    )
+
+    assert len(supervisor.calls) == 1
+    assert update["next_specialist"] == "transaction"
+    assert update["task_queue"][0] == request
+    assert any("split" in task.casefold() for task in update["task_queue"])
+
+
+@pytest.mark.asyncio
+async def test_verified_terminal_tool_observation_skips_final_supervisor_call() -> None:
+    graph = _graph()
+    supervisor = ScriptedSupervisor([])
+    graph._supervisor = supervisor  # type: ignore[assignment]
+    task = "Spent 99 on pcm"
+    result = {
+        "specialist": "transaction",
+        "status": "success",
+        "summary": "The ₹99 expense was recorded under Health.",
+        "data": {
+            "observed_actions": [
+                {
+                    "tool": "create_transaction",
+                    "data": {"transaction": {"amount_paise": 9900, "merchant": "pcm"}},
+                }
+            ]
+        },
+    }
+
+    update = await graph._supervise(
+        {
+            "messages": [HumanMessage(content=task)],
+            "user_id": str(uuid.uuid4()),
+            "task_request": task,
+            "task_queue": [task],
+            "results": [result],
+        }
+    )
+
+    assert update["tasks_completed"] is True
+    assert update["task_queue"] == []
+    assert update["final_response"] == result["summary"]
+    assert supervisor.calls == []
+
+
+@pytest.mark.asyncio
+async def test_missing_tool_observation_still_calls_supervisor_and_cannot_finish() -> None:
+    graph = _graph()
+    supervisor = ScriptedSupervisor([SupervisorDecision(action="finish")])
+    graph._supervisor = supervisor  # type: ignore[assignment]
+    task = "Spent 99 on pcm"
+
+    update = await graph._supervise(
+        {
+            "messages": [HumanMessage(content=task)],
+            "user_id": str(uuid.uuid4()),
+            "task_request": task,
+            "task_queue": [task],
+            "results": [{"specialist": "transaction", "status": "success", "summary": "Done."}],
+        }
+    )
+
+    assert len(supervisor.calls) == 1
+    assert update["tasks_completed"] is False
 
 
 @pytest.mark.asyncio

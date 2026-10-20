@@ -56,6 +56,7 @@ def _persistent_tool_context(state: dict[str, Any]) -> HandoffContext:
             "available_accounts": state.get("available_accounts", []),
             "available_split_contacts": state.get("available_split_contacts", []),
             "confirmed_memories": state.get("confirmed_memories", []),
+            "memory_review_signal": state.get("memory_review_signal"),
         },
     )
 
@@ -144,6 +145,17 @@ class EmptyArgumentsToolInput(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
 
 
+class GetAccountBalancesArguments(BaseModel):
+    account_names: list[str] | None = Field(
+        default=None,
+        description="Optional account names to filter by; omit to return balances for all accounts.",
+    )
+
+
+class GetAccountBalancesToolInput(BaseModel):
+    arguments: GetAccountBalancesArguments = Field(default_factory=GetAccountBalancesArguments)
+
+
 class GetTransactionsArguments(BaseModel):
     mode: Literal['recent', 'previous_window', 'date_range'] = Field(
         default='recent',
@@ -158,7 +170,7 @@ class GetTransactionsArguments(BaseModel):
 
 
 class GetTransactionsToolInput(BaseModel):
-    arguments: GetTransactionsArguments
+    arguments: GetTransactionsArguments = Field(default_factory=GetTransactionsArguments)
 
 
 class CreateTransactionReportArguments(BaseModel):
@@ -168,10 +180,17 @@ class CreateTransactionReportArguments(BaseModel):
 
 
 class CreateTransactionReportToolInput(BaseModel):
-    arguments: CreateTransactionReportArguments
+    arguments: CreateTransactionReportArguments = Field(default_factory=CreateTransactionReportArguments)
 
 
 _TOOL_SCHEMAS: dict[str, type[BaseModel]] = {
+    "list_accounts": EmptyArgumentsToolInput,
+    "list_categories": EmptyArgumentsToolInput,
+    "list_transactions": EmptyArgumentsToolInput,
+    "list_split_contacts": EmptyArgumentsToolInput,
+    "extract_transaction": EmptyArgumentsToolInput,
+    "delete_account": EmptyArgumentsToolInput,
+    "get_account_balances": GetAccountBalancesToolInput,
     "create_account": CreateAccountToolInput,
     "create_category": CreateCategoryToolInput,
     "create_transaction": CreateTransactionToolInput,
@@ -306,7 +325,12 @@ class SpecialistRuntime:
                 if not decision.question:
                     errors.append("brain_requested_input_without_question")
                     continue
-                answer = interrupt({"agent": self.name, "question": decision.question})
+                answer = interrupt({
+                    "agent": self.name,
+                    "question": decision.question,
+                    "memory_signal": decision.memory_signal,
+                    "subject_hint": decision.memory_subject_hint,
+                })
                 observations.append(ToolObservation(tool="user_input", ok=True, data={"answer": str(answer)}))
                 continue
             if decision.action == "delegate":
@@ -675,9 +699,20 @@ class ToolBoundSpecialistRuntime:
             tools.append(self._persistent_tool(name, handler))
         if self.allow_interrupts:
 
-            async def ask_user(question: str) -> str:
-                """Pause to ask the user one focused question and return their answer."""
-                return json.dumps({"ok": True, "answer": str(interrupt({"agent": self.name, "question": question}))})
+            async def ask_user(
+                question: str,
+                memory_signal: Literal[
+                    "category_mapping", "account_mapping", "preference", "split_preference",
+                ] | None = None,
+                subject_hint: str | None = None,
+            ) -> str:
+                """Ask one question. Mark memory_signal for reusable preference clarifications, not missing fields."""
+                return json.dumps({"ok": True, "answer": str(interrupt({
+                    "agent": self.name,
+                    "question": question,
+                    "memory_signal": memory_signal,
+                    "subject_hint": subject_hint,
+                }))})
 
             tools.append(
                 StructuredTool.from_function(coroutine=ask_user, name="ask_user", description=ask_user.__doc__ or "")

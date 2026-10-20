@@ -52,7 +52,7 @@ Conversation state is associated with a user-scoped thread. The graph retains bo
 
 ### Shared preference memory
 
-The memory feature captures review events from transaction and split actions. An outbox worker processes these events into structured suggestions. Suggestions remain user-controlled: the current review dialog lets a person confirm or dismiss them, and only confirmed memories are supplied as preferences to relevant AI tasks.
+The memory feature captures review events from transaction and split actions and can analyze explicitly marked chat clarifications after a transaction is saved. A durable outbox worker extracts candidate preferences from a bounded conversation excerpt, validates them against user messages and user-owned records, and passes them through the existing evidence threshold. Suggestions remain user-controlled: the current review dialog lets a person confirm or dismiss them, and only confirmed memories are supplied as preferences to relevant AI tasks.
 
 Pending suggestions are presented in a centered dialog on Dashboard or Chat. They are not tied to the transaction-completion timer; when a completion dialog redirects from Chat to Dashboard, pending suggestions can be reopened there. The worker is an in-process polling loop configured by `MEMORY_OUTBOX_*` settings, with retries and database-backed outbox state.
 
@@ -144,6 +144,8 @@ flowchart LR
 ```
 
 The outbox row is inserted only after its review-event row is flushed, preserving the foreign-key order observed by SQLite tests as well as production PostgreSQL. The worker uses persisted status, attempts, and retry timing; event fingerprints and unique constraints help prevent duplicate review events from producing duplicate processing records.
+
+Chat analysis uses a separate `memory_analysis_outbox` row because conversation extraction is an LLM call. It is created only when a specialist supplies a typed memory signal, is unique per transaction, and is processed outside the request path. The analysis output is validated before it becomes an ordinary review event; candidates still need three distinct evidence events before a suggestion appears, and only user-confirmed memories are injected into future specialist context.
 
 ## 4. Important engineering decisions
 

@@ -30,6 +30,15 @@ class SpecialistDecision(BaseModel):
     action: Literal["call_tool", "ask_user", "delegate", "finish"]
     tool: ToolAction | None = None
     question: str | None = Field(default=None, max_length=600)
+    memory_signal: Literal[
+        "category_mapping", "account_mapping", "preference", "split_preference",
+    ] | None = Field(
+        default=None,
+        description=(
+            "Set only for a clarification that captures a reusable preference; this queues post-transaction review."
+        ),
+    )
+    memory_subject_hint: str | None = Field(default=None, max_length=120)
     delegate_to: str | None = Field(default=None, max_length=80)
     summary: str = Field(default="", max_length=20_000)
 

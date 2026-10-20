@@ -25,6 +25,14 @@ export function describeMemory(
     return `You often ${mode} with ${subject}.${ratio}`;
   }
 
+  if (memory.memory_type === 'user_preference' || memory.memory_type === 'split_person_preference') {
+    const key = typeof value.key === 'string' ? value.key.replaceAll('_', ' ') : 'preference';
+    const preference = typeof value.value === 'string' ? value.value : 'a saved preference';
+    return memory.memory_type === 'user_preference'
+      ? `You prefer ${key}: ${preference}.`
+      : `${subject}'s ${key} preference is ${preference}.`;
+  }
+
   return `You have a recurring ${memory.memory_type.replaceAll('_', ' ')} preference for ${subject}.`;
 }
 

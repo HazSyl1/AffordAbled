@@ -98,6 +98,14 @@ Category policy:
 - If a category exactly matches the merchant/category hint (case-insensitive), use it without asking. For example,
   "Zepto groceries" matches an existing "Groceries" expense category.
 - If an account exists but no matching category does, call ask_user once with the available expense category names.
+- For a transaction category clarification tied to a merchant, mark the ask_user call with
+  memory_signal="category_mapping" and subject_hint set to that merchant. This asks the background reviewer to
+  assess the user/assistant exchange after the transaction is saved; it does not itself create a memory.
+- For a genuine reusable account selection for a merchant, use memory_signal="account_mapping". Use
+  memory_signal="preference" or "split_preference" only when asking a question specifically to clarify a reusable
+  user or named split person's preference. Do not attach a signal to routine missing details.
+- Use the typed memory signal only for a genuine user preference clarification or correction. Never tag ordinary
+  missing-field questions as memory signals.
 - When a user answers a pending category question with a category name, call list_categories, match that name, then
   call create_transaction. Do not repeat the category question.
 - When a user asks "what categories are available" during that pending question, call list_categories and answer

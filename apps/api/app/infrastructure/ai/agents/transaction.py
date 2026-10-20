@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
@@ -12,24 +11,6 @@ from app.application.services.transaction_service import TransactionService
 from app.domain.entities import TransactionType
 from app.infrastructure.ai.agents.contracts import HandoffContext
 from app.infrastructure.ai.agents.extraction import TransactionExtractionAgent
-
-
-def _category_was_explicitly_requested(history: list[dict[str, str]]) -> bool:
-    """Only learn a merchant mapping when the user answered a category question."""
-    if not history or history[-1].get("role") != "user":
-        return False
-    for message in reversed(history[:-1]):
-        role = message.get("role")
-        if role == "user":
-            break
-        if role != "assistant":
-            continue
-        text = message.get("content", "").casefold()
-        return bool(
-            re.search(r"\b(?:which|what)\s+(?:expense\s+)?categor(?:y|ies)\b", text)
-            or re.search(r"\bcategor(?:y|ies)\s+should\s+(?:i|be)\b", text)
-        )
-    return False
 
 
 class TransactionToolset:
@@ -78,6 +59,31 @@ class TransactionToolset:
         categories = await self._service.category_repository.list_for_user(context.user_id)
         return {"categories": [{"id": str(item.id), "name": item.name, "type": item.type.value} for item in categories]}
 
+    @staticmethod
+    def _category_answer_signal_from_history(history: list[dict[str, str]]) -> bool:
+        """Recover a category clarification signal if interrupt state lost its metadata."""
+        latest_user_index = next(
+            (index for index in range(len(history) - 1, -1, -1) if history[index].get("role") == "user"),
+            None,
+        )
+        if latest_user_index is None:
+            return False
+        latest_user_reply = str(history[latest_user_index].get("content") or "").strip().casefold()
+        if not latest_user_reply or latest_user_reply in {"no", "nope", "cancel", "skip"}:
+            return False
+        prior_assistant = next(
+            (
+                str(history[index].get("content") or "")
+                for index in range(latest_user_index - 1, -1, -1)
+                if history[index].get("role") == "assistant"
+            ),
+            "",
+        ).casefold()
+        asks_category = "categor" in prior_assistant and any(
+            phrase in prior_assistant for phrase in ("which", "what", "choose", "use", "should i")
+        )
+        return asks_category
+
     async def create_transaction(self, context: HandoffContext, args: dict[str, Any]) -> dict[str, Any]:
         try:
             if "amount_rupees" in args:
@@ -91,13 +97,42 @@ class TransactionToolset:
         occurred_at = self._occurred_at(args.get("occurred_at"), context.timezone)
         merchant = args.get("merchant")
         category_id = uuid.UUID(str(args["category_id"])) if args.get("category_id") else None
-        review_event = None
-        if category_id and merchant and _category_was_explicitly_requested(context.history):
-            review_event = {
-                "action": "accepted",
-                "source": "chat_category_clarification",
-                "before": {},
-                "after": {"merchant": merchant, "category_id": str(category_id)},
+        memory_signal = context.constraints.get("memory_review_signal")
+        if not isinstance(memory_signal, dict) and self._category_answer_signal_from_history(context.history):
+            # Interrupt resumes can update the parent checkpoint while a nested
+            # specialist continues from its own checkpoint. Recover the signal
+            # from the persisted transcript at the transaction tool boundary.
+            memory_signal = {"signal_type": "category_mapping"}
+        memory_review_context = None
+        if isinstance(memory_signal, dict) and memory_signal.get("signal_type") in {
+            "category_mapping", "account_mapping", "preference", "split_preference",
+        }:
+            remaining = 8_000
+            bounded_history: list[dict[str, str]] = []
+            for message in reversed(context.history[-12:]):
+                content = str(message.get("content") or "")[-remaining:]
+                bounded_history.append({"role": str(message.get("role") or "")[:16], "content": content})
+                remaining -= len(content)
+                if remaining <= 0:
+                    break
+            memory_review_context = {
+                "signal_type": memory_signal["signal_type"],
+                "payload": {
+                    "transaction": {
+                        "type": str(args.get("type") or "")[:16],
+                        "amount_paise": amount_paise,
+                        "merchant": str(merchant or "")[:255],
+                        "category_name": next((item.get("name") for item in context.constraints.get(
+                            "available_categories", []) if str(item.get("id")) == str(category_id)), None),
+                        "account_name": next((item.get("name") for item in context.constraints.get(
+                            "available_accounts", []) if str(item.get("id")) == str(args.get("account_id"))), None),
+                    },
+                    "history": list(reversed(bounded_history)),
+                    "signal": {key: str(value)[:200] for key, value in memory_signal.items()
+                               if key in {"signal_type", "subject_hint"} and value is not None},
+                    "categories": context.constraints.get("available_categories", [])[:50],
+                    "accounts": context.constraints.get("available_accounts", [])[:30],
+                },
             }
         transaction = await self._service.create_transaction(
             CreateTransactionInput(
@@ -110,7 +145,7 @@ class TransactionToolset:
                 occurred_at=occurred_at,
                 merchant=merchant,
                 note=args.get("note"),
-                review_event=review_event,
+                memory_review_context=memory_review_context,
             )
         )
         return {"transaction": self._serialize(transaction)}

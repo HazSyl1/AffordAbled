@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -15,6 +16,8 @@ from app.domain.exceptions import (
 )
 from app.domain.repositories import AccountRepository, CategoryRepository, TransactionRepository
 
+logger = logging.getLogger(__name__)
+
 
 class LinkedSplitLookup(Protocol):
     async def is_linked(self, user_id: uuid.UUID, transaction_id: uuid.UUID) -> bool: ...
@@ -22,6 +25,9 @@ class LinkedSplitLookup(Protocol):
 
 class MemoryEventWriter(Protocol):
     async def add_review_event(self, **kwargs): ...
+    async def add_chat_analysis(self, **kwargs) -> None: ...
+    async def commit(self) -> None: ...
+    async def rollback(self) -> None: ...
 
 
 @dataclass
@@ -60,16 +66,46 @@ class TransactionService:
         )
 
         await self._apply_balance_effect(transaction)
-        if self.memory_event_writer is not None and data.review_event:
-            await self.memory_event_writer.add_review_event(
-                user_id=data.user_id,
-                transaction_id=transaction.id,
-                action=data.review_event['action'],
-                source=data.review_event.get('source', 'manual'),
-                before=data.review_event.get('before') or {},
-                after=data.review_event.get('after') or {},
-            )
-        return await self.transaction_repository.create(transaction)
+        created = await self.transaction_repository.create(transaction)
+        if self.memory_event_writer is not None and (data.review_event or data.memory_review_context):
+            # Transaction, explicit review evidence, and opt-in conversation
+            # analysis job share one commit. The worker cannot see a job for a
+            # transaction that was not saved.
+            try:
+                if data.review_event:
+                    await self.memory_event_writer.add_review_event(
+                        user_id=data.user_id,
+                        transaction_id=transaction.id,
+                        action=data.review_event['action'],
+                        source=data.review_event.get('source', 'manual'),
+                        before=data.review_event.get('before') or {},
+                        after=data.review_event.get('after') or {},
+                    )
+                if data.memory_review_context:
+                    await self.memory_event_writer.add_chat_analysis(
+                        user_id=data.user_id,
+                        transaction_id=transaction.id,
+                        signal_type=data.memory_review_context['signal_type'],
+                        payload=data.memory_review_context['payload'],
+                    )
+                await self.memory_event_writer.commit()
+            except Exception:  # noqa: BLE001 - transaction is already committed
+                await self.memory_event_writer.rollback()
+                logger.exception('memory.review_event.capture_failed', extra={
+                    'source': (data.review_event or {}).get('source', 'manual'),
+                    'transaction_id': str(transaction.id),
+                })
+                # The transaction itself is still important. Re-stage and
+                # commit it without optional memory work after rolling back.
+                await self.transaction_repository.create(transaction)
+                commit = getattr(self.transaction_repository, 'commit', None)
+                if commit is not None:
+                    await commit()
+        else:
+            commit = getattr(self.transaction_repository, 'commit', None)
+            if commit is not None:
+                await commit()
+        return created
 
     async def list_transactions(self, user_id: uuid.UUID) -> list[Transaction]:
         return await self.transaction_repository.list_for_user(user_id, include_deleted=False)
@@ -91,6 +127,11 @@ class TransactionService:
         data: UpdateTransactionInput,
     ) -> Transaction:
         transaction = await self.get_transaction(user_id, transaction_id)
+        before_review = {
+            'account_id': str(transaction.account_id),
+            'category_id': str(transaction.category_id) if transaction.category_id else None,
+            'merchant': transaction.merchant,
+        }
         account_id = data.account_id if data.account_id is not None else transaction.account_id
         transaction_type = data.type if data.type is not None else transaction.type
         amount_paise = data.amount_paise if data.amount_paise is not None else transaction.amount_paise
@@ -132,14 +173,31 @@ class TransactionService:
 
         transaction.updated_at = datetime.now(UTC)
         await self._apply_balance_effect(transaction)
-        if self.memory_event_writer is not None and data.review_event:
+        review_event = data.review_event
+        if review_event is None and (
+            account_id != uuid.UUID(before_review['account_id'])
+            or (str(category_id) if category_id else None) != before_review['category_id']
+        ):
+            # User edits from clients predating the explicit review_event field,
+            # or clients that omit it, must still feed preference learning.
+            review_event = {
+                'action': 'edited',
+                'source': 'transaction_edit',
+                'before': before_review,
+                'after': {
+                    'account_id': str(transaction.account_id),
+                    'category_id': str(transaction.category_id) if transaction.category_id else None,
+                    'merchant': transaction.merchant,
+                },
+            }
+        if self.memory_event_writer is not None and review_event:
             await self.memory_event_writer.add_review_event(
                 user_id=user_id,
                 transaction_id=transaction.id,
-                action=data.review_event['action'],
-                source=data.review_event.get('source', 'manual'),
-                before=data.review_event.get('before') or {},
-                after=data.review_event.get('after') or {},
+                action=review_event['action'],
+                source=review_event.get('source', 'manual'),
+                before=review_event.get('before') or {},
+                after=review_event.get('after') or {},
             )
         return await self.transaction_repository.update(transaction)
 

@@ -32,9 +32,15 @@ class SqlAlchemyTransactionRepository:
             updated_at=transaction.updated_at,
         )
         self._session.add(model)
-        await self._session.commit()
+        # TransactionService may stage related durable outbox work in this
+        # session. Flush makes the transaction visible to FK-backed outbox rows;
+        # the service owns the single commit for both records.
+        await self._session.flush()
         await self._session.refresh(model)
         return self._to_entity(model)
+
+    async def commit(self) -> None:
+        await self._session.commit()
 
     async def get_for_user(
         self,

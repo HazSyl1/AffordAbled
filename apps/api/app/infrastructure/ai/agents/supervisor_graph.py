@@ -318,6 +318,31 @@ def _reconcile_task_queue(
     return remaining, satisfied
 
 
+def _verified_queue_is_complete(
+    task_queue: list[str],
+    result: dict[str, Any],
+    *,
+    original_request: str,
+    latest_reply: str,
+    available_categories: list[dict[str, Any]],
+) -> bool:
+    """Allow the graph to finish without a second supervisor call only on tool evidence."""
+    if not task_queue or result.get("status") != "success":
+        return False
+    observed_actions = (result.get("data") or {}).get("observed_actions") or []
+    if not observed_actions:
+        return False
+    remaining, _ = _reconcile_task_queue(
+        task_queue,
+        observed_actions,
+        original_request=original_request,
+        latest_reply=latest_reply,
+        available_categories=available_categories,
+        verify_categories=result.get("specialist") == "category",
+    )
+    return not remaining
+
+
 def _required_tools(task: str, specialist: str | None) -> set[str] | None:
     def says(*words: str) -> bool:
         return any(_mentions(task, word) for word in words)
@@ -454,6 +479,24 @@ def _obvious_specialist(task: str) -> str | None:
     return None
 
 
+def _fast_route_specialist(task: str) -> str | None:
+    """Return a high-confidence route only for a clearly single-domain request."""
+    if _explicit_action_clauses(task) or _split_task_for_request(task) or _is_receipt_upload_request(task):
+        return None
+    # Keep connectors that often indicate separate work on the LLM planning path.
+    if re.search(r"\b(?:then|after that|also)\b", task, flags=re.IGNORECASE):
+        return None
+
+    specialist = _obvious_specialist(task)
+    if specialist == "account" and any(
+        _mentions(task, word)
+        for word in ("transaction", "transactions", "history", "spending", "spent", "balance", "balances")
+    ):
+        # “Show transactions from my Axis account” is analytics, not account management.
+        return None
+    return specialist
+
+
 def _is_receipt_upload_request(request: str) -> bool:
     """Identify the generated first-stage receipt task, before split consent."""
     normalized = request.casefold()
@@ -546,6 +589,27 @@ def _is_category_clarification(message: str) -> bool:
     return "categor" in normalized and any(
         phrase in normalized for phrase in ("which", "what", "choose", "use", "available", "should i")
     )
+
+
+def _category_reply_memory_signal(
+    *, pending_question: str, pending_task: str, reply: str, specialist_for_task=_obvious_specialist,
+) -> dict[str, str] | None:
+    """Tag an explicit answer to a transaction's category clarification for async review.
+
+    This is deterministic fallback metadata: relying only on the model to add the
+    optional ask_user tool fields caused valid category answers to be lost when
+    the transaction was resumed and saved.
+    """
+    if not _is_category_clarification(pending_question):
+        return None
+    if specialist_for_task(pending_task) != "transaction":
+        return None
+    normalized_reply = reply.strip().casefold()
+    if not normalized_reply or re.fullmatch(
+        r"(?:no|nope|nah|cancel|skip|never mind|nevermind|don't|do not)[.! ]*", normalized_reply,
+    ):
+        return None
+    return {"signal_type": "category_mapping"}
 
 
 def _last_assistant_reply(history: list[dict[str, str]]) -> str:
@@ -745,6 +809,9 @@ class AgentGraphState(TypedDict, total=False):
     available_accounts: list[dict[str, Any]]
     available_split_contacts: list[str]
     confirmed_memories: list[dict[str, Any]]
+    memory_review_signal: dict[str, Any] | None
+    memory_review_eligible: bool
+    memory_review_transaction_ids: list[str]
     specialist_messages: Annotated[list[BaseMessage], add_messages]
     next_specialist: str | None
     handoff: dict[str, Any]
@@ -868,6 +935,7 @@ class AgenticSupervisorGraph:
         graph = StateGraph(AgentGraphState)
         graph.add_node("guardrails", self._guardrails)
         graph.add_node("supervisor", self._supervise)
+        graph.add_node("memory_review_gate", self._memory_review_gate)
         for name in self._specialists:
             graph.add_node(name, self._specialists[name].build_persistent_subgraph(AgentGraphState))
         graph.add_edge(START, "guardrails")
@@ -878,7 +946,8 @@ class AgenticSupervisorGraph:
             {**{name: name for name in self._specialists}, "supervisor": "supervisor", END: END},
         )
         for name in self._specialists:
-            graph.add_edge(name, "supervisor")
+            graph.add_edge(name, "memory_review_gate" if name == "transaction" else "supervisor")
+        graph.add_edge("memory_review_gate", "supervisor")
         self.graph = graph.compile(checkpointer=checkpointer)
 
     async def invoke(
@@ -913,6 +982,26 @@ class AgenticSupervisorGraph:
                 "messages": [HumanMessage(content=message)],
                 "conversation_history": updated_history[-100:],
             }
+            if isinstance(interrupt_payload, dict) and interrupt_payload.get("memory_signal"):
+                signal_type = str(interrupt_payload.get("memory_signal"))
+                if signal_type in {"category_mapping", "account_mapping", "preference", "split_preference"}:
+                    resume_update["memory_review_signal"] = {
+                        "signal_type": signal_type,
+                        "subject_hint": str(interrupt_payload.get("subject_hint") or "")[:120],
+                    }
+            # The model's optional ask_user metadata is helpful, but must not be
+            # the sole path. A user answering a category question for a pending
+            # transaction is itself a strong, typed signal. The background
+            # analyzer will identify the merchant/category from the bounded chat
+            # transcript after the transaction is successfully saved.
+            if "memory_review_signal" not in resume_update:
+                category_signal = _category_reply_memory_signal(
+                    pending_question=pending_question,
+                    pending_task=prior_task_request,
+                    reply=message,
+                )
+                if category_signal:
+                    resume_update["memory_review_signal"] = category_signal
             if is_new_category_for_pending_transaction:
                 resume_update["task_queue"] = [message, *pending_queue]
             account_setup_answer = bool(
@@ -948,6 +1037,13 @@ class AgenticSupervisorGraph:
             prior_task_request = str(receipt_split_task)
         tool_event_history = prior_state.get("tool_event_history") or []
         contextual_followup = bool(prior_results and _is_elaboration_followup(message))
+        resumed_category_signal = None
+        if resume_pending_transaction:
+            resumed_category_signal = _category_reply_memory_signal(
+                pending_question=str(prior_state.get("final_response") or _last_assistant_reply(conversation_history)),
+                pending_task=prior_task_request,
+                reply=message,
+            )
         task_queue = (
             [message, *pending_queue]
             if is_new_category_for_pending_transaction
@@ -992,6 +1088,12 @@ class AgenticSupervisorGraph:
                 # observations available to every new task, not only follow-ups.
                 "prior_results": prior_results[-5:],
                 "tool_event_history": tool_event_history,
+                # Some assistant turns ask for a missing category in plain text
+                # and finish normally instead of yielding a LangGraph interrupt.
+                # Preserve the same typed signal on that follow-up route too.
+                "memory_review_signal": resumed_category_signal,
+                "memory_review_eligible": False,
+                "memory_review_transaction_ids": [],
                 "contextual_followup": contextual_followup,
                 "reroutes": 0,
                 "final_response": None,
@@ -1005,6 +1107,46 @@ class AgenticSupervisorGraph:
         if assessment.decision == GuardrailDecision.BLOCK:
             return {"final_response": "I can only help with personal-finance requests.", "tasks_completed": False}
         return {}
+
+    @staticmethod
+    async def _memory_review_gate(state: AgentGraphState) -> dict[str, Any]:
+        """Mark a chat signal eligible only after verified transaction creation.
+
+        The transaction tool persists the analysis outbox row atomically with
+        the transaction. This graph node records the eligibility decision for
+        orchestration/tracing; it does not invoke an LLM or enqueue duplicate work.
+        """
+        signal = state.get("memory_review_signal")
+        if not isinstance(signal, dict) or signal.get("signal_type") not in {
+            "category_mapping", "account_mapping", "preference", "split_preference",
+        }:
+            return {"memory_review_eligible": False, "memory_review_transaction_ids": []}
+
+        transaction_result = next(
+            (
+                result
+                for result in reversed(state.get("results", []))
+                if result.get("specialist") == "transaction"
+            ),
+            None,
+        )
+        if not transaction_result or transaction_result.get("status") != "success":
+            return {"memory_review_eligible": False, "memory_review_transaction_ids": []}
+
+        created_transactions = (transaction_result.get("data") or {}).get("created_transactions") or []
+        transaction_ids = [
+            str(transaction["id"])
+            for transaction in created_transactions
+            if isinstance(transaction, dict) and transaction.get("id")
+        ]
+        transaction_ids = list(dict.fromkeys([
+            *(state.get("memory_review_transaction_ids") or []),
+            *transaction_ids,
+        ]))
+        return {
+            "memory_review_eligible": bool(transaction_ids),
+            "memory_review_transaction_ids": transaction_ids,
+        }
 
     @staticmethod
     def _after_guardrails(state: AgentGraphState) -> Literal["supervisor", "__end__"]:
@@ -1073,9 +1215,49 @@ class AgenticSupervisorGraph:
                 "prior_specialist_results": state.get("prior_results", []),
                 "recent_tool_observations": state.get("tool_event_history", [])[-12:],
                 "confirmed_memories": confirmed_memories,
+                "memory_review_signal": state.get("memory_review_signal"),
             },
         )
-        decision = await self._supervisor.decide(context, state.get("results", []))
+        results = state.get("results", [])
+        task_request = str(state.get("task_request") or state["messages"][-1].content)
+        latest_reply = str(state["messages"][-1].content)
+        fast_route = None
+        if (
+            not results
+            and not task_queue
+            and not state.get("completed_tasks")
+            and not state.get("contextual_followup")
+        ):
+            fast_route = _fast_route_specialist(task_request)
+
+        latest_result = (results or [{}])[-1]
+        verified_terminal = (
+            bool(results)
+            and not state.get("contextual_followup")
+            and _verified_queue_is_complete(
+                task_queue,
+                latest_result,
+                original_request=task_request,
+                latest_reply=latest_reply,
+                available_categories=available_categories,
+            )
+        )
+        if fast_route is not None:
+            # Clear, single-domain requests do not need an LLM merely to repeat
+            # a route already recognized by the deterministic intent helpers.
+            task_queue = [task_request]
+            decision = SupervisorDecision(
+                action="route",
+                specialist=fast_route,
+                handoff={"queued_task": task_request, "deterministic_route": True},
+            )
+        elif verified_terminal:
+            # The specialist summary and successful observations are already
+            # authoritative. The normal completion block below will assemble
+            # the final response and UI metadata without another LLM roundtrip.
+            decision = SupervisorDecision(action="finish")
+        else:
+            decision = await self._supervisor.decide(context, results)
         prior_results = state.get("prior_results") or []
         if state.get("contextual_followup") and not state.get("results") and prior_results:
             prior_specialist = prior_results[-1].get("specialist")
@@ -1436,6 +1618,11 @@ class AgenticSupervisorGraph:
                 "available_accounts": state.get("available_accounts", []),
                 "available_split_contacts": state.get("available_split_contacts", []),
                 "confirmed_memories": state.get("confirmed_memories", []),
+                # This signal is created when the user answers a pending
+                # transaction clarification. Preserve it in the trusted
+                # specialist handoff so create_transaction can enqueue the
+                # conversation for background memory analysis.
+                "memory_review_signal": state.get("memory_review_signal"),
                 "created_transaction_ids": state.get("created_transaction_ids", []),
                 "pending_split_transaction_id": state.get('pending_split_transaction_id'),
                 "last_transaction_window": state.get("last_transaction_window"),
@@ -1487,6 +1674,7 @@ class AgenticChatOrchestrator:
                         *((result.get("conversation_history") or [])[-99:]),
                         {"role": "assistant", "content": reply},
                     ],
+                    "memory_review_signal": None,
                 },
             )
         transaction_id: str | None = (result.get("created_transaction_ids") or [None])[-1]
