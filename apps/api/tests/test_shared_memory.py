@@ -7,7 +7,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 
 from app.application.services.memory_service import candidates_for_event, fingerprint
-from app.infrastructure.database.models import MemoryModel, UserModel
+from app.infrastructure.database.models import MemoryModel, MemoryReviewEventModel, UserModel
 from app.infrastructure.database.repositories.sqlalchemy_memory_repository import SqlAlchemyMemoryRepository
 from tests.helpers import auth_headers, register_and_get_token
 
@@ -101,6 +101,57 @@ async def test_review_events_promote_once_and_are_user_scoped(client: AsyncClien
     assert confirmed.json()['status'] == 'confirmed'
     assert (await client.get('/api/v1/memories/suggestions', headers=headers)).json() == []
     assert (await client.get('/api/v1/memories', headers=auth_headers(other))).json() == []
+
+
+@pytest.mark.asyncio
+async def test_chat_category_choices_create_events_and_promote_after_three_transactions(
+    client: AsyncClient, db_session,
+) -> None:
+    token = await register_and_get_token(client, 'memory-chat-category@example.com')
+    headers = auth_headers(token)
+    account = await client.post(
+        '/api/v1/accounts',
+        headers=headers,
+        json={'name': 'Main', 'type': 'bank', 'balance_paise': 100000, 'currency': 'INR'},
+    )
+    category = await client.post(
+        '/api/v1/categories', headers=headers, json={'name': 'Medicines', 'type': 'expense'},
+    )
+    assert account.status_code == category.status_code == 201
+
+    for amount_paise in (9900, 9000, 5500):
+        response = await client.post('/api/v1/transactions', headers=headers, json={
+            'account_id': account.json()['id'],
+            'category_id': category.json()['id'],
+            'type': 'expense',
+            'amount_paise': amount_paise,
+            'occurred_at': '2026-10-20T10:00:00+00:00',
+            'merchant': 'pcm',
+            'review_event': {
+                'action': 'accepted',
+                'source': 'chat_category_clarification',
+                'before': {},
+                'after': {'merchant': 'pcm', 'category_id': category.json()['id']},
+            },
+        })
+        assert response.status_code == 201, response.text
+
+    user_id = await db_session.scalar(select(UserModel.id).where(UserModel.email == 'memory-chat-category@example.com'))
+    events = await db_session.scalars(select(MemoryReviewEventModel).where(MemoryReviewEventModel.user_id == user_id))
+    assert len(events.all()) == 3
+
+    repository = SqlAlchemyMemoryRepository(db_session)
+    rows = await repository.claim_batch(limit=20)
+    assert len(rows) == 3
+    for row in rows:
+        await repository.process_event(row.id)
+
+    suggestions = await client.get('/api/v1/memories/suggestions', headers=headers)
+    assert suggestions.status_code == 200
+    assert len(suggestions.json()) == 1
+    assert suggestions.json()[0]['subject_key'] == 'pcm'
+    assert suggestions.json()[0]['value']['category_id'] == category.json()['id']
+    assert suggestions.json()[0]['evidence_count'] == 3
 
 
 @pytest.mark.asyncio

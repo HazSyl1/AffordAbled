@@ -72,6 +72,7 @@ class CreateTransactionInput:
     merchant: str | None = None
     note: str | None = None
     review_event: dict | None = None
+    memory_review_context: dict | None = None
 
 
 @dataclass

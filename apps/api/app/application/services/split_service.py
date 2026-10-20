@@ -33,6 +33,8 @@ class SplitStore(Protocol):
         owner_share_paise: int, participants: list[ParticipantShare], item_breakdown: list[dict] | None = None,
     ): ...
 
+    async def create_owed(self, user_id: uuid.UUID, title: str, person: ParticipantShare): ...
+
     async def list_for_user(self, user_id: uuid.UUID): ...
 
     async def get_for_user(self, user_id: uuid.UUID, split_id: uuid.UUID): ...
@@ -73,6 +75,19 @@ class MemoryEventWriter(Protocol):
 class SplitService:
     store: SplitStore
     memory_event_writer: MemoryEventWriter | None = None
+
+    async def create_owed(self, user_id: uuid.UUID, title: str | None, name: str, amount_paise: int):
+        clean_title = (title or '').strip() or 'Money owed'
+        clean_name = capitalize_name(name)
+        if len(clean_title) > 255:
+            raise ValueError('Enter a description (up to 255 characters).')
+        if not clean_name or len(clean_name) > 100 or is_owner_participant_label(clean_name):
+            raise ValueError('Enter the name of the person who owes you.')
+        if amount_paise <= 0:
+            raise ValueError('Amount owed must be positive.')
+        return await self.store.create_owed(
+            user_id, clean_title, ParticipantShare(clean_name, amount_paise),
+        )
 
     async def create(
         self, user_id: uuid.UUID, transaction_id: uuid.UUID, title: str, amount_paise: int,

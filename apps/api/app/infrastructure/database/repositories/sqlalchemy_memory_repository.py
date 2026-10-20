@@ -9,12 +9,105 @@ from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.services.memory_service import candidates_for_event, fingerprint, is_self_split_subject
-from app.infrastructure.database.models import MemoryModel, MemoryOutboxModel, MemoryReviewEventModel
+from app.infrastructure.database.models import (
+    MemoryAnalysisOutboxModel,
+    MemoryModel,
+    MemoryOutboxModel,
+    MemoryReviewEventModel,
+)
 
 
 class SqlAlchemyMemoryRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
+
+    async def commit(self) -> None:
+        await self.session.commit()
+
+    async def rollback(self) -> None:
+        await self.session.rollback()
+
+    async def add_chat_analysis(
+        self,
+        *,
+        user_id: uuid.UUID,
+        transaction_id: uuid.UUID,
+        signal_type: str,
+        payload: dict[str, Any],
+    ) -> None:
+        """Stage one bounded analysis job in the transaction's current DB transaction."""
+        self.session.add(MemoryAnalysisOutboxModel(
+            id=uuid.uuid4(), user_id=user_id, transaction_id=transaction_id,
+            signal_type=signal_type, payload_json=payload,
+        ))
+
+    async def claim_analysis_batch(
+        self, *, limit: int = 10, stale_after_seconds: int = 120,
+    ) -> list[MemoryAnalysisOutboxModel]:
+        now = datetime.now(UTC)
+        stale_at = now - timedelta(seconds=stale_after_seconds)
+        query = (
+            select(MemoryAnalysisOutboxModel)
+            .where(
+                ((MemoryAnalysisOutboxModel.status == 'pending') &
+                 (MemoryAnalysisOutboxModel.next_attempt_at <= now))
+                | ((MemoryAnalysisOutboxModel.status == 'processing') &
+                   (MemoryAnalysisOutboxModel.claimed_at <= stale_at)),
+            )
+            .order_by(MemoryAnalysisOutboxModel.created_at)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+        rows = list((await self.session.scalars(query)).all())
+        for row in rows:
+            row.status = 'processing'
+            row.claimed_at = now
+            row.attempts += 1
+        await self.session.commit()
+        return rows
+
+    async def complete_chat_analysis(self, outbox_id: uuid.UUID, candidates: list[dict[str, Any]]) -> None:
+        row = await self.session.get(MemoryAnalysisOutboxModel, outbox_id)
+        if row is None:
+            return
+        if candidates:
+            payload = {
+                'transaction_id': str(row.transaction_id),
+                'candidates': candidates,
+            }
+            event_fingerprint = fingerprint(payload)
+            with self.session.no_autoflush:
+                existing = await self.session.scalar(select(MemoryReviewEventModel).where(
+                    MemoryReviewEventModel.user_id == row.user_id,
+                    MemoryReviewEventModel.fingerprint == event_fingerprint,
+                ))
+            if existing is None:
+                event = MemoryReviewEventModel(
+                    id=uuid.uuid4(), user_id=row.user_id, transaction_id=row.transaction_id,
+                    action='accepted', source='chat_context_analysis', before_json={},
+                    after_json={'memory_candidates': candidates}, fingerprint=event_fingerprint,
+                )
+                self.session.add(event)
+                await self.session.flush()
+                self.session.add(MemoryOutboxModel(id=uuid.uuid4(), user_id=row.user_id, event_id=event.id))
+        row.status = 'processed'
+        row.processed_at = datetime.now(UTC)
+        row.last_error = None
+        # The queued transcript and account/category snapshot are no longer needed.
+        row.payload_json = {}
+        await self.session.commit()
+
+    async def fail_chat_analysis(self, outbox_id: uuid.UUID, error: str) -> None:
+        row = await self.session.get(MemoryAnalysisOutboxModel, outbox_id)
+        if row is None:
+            return
+        delay_seconds = min(3600, 2 ** min(row.attempts, 10))
+        row.status = 'failed' if row.attempts >= 8 else 'pending'
+        row.last_error = error[:1000]
+        if row.status == 'failed':
+            row.payload_json = {}
+        row.next_attempt_at = datetime.now(UTC) + timedelta(seconds=delay_seconds)
+        await self.session.commit()
 
     async def add_review_event(
         self,

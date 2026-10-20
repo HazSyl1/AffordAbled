@@ -63,6 +63,88 @@ def test_persistent_tool_context_includes_recent_conversation_history() -> None:
     assert len(context.history) <= 20
 
 
+@pytest.mark.parametrize(
+    "tool_name",
+    [
+        "list_accounts",
+        "list_categories",
+        "list_transactions",
+        "list_split_contacts",
+        "get_split_summary",
+        "get_account_balances",
+        "get_transactions",
+        "create_transaction_report",
+        "extract_transaction",
+        "delete_account",
+    ],
+)
+def test_optional_tool_inputs_accept_injected_state_without_required_arguments(tool_name: str) -> None:
+    async def handler(_context: HandoffContext, _arguments: dict[str, Any]) -> dict[str, Any]:
+        return {}
+
+    runtime = ToolBoundSpecialistRuntime(
+        name="split",
+        llm=None,
+        system_prompt="",
+        tools={tool_name: handler},
+    )
+    tool = runtime._persistent_tools()[0]
+
+    parsed = tool.args_schema.model_validate({"state": {}})
+
+    assert "arguments" not in tool.args_schema.model_json_schema().get("required", [])
+    assert parsed is not None
+
+
+@pytest.mark.asyncio
+async def test_zero_argument_tool_runs_through_tool_node_with_injected_state() -> None:
+    class SharedState(TypedDict, total=False):
+        specialist_messages: Annotated[list[BaseMessage], add_messages]
+        specialist_steps: int
+        user_id: str
+        task_request: str
+        task_queue: list[str]
+        conversation_history: list[dict[str, str]]
+
+    calls: list[tuple[HandoffContext, dict[str, Any]]] = []
+
+    async def list_contacts(context: HandoffContext, arguments: dict[str, Any]) -> dict[str, Any]:
+        calls.append((context, arguments))
+        return {"contacts": ["Isha"]}
+
+    class NoArgumentModel:
+        def bind_tools(self, _tools: list[Any], **_kwargs: Any) -> RunnableLambda:
+            def respond(messages: list[BaseMessage]) -> AIMessage:
+                if any(message.type == "tool" for message in messages):
+                    return AIMessage(content="Contacts loaded.")
+                return AIMessage(
+                    content="",
+                    tool_calls=[{"name": "list_split_contacts", "args": {}, "id": "list-contacts"}],
+                )
+
+            return RunnableLambda(respond)
+
+    runtime = ToolBoundSpecialistRuntime(
+        name="split",
+        llm=NoArgumentModel(),
+        system_prompt="",
+        tools={"list_split_contacts": list_contacts},
+    )
+    graph = runtime.build_persistent_subgraph(SharedState)
+    await graph.ainvoke(
+        {
+            "specialist_messages": [HumanMessage(content="List the split contacts")],
+            "user_id": str(uuid.uuid4()),
+            "task_request": "List split contacts",
+            "task_queue": ["List split contacts"],
+            "conversation_history": [{"role": "user", "content": "List split contacts"}],
+        }
+    )
+
+    assert len(calls) == 1
+    assert calls[0][0].history == [{"role": "user", "content": "List split contacts"}]
+
+
 @pytest.mark.asyncio
 async def test_specialist_cannot_call_tool_outside_its_registry() -> None:
     runtime = SpecialistRuntime(

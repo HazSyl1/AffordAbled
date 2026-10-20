@@ -7,6 +7,7 @@ import { ThemedSelect } from '../../components/molecules/ThemedSelect';
 import { useListAccountsQuery } from '../../features/accounts/accountsApi';
 import {
   useCreateSplitMutation, useListSplitContactsQuery, useListSplitsQuery,
+  useCreateOwedMutation,
   useRepaySplitParticipantMutation, useDeleteSplitMutation, useUpdateSplitMutation,
   type CreateSplitRequest, type Split,
 } from '../../features/splits/splitsApi';
@@ -145,6 +146,7 @@ export function SplitsPage() {
   const { data: accounts = [] } = useListAccountsQuery();
   const { data: contacts = [] } = useListSplitContactsQuery();
   const [createSplit, { isLoading: creating }] = useCreateSplitMutation();
+  const [createOwed, { isLoading: creatingOwed }] = useCreateOwedMutation();
   const [repay, { isLoading: repaying }] = useRepaySplitParticipantMutation();
   const [deleteSplit, { isLoading: deleting }] = useDeleteSplitMutation();
   const [open, setOpen] = useState(location.pathname.endsWith('/new'));
@@ -159,7 +161,15 @@ export function SplitsPage() {
   const [showValidation, setShowValidation] = useState(false);
   const [repaymentAccounts, setRepaymentAccounts] = useState<Record<string, string>>({});
   const [editingSplitId, setEditingSplitId] = useState<string | null>(null);
+  const [owedOpen, setOwedOpen] = useState(false);
+  const [owedName, setOwedName] = useState('');
+  const [owedAmount, setOwedAmount] = useState('');
+  const [owedTitle, setOwedTitle] = useState('');
   const totalOwedPaise = splits.reduce((total, split) => total + split.outstanding_paise, 0);
+  const expenseSplitOwedPaise = splits.filter((split) => split.kind === 'expense_split')
+    .reduce((total, split) => total + split.outstanding_paise, 0);
+  const standaloneOwedPaise = splits.filter((split) => split.kind === 'money_owed')
+    .reduce((total, split) => total + split.outstanding_paise, 0);
   const activeAccounts = accounts.filter((account) => account.is_active);
   const defaultAccountId = activeAccounts.find((account) => account.is_default)?.id ?? activeAccounts[0]?.id ?? '';
 
@@ -251,6 +261,20 @@ export function SplitsPage() {
     } catch (failure) { setError(detail(failure)); }
   }
 
+  async function saveOwed(event: FormEvent) {
+    event.preventDefault();
+    setError('');
+    const amount = paise(owedAmount);
+    if (!owedName.trim() || amount === null || amount <= 0) {
+      setError('Enter who owes you and a positive amount.');
+      return;
+    }
+    try {
+      await createOwed({ name: owedName.trim(), title: owedTitle.trim(), amount_paise: amount }).unwrap();
+      setOwedName(''); setOwedAmount(''); setOwedTitle(''); setOwedOpen(false);
+    } catch (failure) { setError(detail(failure)); }
+  }
+
   async function markRepaid(splitId: string, participantId: string) {
     const accountId = repaymentAccounts[participantId] ?? defaultAccountId;
     if (!accountId) { setError('Choose the account that received the repayment.'); return; }
@@ -269,16 +293,43 @@ export function SplitsPage() {
   return <div className='mx-auto w-full max-w-[900px] space-y-5 px-4 py-4 md:px-6 md:py-6'>
     <header>
       <h1 className='text-xl font-bold text-[var(--text-primary)]'>Splits</h1>
-      <p className='text-sm text-[var(--text-muted)]'>Track who owes you for shared expenses.</p>
+      <p className='text-sm text-[var(--text-muted)]'>Track expense shares and other money people owe you.</p>
     </header>
     <div className='flex flex-col gap-3 rounded-2xl border border-[var(--bg-border)] bg-[var(--bg-card)] p-4 sm:flex-row sm:items-center sm:justify-between'>
       <div className='min-w-0' aria-live='polite'>
-        <p className='text-xs text-[var(--text-muted)]'>Amount owed to you</p>
+        <p className='text-xs text-[var(--text-muted)]'>Total outstanding from others</p>
         <p className='text-2xl font-bold text-[var(--positive)]'>{isLoading ? '…' : formatPaiseAsInr(totalOwedPaise)}</p>
+        <p className='text-xs text-[var(--text-muted)]'>Expense shares {formatPaiseAsInr(expenseSplitOwedPaise)} · Other IOUs {formatPaiseAsInr(standaloneOwedPaise)}</p>
       </div>
-      <Button className='w-full sm:w-auto sm:shrink-0' onClick={() => { setOpen(true); setReview(null); }}>New split</Button>
+      <div className='flex w-full flex-col gap-2 sm:w-auto sm:flex-row'>
+        <Button className='w-full sm:w-auto sm:shrink-0' onClick={() => { setOpen(true); setReview(null); }}>Split an expense</Button>
+        <Button variant='secondary' className='w-full sm:w-auto sm:shrink-0' onClick={() => setOwedOpen((value) => !value)}>Record money owed</Button>
+      </div>
     </div>
     {error && <p role='alert' className='rounded-xl bg-red-500/10 p-3 text-sm text-red-300'>{error}</p>}
+    {owedOpen && <Card className='space-y-3 p-5'>
+      <div><h2 className='font-semibold text-[var(--text-primary)]'>Record money someone owes you</h2>
+        <p className='text-xs text-[var(--text-muted)]'>For a loan, tickets, or another amount that is not tied to a recorded purchase.</p></div>
+      <form onSubmit={saveOwed} className='grid gap-3 sm:grid-cols-2'>
+        <label className='space-y-1 text-sm text-[var(--text-secondary)]'>Person
+          {contacts.length > 0 && <ThemedSelect id='owed-person' value={contacts.includes(owedName) ? owedName : ''}
+            placeholder='Choose a saved person' options={contacts.map((name) => ({ value: name, label: name }))}
+            onChange={setOwedName} />}
+          <input className={inputClass} maxLength={100} value={owedName} placeholder='Name (e.g. Isha)'
+            onChange={(event) => setOwedName(event.target.value)} />
+        </label>
+        <label className='space-y-1 text-sm text-[var(--text-secondary)]'>Amount (₹)
+          <input className={inputClass} inputMode='decimal' value={owedAmount} placeholder='500.00'
+            onChange={(event) => setOwedAmount(event.target.value)} />
+        </label>
+        <label className='space-y-1 text-sm text-[var(--text-secondary)] sm:col-span-2'>Reason
+          <input className={inputClass} maxLength={255} value={owedTitle} placeholder='Tickets I paid for'
+            onChange={(event) => setOwedTitle(event.target.value)} />
+        </label>
+        <div className='flex gap-2 sm:col-span-2'><Button type='submit' isLoading={creatingOwed}>Save amount owed</Button>
+          <Button type='button' variant='secondary' onClick={() => setOwedOpen(false)}>Cancel</Button></div>
+      </form>
+    </Card>}
     {open && <Card className='space-y-4 p-5'>
       <h2 className='font-semibold text-[var(--text-primary)]'>
         {expense ? `Create a split for ${expenseLabel}` : 'Share a recorded expense'}
@@ -290,7 +341,8 @@ export function SplitsPage() {
       <form onSubmit={prepare} noValidate className='space-y-4'>
         <div className='space-y-1 text-sm text-[var(--text-secondary)]'>
           <label htmlFor='split-expense'>Expense</label>
-          <ThemedSelect id='split-expense' value={transactionId} placeholder='Choose an expense'
+          <ThemedSelect id='split-expense' value={transactionId}
+            placeholder={expenses.length ? 'Choose an expense' : 'No unshared expense transactions'}
             invalid={showValidation && !expense}
             options={displayedExpenses.map((item) => ({
               value: item.id,
@@ -299,7 +351,7 @@ export function SplitsPage() {
             onChange={(value) => { setTransactionId(value); setTitle(''); setTitleManuallyEdited(false); setReview(null); setError(''); }} />
         </div>
         {expenses.length > 0 && <p className='text-xs text-[var(--text-muted)]'>{selectedOlderExpense ? 'Showing the selected expense and up to 4 recent expenses.' : 'Showing up to 5 recent expenses.'} To see more, <button type='button' className='text-[var(--brand-primary)] hover:underline' onClick={() => navigate('/transactions')}>go to Transactions</button> and select an expense to split.</p>}
-        {expenses.length === 0 && <p className='text-sm text-[var(--text-muted)]'>Record an expense first to split it.</p>}
+        {expenses.length === 0 && <p className='text-sm text-[var(--text-muted)]'>There are no unshared expenses to split. You can still use “Record money owed” above for an IOU without a transaction.</p>}
         <label className='block space-y-1 text-sm text-[var(--text-secondary)]'>Title
           <input className={inputClass} maxLength={255} value={title} onChange={(event) => { setTitle(event.target.value); setTitleManuallyEdited(true); setReview(null); }} placeholder='Dinner with friends' />
         </label>
@@ -367,7 +419,7 @@ export function SplitsPage() {
             {allocationError && <p className='mt-1 text-xs text-red-400'>Enter valid shares that add up to the total.</p>}
           </div>}
         </div>
-        <div className='flex gap-2'><Button type='submit' disabled={!expense}>Review split</Button>
+        <div className='flex gap-2'><Button type='submit' disabled={!expense}>Review expense split</Button>
           <Button type='button' variant='secondary' onClick={() => { setOpen(false); setReview(null); navigate('/splits'); }}>Cancel</Button></div>
       </form>
       {review && <div className='space-y-2 rounded-xl border border-[var(--bg-border)] p-4 text-sm text-[var(--text-primary)]'>
@@ -377,21 +429,24 @@ export function SplitsPage() {
         <Button isLoading={creating} onClick={confirm}>Create split</Button>
       </div>}
     </Card>}
-    <section className='space-y-3'><h2 className='font-semibold text-[var(--text-primary)]'>Your split tracker</h2>
+    <section className='space-y-3'><h2 className='font-semibold text-[var(--text-primary)]'>Your split and IOU tracker</h2>
       {isLoading ? <p className='text-sm text-[var(--text-muted)]'>Loading splits…</p> : splits.length === 0 ?
         <Card className='p-5 text-sm text-[var(--text-muted)]'>No splits yet.</Card> : splits.map((split) =>
           <Card key={split.id} id={`split-${split.id}`}
             className={`scroll-mt-6 space-y-3 p-5 ${focusedSplitId === split.id ? 'ring-2 ring-[var(--brand-primary)]' : ''}`}>
             <div className='flex justify-between gap-3'><div><h3 className='font-semibold text-[var(--text-primary)]'>{split.title}</h3>
-              <p className='text-xs text-[var(--text-muted)]'>Total {formatPaiseAsInr(split.total_paise)} · Your share {formatPaiseAsInr(split.owner_share_paise)}</p></div>
+              <span className='mb-1 inline-flex rounded-full bg-[var(--brand-subtle)] px-2 py-0.5 text-[10px] font-semibold text-[var(--brand-primary)]'>
+                {split.kind === 'money_owed' ? 'Money owed to you' : 'Expense split'}
+              </span>
+              <p className='text-xs text-[var(--text-muted)]'>Total {formatPaiseAsInr(split.total_paise)}{split.kind === 'expense_split' ? ` · Your share ${formatPaiseAsInr(split.owner_share_paise)}` : ''}</p></div>
               <div className='text-right'><span className='text-sm font-semibold text-[var(--text-primary)]'>{formatPaiseAsInr(split.outstanding_paise)} due</span>
                 <div className='flex flex-wrap justify-end gap-3'>
-                  <button type='button' className='rounded-lg border border-[var(--bg-border)] px-3 py-1.5 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:border-[var(--brand-primary)] hover:bg-[var(--brand-subtle)] hover:text-[var(--brand-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)] focus-visible:ring-offset-2'
-                    onClick={() => navigate(`/transactions?transactionId=${split.transaction_id}`)}>View transaction</button>
-                  <button type='button' className='rounded-lg border border-[var(--brand-primary)]/30 bg-[var(--brand-subtle)] px-3 py-1.5 text-xs font-semibold text-[var(--brand-primary)] transition-colors hover:border-[var(--brand-primary)] hover:bg-[var(--brand-primary)] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)] focus-visible:ring-offset-2'
+                  {split.transaction_id && <button type='button' className='rounded-lg border border-[var(--bg-border)] px-3 py-1.5 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:border-[var(--brand-primary)] hover:bg-[var(--brand-subtle)] hover:text-[var(--brand-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)] focus-visible:ring-offset-2'
+                    onClick={() => navigate(`/transactions?transactionId=${split.transaction_id}`)}>View transaction</button>}
+                  {split.kind === 'expense_split' && <button type='button' className='rounded-lg border border-[var(--brand-primary)]/30 bg-[var(--brand-subtle)] px-3 py-1.5 text-xs font-semibold text-[var(--brand-primary)] transition-colors hover:border-[var(--brand-primary)] hover:bg-[var(--brand-primary)] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)] focus-visible:ring-offset-2'
                     onClick={() => setEditingSplitId(editingSplitId === split.id ? null : split.id)}>
                     {editingSplitId === split.id ? 'Close edit' : 'Edit split'}
-                  </button>
+                  </button>}
                   <button type='button' className='text-xs text-[var(--text-muted)]' disabled={deleting}
                     onClick={() => removeSplit(split.id)}>Remove split</button>
                 </div></div></div>

@@ -23,6 +23,12 @@ class CreateSplitRequest(BaseModel):
     participants: list[ParticipantRequest] = Field(min_length=1, max_length=20)
 
 
+class CreateOwedRequest(BaseModel):
+    title: str | None = Field(default=None, max_length=255)
+    name: str = Field(min_length=1, max_length=100)
+    amount_paise: int = Field(gt=0)
+
+
 class UpdateParticipantRequest(BaseModel):
     id: uuid.UUID | None = None
     name: str = Field(min_length=1, max_length=100)
@@ -90,7 +96,8 @@ class ItemizedSplitPreviewResponse(BaseModel):
 
 class SplitResponse(BaseModel):
     id: uuid.UUID
-    transaction_id: uuid.UUID
+    transaction_id: uuid.UUID | None
+    kind: Literal['expense_split', 'money_owed']
     title: str
     owner_share_paise: int
     total_paise: int
@@ -105,6 +112,7 @@ class SplitResponse(BaseModel):
         return cls(
             id=split.id,
             transaction_id=split.transaction_id,
+            kind='expense_split' if split.transaction_id else 'money_owed',
             title=split.title,
             owner_share_paise=split.owner_share_paise,
             total_paise=split.owner_share_paise + sum(person.share_paise for person in people),

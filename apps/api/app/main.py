@@ -13,6 +13,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from app.core.config import Settings, get_settings
+from app.core.dependencies import get_transaction_extraction_llm
 from app.core.logging import configure_logging
 from app.core.middleware import register_exception_handlers, register_middleware
 from app.infrastructure.audio.ffmpeg_audio_transcoder import resolve_ffmpeg_binary
@@ -251,10 +252,12 @@ def create_app() -> FastAPI:
             )
 
         if settings.memory_outbox_enabled:
+            analysis_llm = get_transaction_extraction_llm(settings)
             memory_outbox_task = asyncio.create_task(
                 run_memory_outbox_loop(
                     poll_interval_seconds=settings.memory_outbox_poll_interval_seconds,
                     batch_size=settings.memory_outbox_batch_size,
+                    analysis_llm=analysis_llm,
                 )
             )
             app.state.memory_outbox_task = memory_outbox_task
@@ -263,6 +266,7 @@ def create_app() -> FastAPI:
                 extra={
                     'poll_interval_seconds': max(1, int(settings.memory_outbox_poll_interval_seconds)),
                     'batch_size': max(1, int(settings.memory_outbox_batch_size)),
+                    'chat_analysis_enabled': analysis_llm is not None,
                 },
             )
 

@@ -14,6 +14,7 @@ from app.domain.exceptions import TransactionNotFoundError
 from app.infrastructure.database.repositories.sqlalchemy_memory_repository import SqlAlchemyMemoryRepository
 from app.infrastructure.database.repositories.sqlalchemy_split_repository import SqlAlchemySplitRepository
 from app.presentation.schemas.split import (
+    CreateOwedRequest,
     CreateSplitRequest,
     ItemizedSplitPreviewResponse,
     ItemizedSplitRequest,
@@ -140,6 +141,18 @@ async def create_itemized_split(
         )
     except LookupError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return SplitResponse.from_model(split)
+
+
+@router.post('/owed', response_model=SplitResponse, status_code=status.HTTP_201_CREATED)
+async def create_money_owed(
+    payload: CreateOwedRequest,
+    current_user: User = Depends(get_current_user), service: SplitService = Depends(get_split_service),
+) -> SplitResponse:
+    try:
+        split = await service.create_owed(current_user.id, payload.title, payload.name, payload.amount_paise)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     return SplitResponse.from_model(split)

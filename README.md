@@ -26,6 +26,23 @@ The API defaults to `http://localhost:8000`; its OpenAPI UI is at `/docs`. Postg
 2. Optionally set `VITE_API_BASE_URL` in a local `.env` file; the default is `http://localhost:8000`.
 3. Start Vite with `npm run dev`.
 
+### Export the LangGraph workflow diagram
+
+From the repository root, run:
+
+```powershell
+cd apps/api
+python .\scripts\export_chat_langgraph.py
+```
+
+The script writes the Mermaid graph to `apps/api/artifacts/langgraph/agentic_chat_langgraph.mmd`. It builds the graph with local stub services and an in-memory checkpointer; it does not connect to Azure, PostgreSQL, or export chat history. The script currently exports Mermaid (`.mmd`) only; PNG rendering is skipped.
+
+To choose a different output directory (relative to `apps/api`):
+
+```powershell
+python .\scripts\export_chat_langgraph.py --output-dir artifacts/my-langgraph
+```
+
 ## Checks
 
 From `apps/api`:
@@ -45,6 +62,8 @@ npm run build
 ## Product and release documentation
 
 - [Project and architecture reference](docs/AFFORDABLED_PROJECT_REFERENCE.md)
+- [LangGraph architecture guide](docs/LANGGRAPH_ARCHITECTURE_GUIDE.md)
+- [LangGraph integration reliability notes](docs/LANGGRAPH_INTEGRATION_RELIABILITY.md)
 - [Transaction CSV/XLSX import and export](docs/TRANSACTION_FILES.md)
 - [Version 1 release checklist](docs/V1_RELEASE_CHECKLIST.md)
 - [Current implementation plan](Final_Plan.md)

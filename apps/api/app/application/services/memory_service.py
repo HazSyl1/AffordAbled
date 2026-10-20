@@ -46,6 +46,33 @@ class MemoryCandidate:
 
 def candidates_for_event(*, action: str, before: dict[str, Any], after: dict[str, Any]) -> list[MemoryCandidate]:
     candidates: list[MemoryCandidate] = []
+    extracted = after.get('memory_candidates')
+    if action == 'accepted' and isinstance(extracted, list):
+        allowed = {
+            ('merchant', 'category_mapping'), ('merchant', 'account_mapping'),
+            ('user', 'user_preference'), ('person', 'split_person_preference'),
+        }
+        for item in extracted[:3]:
+            if not isinstance(item, dict):
+                continue
+            scope = str(item.get('scope') or '')
+            memory_type = str(item.get('memory_type') or '')
+            subject = normalize_key(str(item.get('subject_key') or ''))
+            value = item.get('value_json')
+            if (scope, memory_type) not in allowed or not subject or not isinstance(value, dict):
+                continue
+            if memory_type in {'category_mapping', 'account_mapping'}:
+                id_key = 'category_id' if memory_type == 'category_mapping' else 'account_id'
+                if not value.get(id_key):
+                    continue
+                candidate_value = {id_key: str(value[id_key])}
+            else:
+                if not value.get('key') or not value.get('value'):
+                    continue
+                candidate_value = {'key': str(value['key'])[:80], 'value': str(value['value'])[:160]}
+            candidates.append(MemoryCandidate(scope, subject, memory_type, candidate_value))
+        return candidates
+
     merchant = normalize_key(str(after.get('merchant') or before.get('merchant') or ''))
     if action in {'accepted', 'edited'} and merchant:
         if before.get('category_id') != after.get('category_id') and after.get('category_id'):

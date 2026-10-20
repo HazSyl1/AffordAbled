@@ -1,80 +1,86 @@
-# AffordAbled LangGraph Architecture Guide
+# AffordAbled LangGraph: End-to-End Architecture Guide
 
-This guide explains how chat requests move through AffordAbled, how LangGraph keeps a task alive across tools and user clarifications, how specialists are restricted to their own capabilities, and how transaction/split review events become optional long-term memory.
+This is a practical guide to how AffordAbled's AI chat works today: how a message becomes a task, how the supervisor routes that task, how specialist agents use tools, how the graph pauses and resumes, and how verified results reach the UI. It also explains the reliability failures we encountered and the rules that prevent them.
 
-It describes the implementation in `apps/api/app/infrastructure/ai/agents/` and its application-service, database, and API collaborators. The graph uses an LLM to interpret language and choose actions; financial rules and persistence remain in application services and repositories.
+The important design boundary is:
 
-## 1. What the system is designed to do
+> The LLM interprets language and chooses among permitted actions. Application services validate business rules, enforce user ownership, calculate money, and persist records. The graph uses tool observations, not a confident-sounding answer, to decide whether work is complete.
 
-The chat assistant should be able to:
+## Start with the vocabulary
 
-- Interpret one request or several ordered requests in one message.
-- Route each active task to a domain specialist with only relevant tools.
-- Ask a focused question when required information is missing, then resume the same operation when the user answers.
-- Use authoritative tool observations to verify a mutation instead of trusting an LLM statement that it succeeded.
-- Preserve useful working context across turns, including prior tool results for follow-ups such as “elaborate” and “what about before that?”
-- Keep each user's accounts, categories, transactions, splits, memories, and chat threads scoped to that authenticated user.
-
-The LLM is responsible for interpreting intent and selecting actions. The application is responsible for validating inputs, enforcing ownership, doing exact money calculations, persisting data, and reporting what the tools actually returned.
-
-## 2. Where the code lives
-
-| Responsibility | Main implementation |
+| Term | Meaning in this application |
 | --- | --- |
-| Root graph, state, routing, task queue, follow-ups | [`supervisor_graph.py`](../apps/api/app/infrastructure/ai/agents/supervisor_graph.py) |
-| Specialist schemas, tool registration, execution and tool loop | [`runtime.py`](../apps/api/app/infrastructure/ai/agents/runtime.py) |
-| LLM prompt and structured decision adapters | [`brains.py`](../apps/api/app/infrastructure/ai/agents/brains.py) |
-| Specialist policies | [`prompts.py`](../apps/api/app/infrastructure/ai/agents/prompts.py) |
-| Typed handoff, tool and result contracts | [`contracts.py`](../apps/api/app/infrastructure/ai/agents/contracts.py) |
-| Domain-specific tool handlers | `category.py`, `account.py`, `transaction.py`, `split.py`, `analytics.py`, `export.py` |
-| Chat API and orchestration adapter | [`chat_router.py`](../apps/api/app/presentation/routers/chat_router.py), [`chat_service.py`](../apps/api/app/application/services/chat_service.py) |
-| Checkpointer and background worker startup | [`main.py`](../apps/api/app/main.py) |
-| Review-event and memory logic | [`memory_service.py`](../apps/api/app/application/services/memory_service.py), [`sqlalchemy_memory_repository.py`](../apps/api/app/infrastructure/database/repositories/sqlalchemy_memory_repository.py) |
+| Root graph / supervisor graph | The LangGraph workflow that plans work, routes tasks, tracks progress, and creates the final response. |
+| Supervisor | The LLM decision node that chooses whether to route, finish, or refuse, and may plan an ordered task list. It has no direct financial mutation tools. |
+| Specialist | A scoped agent for categories, accounts, transactions, splits, analytics, exports, or formatting. |
+| Tool | A typed capability exposed to a specialist, such as `create_transaction` or `get_transactions`. The handler calls application services. |
+| Handoff | A trusted, structured context packet given to a specialist: active task, history, timezone, user-scoped snapshots, previous results, and relevant constraints. |
+| Task queue | The ordered list of requested operations not yet verified as complete. Only its first item is the active task. |
+| Tool observation | The structured success or error returned by executing a tool. It is the evidence used for task completion. |
+| Checkpoint | Saved LangGraph execution state for one user/thread, including the queue and pending interrupt state. |
+| Transcript | User-visible chat messages stored for chat history/sidebar. This is separate from the graph checkpoint. |
+| Interrupt | A deliberate pause for a user answer or confirmation. The same graph thread resumes afterward. |
 
-## 3. The graph at a glance
+## Where the code lives
 
-The outer graph is a supervisor graph. The supervisor itself has no financial tools. It delegates the active task to one specialist, receives structured results, verifies progress, and decides whether to route again or finish.
+| Layer | Files | Responsibility |
+| --- | --- | --- |
+| HTTP/API entry | [`chat_router.py`](../apps/api/app/presentation/routers/chat_router.py), [`chat_service.py`](../apps/api/app/application/services/chat_service.py) | Authenticate request, pass authenticated user ID and message to orchestration, persist visible transcript, build API response. |
+| Graph orchestration | [`supervisor_graph.py`](../apps/api/app/infrastructure/ai/agents/supervisor_graph.py) | State schema, graph construction, checkpoint resume, task queue, supervisor routing/reconciliation, final response. |
+| LLM contracts | [`brains.py`](../apps/api/app/infrastructure/ai/agents/brains.py), [`contracts.py`](../apps/api/app/infrastructure/ai/agents/contracts.py) | Structured inputs/outputs for supervisor and specialist decisions, observations, and results. |
+| Prompts | [`prompts.py`](../apps/api/app/infrastructure/ai/agents/prompts.py) | Role-specific instructions, constraints, and tool-use policies. |
+| Specialist runtime | [`runtime.py`](../apps/api/app/infrastructure/ai/agents/runtime.py) | Tool schemas, scoped registries, LangGraph `ToolNode` subgraphs, state injection, retry/timeout/interrupt handling, observation parsing. |
+| Domain tool adapters | [`category.py`](../apps/api/app/infrastructure/ai/agents/category.py), [`account.py`](../apps/api/app/infrastructure/ai/agents/account.py), [`transaction.py`](../apps/api/app/infrastructure/ai/agents/transaction.py), [`split.py`](../apps/api/app/infrastructure/ai/agents/split.py), [`analytics.py`](../apps/api/app/infrastructure/ai/agents/analytics.py), [`export.py`](../apps/api/app/infrastructure/ai/agents/export.py) | Translate validated tool arguments and trusted context into application-service calls. |
+| Persistence and startup | [`main.py`](../apps/api/app/main.py), database repositories, [`memory_jobs.py`](../apps/api/app/infrastructure/jobs/memory_jobs.py) | Configure the checkpointer, initialize its schema, run background jobs, and persist application data. |
+| Memory | [`memory_service.py`](../apps/api/app/application/services/memory_service.py), [`sqlalchemy_memory_repository.py`](../apps/api/app/infrastructure/database/repositories/sqlalchemy_memory_repository.py) | Record review evidence, process outbox events, build suggestions, and supply confirmed preferences. |
 
-```mermaid
-flowchart TD
-    A([START]) --> B[Guardrails]
-    B -->|allowed| C[Supervisor]
-    B -->|blocked| Z([END])
-    C -->|category| D[Category specialist subgraph]
-    C -->|account| E[Account specialist subgraph]
-    C -->|transaction| F[Transaction specialist subgraph]
-    C -->|split| G[Split specialist subgraph]
-    C -->|analytics| H[Analytics specialist subgraph]
-    C -->|export| I[Export specialist subgraph]
-    C -->|formatting| J[Formatting specialist subgraph]
-    D --> C
-    E --> C
-    F --> C
-    G --> C
-    H --> C
-    I --> C
-    J --> C
-    C -->|verified and queue empty| K([END])
-    C -->|needs user input| L[[Interrupt / wait for user]]
-    L -->|user reply resumes checkpoint| B
-```
-
-Each specialist has an inner tool loop:
+## The complete path of a chat request
 
 ```mermaid
-flowchart LR
-    S([specialist START]) --> A[LLM chooses a typed action]
-    A -->|tool call| T[Scoped ToolNode]
-    T -->|tool observation| A
-    A -->|final specialist answer| F[Build SpecialistResult]
-    F --> E([specialist END])
-    A -. ask_user / confirmation .-> I[[LangGraph interrupt]]
-    I -. resume with reply .-> A
+sequenceDiagram
+    participant UI as Web UI
+    participant API as Chat router/service
+    participant Root as Supervisor graph
+    participant Sup as Supervisor LLM
+    participant Spec as Specialist subgraph
+    participant Tool as Scoped tool adapter
+    participant Svc as Application service/repository
+    participant DB as PostgreSQL
+
+    UI->>API: POST /api/v1/chat (message, thread, timezone)
+    API->>API: Authenticate JWT; obtain trusted user_id
+    API->>Root: run_turn(user_id, thread_id, message)
+    Root->>DB: Load checkpoint for user_id:thread_id
+    Root->>Root: Append message, detect pending interrupt/follow-up
+    Root->>Sup: Guardrail + trusted handoff context
+    Sup-->>Root: Route one task / finish / refuse
+    Root->>Spec: Enter selected specialist subgraph
+    loop Until specialist finishes or asks user
+        Spec->>Spec: LLM selects a permitted tool or final summary
+        Spec->>Tool: ToolNode executes typed call
+        Tool->>Svc: Call with authenticated user scope
+        Svc->>DB: Validate and read/write records
+        DB-->>Svc: Result
+        Svc-->>Tool: Authoritative result/error
+        Tool-->>Spec: Tool observation
+    end
+    Spec-->>Root: SpecialistResult + tool observations
+    Root->>Sup: Reconcile result against active queue item
+    alt More queued work remains
+        Sup->>Root: Route next task
+    else Complete
+        Root-->>API: Final response + popup/completion metadata
+        API->>DB: Persist transcript if enabled
+        API-->>UI: Chat response
+    else Needs answer
+        Root-->>API: Interrupt question; keep checkpoint
+        API-->>UI: Ask user; do not show success completion
+    end
 ```
 
-The actual root graph is built in `AgenticSupervisorGraph.__init__`: it adds `guardrails`, `supervisor`, and one attached subgraph per specialist. A specialist returns to the supervisor after it finishes. A LangGraph interrupt pauses execution while preserving the checkpoint.
+In code, `AgenticSupervisorGraph` compiles one root graph with a `guardrails` node, a `supervisor` node, and an attached specialist subgraph for each specialist. Specialists return to the supervisor. The supervisor either routes another specialist, finishes, or lets an interrupt bubble back to the API.
 
-The graph wiring is intentionally small; most policy is in the node functions and specialist prompts:
+Simplified graph wiring:
 
 ```python
 graph = StateGraph(AgentGraphState)
@@ -90,35 +96,34 @@ graph.add_conditional_edges("guardrails", self._after_guardrails, {
 graph.add_conditional_edges("supervisor", self._after_supervisor, specialist_routes)
 for name in self._specialists:
     graph.add_edge(name, "supervisor")
-compiled = graph.compile(checkpointer=checkpointer)
+graph.compile(checkpointer=checkpointer)
 ```
 
-`specialist_routes` maps each specialist name back to its graph node, plus `supervisor` and `END`.
+The actual implementation also provides routing fallbacks, task reconciliation, interrupts, follow-up recovery, and UI metadata.
 
-## 4. What is in graph state?
+## The graph state: what is remembered while it runs?
 
-`AgentGraphState` is the shared state contract. Not every key is populated in every turn. The important fields are:
+`AgentGraphState` is the shared typed state checkpointed by LangGraph. It is not identical to the visible chat transcript.
 
-| State field | What it is for |
+| Field/group | Role |
 | --- | --- |
-| `messages` | LangChain messages used by the current graph execution/checkpoint. |
-| `conversation_history` | Bounded user-visible transcript used to understand conversational references. It has a reducer so resumed or attached subgraphs can safely merge updates. |
-| `task_request` | The original active user request. It survives a clarification answer. |
-| `task_queue` | Ordered, unfinished actions identified for the current request. Only the first task is active. |
-| `completed_tasks` | Verified task summaries accumulated while the queue is being processed. |
-| `created_transaction_ids` | Transaction IDs created in the current multi-step operation; a later split can use one of these. |
-| `pending_split_transaction_id` | The transaction a split correction or resumption belongs to. |
-| `available_categories`, `available_accounts` | User-scoped snapshots provided as routing context. Tool observations remain authoritative if the data changes. |
-| `confirmed_memories` | Confirmed preferences relevant to assistant decisions. Suggested or dismissed memories are not treated as facts. |
-| `specialist_messages` | Working messages for the current specialist subgraph. This is separate from the visible transcript. |
-| `results`, `prior_results` | Current specialist results and a small window of earlier structured results for follow-ups. |
-| `tool_event_history` | Bounded, timestamped tool observations used for verification and contextual follow-ups. |
-| `last_transaction_window` | A verified analytics window, so a later “before that” can query the preceding window. |
-| `awaiting_user_input`, `tasks_completed`, `show_completion_popup` | Control/UI outcome flags. |
+| `messages` | Root LangChain message channel. Uses `add_messages`. |
+| `conversation_history` | Bounded user/assistant transcript used for conversational context. Uses a custom reducer to merge updates safely and is capped at 100 entries. Specialists receive the most recent 20. |
+| `task_request` | Original user request for the active operation. It must survive replies such as “Health” or “yes.” |
+| `task_queue`, `completed_tasks` | Ordered pending work and verified completed work. |
+| `results`, `prior_results` | Structured specialist result(s) for this turn and a small prior window for follow-ups. |
+| `tool_event_history` | Bounded, timestamped observations with tool, specialist, active task, and original request. |
+| `created_transaction_ids`, `pending_split_transaction_id` | Link a later split to the transaction already created, including after a split correction/resume. |
+| `available_categories`, `available_accounts`, `available_split_contacts` | User-scoped snapshots refreshed by the supervisor. Useful for grounding; tools remain authoritative if snapshots become stale. |
+| `confirmed_memories` | Confirmed preferences relevant to future suggestions. Suggestions are not treated as confirmed facts. |
+| `last_transaction_window` | Window returned by a prior transaction analytics query, so “before that” can refer to the preceding window. |
+| `specialist_messages`, `specialist_steps` | Specialist working history and iteration count. Working messages are reset at handoff; this does not erase `conversation_history`. |
+| `next_specialist`, `handoff`, `reroutes` | Routing decision and specialist handoff metadata. |
+| `awaiting_user_input`, `tasks_completed`, `show_completion_popup`, `final_response` | Control and response state returned to the API/UI. |
 
-The message reducer for `conversation_history` is deliberate: in a graph, two nodes may contribute state in one step. A plain list field can cause `INVALID_CONCURRENT_GRAPH_UPDATE`. The reducer recognizes a full-prefix snapshot or merges divergent tails, then caps history to a bounded size.
+The custom `conversation_history` reducer matters. More than one node can update a state key during one graph step. Without a reducer, LangGraph can raise `INVALID_CONCURRENT_GRAPH_UPDATE`. The reducer recognizes old history snapshots and new appended entries, merges the new tail, and bounds the stored history.
 
-Example state after “Create Medicines and record ₹99 at the pharmacy” might conceptually be:
+Example state after the supervisor plans “Create a Medicines category, then record ₹99 at the pharmacy”:
 
 ```python
 {
@@ -134,270 +139,278 @@ Example state after “Create Medicines and record ₹99 at the pharmacy” migh
 }
 ```
 
-The state contains IDs internally so tools can link records. User-facing exports deliberately omit IDs and sensitive hash data.
+## Planning and the smart task queue
 
-## 5. One chat request from browser to graph
+The supervisor brain returns a typed `SupervisorDecision`: `route`, `finish`, or `refuse`, plus an optional ordered `tasks` list and handoff. The queue is explicit because the system must know which requested actions remain; a natural-language success sentence alone cannot establish that.
 
-1. The browser sends a message, optional thread ID, and timezone to `POST /api/v1/chat`.
-2. FastAPI authenticates the user. `chat_router.py` calls `ChatService.send_message` with the authenticated user's ID; the LLM does not choose the user identity.
-3. `ChatService` calls the `ChatOrchestrator` port. The production adapter is `AgenticChatOrchestrator` around `AgenticSupervisorGraph`.
-4. The graph uses a checkpoint key of `user_id:thread_id`. This prevents the same thread ID belonging to two users from sharing graph state.
-5. The guardrail evaluates the latest user message. A blocked request ends before specialist routing.
-6. The supervisor receives the active request, relevant transcript, current category/account snapshots, confirmed memories, previous results, and recent tool observations.
-7. It decides the ordered work, routes one task to one specialist, and reviews the result.
-8. Once all requested work is verified, the graph produces a final response and flags whether a completion popup should be shown.
-9. If conversation storage is enabled for the user, `ChatService` separately writes the visible user/assistant transcript and thread metadata to the chat tables.
-
-### Two kinds of chat persistence
-
-These are related but not interchangeable:
-
-- **LangGraph checkpointer:** saves execution state, pending interrupts, and graph context. PostgreSQL is the durable production option. In-memory mode loses checkpoints on restart.
-- **Conversation tables:** save the visible thread title and messages for the sidebar/history experience, controlled by the user's conversation-storage setting.
-
-The checkpointer is used even though a separate transcript exists: the transcript is optimized for display; the checkpoint is optimized for resuming a graph in the middle of a workflow.
-
-## 6. Task planning and the smart queue
-
-On the first supervisor decision for a new request, the LLM may return `tasks`, an ordered list of actions. A small deterministic layer supplements this list for explicit “A and B” action clauses and for the important transaction-then-split pattern.
-
-For example:
-
-> “Spent ₹1,500 on dinner with Isha and Piyush. Split it equally.”
-
-The graph must do these in order:
-
-```text
-1. Record the ₹1,500 expense.
-2. Create an equal split linked to the newly created transaction ID.
-```
-
-It cannot create the split first because a split must reference an existing expense. After task 1 succeeds, the supervisor stores the returned transaction ID in `created_transaction_ids` and advances the queue. The split specialist receives that ID in its trusted handoff.
-
-### How queue completion is verified
-
-The supervisor does not remove work just because the specialist says “done.” It inspects successful tool observations and calls `_reconcile_task_queue` / `_matches_observed_action` to associate them with requested tasks. This was added to prevent cases where:
-
-- One specialist call handled several names but the queue still contained a duplicate task.
-- A task was reported complete without a successful tool result.
-- A clarification answer such as “expense” was mistaken for the whole category-creation task.
-- A transaction was recorded but its requested split had not yet been created.
-
-When a specialist's verified mutation satisfies the active task, that task is removed. The supervisor repeats until the queue is empty. Only then can `tasks_completed=True` and the completion-popup flag be set.
-
-## 7. Clarifications and interrupts
-
-When a specialist needs a user answer, it calls the LangGraph `interrupt()` mechanism. This is a pause in the existing graph execution, not a new unrelated task.
+Some task planning uses deterministic helpers alongside LLM planning. Helpers recognize clear multi-action clauses and impose required order, particularly transaction-before-split. This is an intentional boundary: the LLM interprets flexible language, while fixed dependencies should not depend on a model remembering an ordering rule every time.
 
 Example:
 
+> “Spent ₹1,500 on dinner with Isha and Piyush. Split it equally.”
+
+The work must be sequenced:
+
 ```text
-User: Create Food and Groceries categories.
-Assistant: Should those be expense or income categories?
-User: Expense.
+1. transaction specialist records the ₹1,500 expense
+2. successful tool observation returns transaction ID T
+3. supervisor verifies task 1 and advances the queue
+4. split specialist receives T and creates a split linked to T
+5. split tool returns a proposal or saved result
+6. supervisor verifies task 2 and finishes when the queue is empty
 ```
 
-On the first turn, the graph saves a checkpoint with the pending question and the original request. On the next turn, `invoke()` detects the checkpoint interrupt and uses `Command(resume=...)`. The specialist sees the original task plus the newest reply and creates both categories. The answer “Expense” is a required field, not a task on its own.
+Queue reconciliation in `_reconcile_task_queue` and `_matches_observed_action` matches successful tool observations to tasks. A specialist completing multiple requested entities in one tool run can consume multiple matching queue entries. Category creation also checks the refreshed category list so an already-existing category is treated idempotently. Special recovery paths handle operations where the earlier successful observation is in checkpoint history (for example, a transaction follow-up) and therefore is not repeated in the latest result.
 
-Other examples that can pause include:
+The queue should not be “smart” by deleting tasks based on a model summary. It should be reconciled using tool evidence, current scoped state, and narrow tested recovery rules. Otherwise “it says it did both” can hide a missed write.
 
-- No account exists for a requested expense. The transaction specialist asks once; if the user wants a new account, the supervisor queues account creation and then resumes the original transaction.
-- A category is ambiguous. The specialist lists categories and asks the user to select one.
-- Deleting financial data. Destructive actions require explicit confirmation.
-- Itemized splits. The split tool calculates shares and asks for approval before saving. If the user corrects the allocation, it resumes the pending split without recording the transaction again.
+## What the supervisor does each time
 
-The response returned to the frontend is derived from `__interrupt__` when present. A paused request is not reported as complete and does not trigger the success popup.
+The supervisor node refreshes user-scoped categories, accounts, split-contact names, and relevant confirmed memories. It builds `HandoffContext` containing:
 
-## 8. Specialists and their tools
+- authenticated `user_id` supplied by the API, never chosen by the model;
+- the active task (normally queue item zero), plus original request and latest reply;
+- recent transcript, bounded prior specialist results, and recent tool observations;
+- timezone, current accounts/categories/contacts, confirmed memories;
+- transaction IDs and split transaction ID needed for ordering/linkage.
 
-Each specialist has a narrow prompt and a narrow registry. `ToolBoundSpecialistRuntime` binds only those functions to its model and validates tool arguments with a Pydantic schema. The execution handler builds a trusted `HandoffContext` from graph state, including the server-authenticated `user_id`, active queued task, timezone, categories/accounts, recent results, and confirmed memories.
+It asks the structured supervisor LLM for a decision, then applies routing fallbacks and completion logic. Examples of deterministic behavior include routing an obvious next transaction after account/category setup, ensuring a receipt prompt's optional split text is not mistaken for split consent, and handling “elaborate” against the previous verified result.
 
-| Specialist | Typical work | Example capabilities |
+## Specialists and their authority
+
+| Specialist | Typical request | Representative tools |
 | --- | --- | --- |
-| Category | Create, list, rename/update, or delete categories | `list_categories`, `create_category`, `update_category`, `delete_category` |
-| Account | Create, list, update, activate/deactivate, choose default | `list_accounts`, `create_account`, `set_default_account`, `rename_account` |
-| Transaction | Record, batch-record, list, update, delete/restore, extract ambiguous details | `create_transaction`, `create_transaction_batch`, `list_transactions`, `extract_transaction` |
-| Split | Create an equal/custom or itemized split; inspect contacts/preferences | `create_split`, `list_split_contacts`, `set_split_contact_preference` |
-| Analytics | Read balances, recent/previous/date-range transactions, summaries/comparisons, split balances | `get_account_balances`, `get_transactions`, `get_spending_summary`, `get_split_summary` |
-| Export | Generate a user-scoped transaction report | `create_transaction_report` |
-| Formatting | Turn structured result data into a concise answer; no mutation tools | No tools |
+| Category | Create/list/update/delete categories | `list_categories`, `create_category`, `update_category`, `delete_category` |
+| Account | Create/list/update/default/activate/deactivate accounts | `list_accounts`, `create_account`, `update_account`, `set_default_account`, etc. |
+| Transaction | Create/list/update/delete/restore/extract transactions | `create_transaction`, `create_transaction_batch`, `list_transactions`, `update_transaction`, `extract_transaction` |
+| Split | Create equal/custom/itemized split and inspect contacts/preferences | `list_split_contacts`, `create_split`, `set_split_contact_preference` |
+| Analytics | Read balances, transaction windows, spending, and split balances | `get_account_balances`, `get_transactions`, `get_spending_summary`, `get_split_summary` |
+| Export | Build a user-scoped transaction report | `create_transaction_report` |
+| Formatting | Explain already-computed structured results | No mutation tools |
 
-There are two runtime styles in the codebase: a direct decision runtime (`SpecialistRuntime`) and the LangGraph `ToolBoundSpecialistRuntime` used by the attached production subgraphs. The latter runs `agent -> ToolNode -> agent` until the model finishes or the iteration limit is reached. Tool observations are parsed into `SpecialistResult`, preserving status, summary, actions, data, and errors.
+Every specialist has its own prompt and registry. The LLM can only call tools in that registry, and each tool has a schema. It does not gain another specialist's tools by asking for them in text. The registry is a capability boundary, but application-service authorization is still the security boundary.
 
-### Example: recording a transaction
+## Inside one specialist: the tool loop
 
-For “Spent ₹250 at Cafe Rio on Food”:
-
-1. The supervisor routes to transaction.
-2. The transaction prompt says to use the injected account/category snapshot and call list tools when needed.
-3. The specialist chooses `create_transaction` with rupees and resolved IDs.
-4. `TransactionToolset` converts rupees to integer paise and calls `TransactionService`.
-5. The service validates account ownership, category ownership/type, amount, and balance effects; the repository persists the transaction.
-6. The tool returns an observation containing the created transaction. The specialist summarizes it.
-7. The supervisor confirms the tool observation matches the request, removes the task, and returns the verified result.
-
-Money is stored as integer paise. This avoids using binary floating-point as the source of truth for amounts.
-
-### Example: analytics and “before that”
-
-For “Show my recent transactions,” the analytics specialist calls `get_transactions` in `recent` mode. The tool returns a bounded result window and its dates; it does not load the user's entire history. The graph stores that verified window in `last_transaction_window`.
-
-For the next message “What about before that?”, the supervisor sees the prior analytics result and window. The analytics tool uses `previous_window` and asks the query layer for the preceding period. A follow-up such as “elaborate” can reuse `prior_results` and `recent_tool_observations`; it does not need to guess or ask what the user means when the prior result is clear.
-
-### Example: split participants and owner share
-
-For a ₹900 expense split equally with Isha and Piyush, the owner plus those two people are involved, so each share is ₹300. The owner is represented by `owner_share_paise`; only Isha and Piyush are external participant records.
-
-For itemized splits, `me` is allowed as a marker in an item's `shared_by` list to mean the owner consumed that item. It is never an external contact. The prompt says not to ask what to call the owner, the tool removes owner aliases if the model mistakenly puts them into the participant list, and `SplitService` rejects owner aliases at the persistence boundary. Exact share calculation is handled by `calculate_itemized_split`, not the LLM.
-
-The split service checks totals and participant limits. The split repository persists the split and participants. The `SplitService` also creates a review event for split creation/editing; this event is the evidence source for split-preference candidates.
-
-## 9. Receipts, OCR, and voice
-
-Image and voice endpoints are input-preparation routes. They do not replace the chat graph:
-
-- `POST /api/v1/chat/image` validates and analyzes an image, then returns extracted text plus a generated prompt for chat.
-- The receipt prompt says one receipt means one transaction using the final grand total. Receipt line items are evidence, not separate transactions.
-- OCR alone never implies a split. The prompt asks whether the user wants to split after the transaction is logged; a split needs explicit user intent and participants.
-- Voice transcription returns text. The frontend sends that text through the normal chat request so the same graph, tools, task queue, and checkpoints apply.
-- When the AI/network path fails, the frontend has a manual transaction entry fallback; manual entry does not depend on a successful graph run.
-
-This separation keeps all transaction decisions in one consistent execution path after input has been converted to text.
-
-## 10. Memory: review events to suggestions
-
-Memory is deliberately not written by asking an LLM to invent a profile. It is derived from structured user actions and review outcomes.
+`ToolBoundSpecialistRuntime.build_persistent_subgraph` creates a subgraph with three nodes:
 
 ```mermaid
 flowchart LR
-    A[User reviews/edits a transaction or split] --> B[Memory review event]
-    B --> C[Outbox row committed with event]
-    C --> D[Background worker claims pending rows]
-    D --> E[Derive structured candidate]
-    E --> F{Three matching events?}
+    A[agent LLM with bound tools] -->|tool call| T[LangGraph ToolNode]
+    T -->|tool result message| A
+    A -->|no more tool calls| F[finish: SpecialistResult]
+    F --> E([END to supervisor])
+    T -. ask_user or confirmation .-> I[[interrupt; checkpoint and pause]]
+```
+
+When a tool is called:
+
+1. `ToolNode` validates the model-visible arguments using the registered Pydantic schema.
+2. Injected LangGraph state is used to construct trusted `HandoffContext`; `user_id` is not model-visible tool input.
+3. Destructive operations require confirmation before their handler runs.
+4. `_call_handler` serializes calls using a shared `asyncio.Lock` because agents in one request share an `AsyncSession`, which cannot safely be used concurrently.
+5. The adapter calls the application service, catches ordinary failures into `ToolObservation(ok=False, error=...)`, rolls the session back after failures, and retries within a bounded timeout. `GraphBubbleUp` is re-raised because it represents control flow, not an ordinary tool error.
+6. The result becomes a tool message. The LLM can inspect it and make another tool call or finish.
+7. The finish node parses tool messages and the final assistant message into `SpecialistResult`, including `status`, `summary`, `data`, `actions_taken`, `tool_observations`, and `errors`.
+
+No-argument tool schemas need explicit defaults. For example, `list_split_contacts` may receive only injected graph state; it must not fail because Pydantic thinks an `arguments` object is required. This schema mismatch caused the `Field required` validation errors seen in traces.
+
+## Clarifications, confirmations, and resuming
+
+The specialist calls `ask_user` or otherwise uses `interrupt()` when a required choice or confirmation is missing. LangGraph raises a `GraphBubbleUp` to pause execution and stores the checkpoint. The API turns the interrupt value into a normal assistant question. The graph is not “failed,” and a pending task is not marked done.
+
+```text
+Turn 1: “Create Food and Groceries categories.”
+Graph: stores pending task; asks “Expense or income?”; pauses checkpoint.
+Turn 2: “Expense.”
+Graph: reads checkpoint; resumes with Command(resume="Expense"); the category task remains active.
+Specialist: creates/checks both categories; returns observations.
+Supervisor: verifies queue; completes only when both are accounted for.
+```
+
+On resume, the code carries forward the task request, queue, history, created transaction IDs, pending split ID, prior results, and tool events. The new reply is only the answer to the pending question. It must not replace the task with the literal word “yes” or “Health.”
+
+There are purpose-specific follow-up paths in `supervisor_graph.py` for transaction category clarification, creating an account to continue a pending transaction, itemized split corrections, receipt split invitations, and contextual follow-ups. These preserve completed work and avoid recording the same transaction again.
+
+## Concrete journeys
+
+### A. User answers a transaction category question
+
+```text
+User: “spent 90 on pcm”
+Transaction specialist: asks which category; graph interrupts.
+User: “Health”
+Graph resumes the original transaction task, not a task named “Health”.
+Persistent tool adapter includes recent transcript in HandoffContext.
+Transaction specialist resolves Health and calls create_transaction.
+Service verifies user owns the account/category and saves transaction.
+Tool observation contains the saved transaction ID and category ID.
+Supervisor consumes the transaction task and finishes.
+```
+
+If the transaction specialist asks a category question, its `ask_user` tool call carries typed `memory_signal="category_mapping"` metadata and the merchant hint. On resume, the supervisor puts that metadata in graph state and passes it through the transaction handoff. After transaction validation, the transaction and a bounded analysis-outbox row commit together. Ordinary chats and unmarked questions do not get queued. A background worker uses the configured extraction deployment to classify only the selected signal, checks that evidence is an exact user quote and that category/account names belong to the supplied user-scoped snapshot, then emits candidates into the existing three-event memory review pipeline. The worker clears the saved transcript excerpt on success (and after terminal failure). It never confirms a memory or changes a transaction.
+
+### B. Transaction plus itemized split
+
+```text
+User: “Spent ₹2,000 on dinner with Isha and Piyush. ₹750 was chicken; Piyush is vegetarian.”
+Supervisor: transaction task first, split task second.
+Transaction tool: creates one ₹2,000 transaction and returns ID T.
+Split specialist: receives T and only the participants named by the user.
+Split tool: computes shares in integer paise and validates item total = ₹2,000.
+Tool: pauses with a proposed split for review.
+User: confirms or corrects.
+Graph: resumes the split task; saves only after approval; never repeats transaction creation.
+Supervisor: verifies split observation; finishes after queue empties.
+```
+
+The owner is part of the calculation, but is not a split-contact record. `me` may appear in an item's `shared_by` list to represent the owner consuming that item. It must not be added as a person participant. Dietary preferences can constrain a proposal only when they are known/confirmed; they do not establish who ate an item. The calculation service—not the LLM—performs exact allocation and checks totals.
+
+### C. Receipt upload
+
+The image endpoint performs OCR and returns extracted text plus a generated chat prompt. OCR content is untrusted evidence. The normal chat graph then:
+
+1. creates one transaction for the final grand total, not one transaction per item;
+2. treats subtotal, tax, discount, and line-item amounts as evidence for that total;
+3. does not infer consent to split merely because item lines exist;
+4. asks whether the user wants a split after transaction logging;
+5. creates the split only after explicit user consent and participant instructions.
+
+For a later split, the original transaction ID is handed to the split specialist. An itemized split must preserve receipt line amounts and represent tax/rounding/fees so the shared rows equal the transaction exactly. If the math or participant assignment is unclear, the assistant should ask; it must not silently save a guessed split.
+
+### D. Recent analytics, then “before that”
+
+```text
+User: “Show recent transactions.”
+Analytics specialist: calls get_transactions in recent mode; API returns a bounded page/window.
+Graph: records the verified date window in last_transaction_window.
+User: “What about before that?”
+Supervisor: sees last_transaction_window and routes analytics.
+Analytics tool: requests the preceding window, not the entire transaction history.
+```
+
+This pattern gives useful conversational paging without loading every transaction into one prompt. `prior_results` and recent tool observations also let “elaborate” reuse the verified previous answer where appropriate.
+
+## Checkpoint versus chat history
+
+There are two persistence systems:
+
+| Store | What it stores | Why it exists |
+| --- | --- | --- |
+| LangGraph checkpointer | Graph state, current queue, specialist working state, tool progress, interrupt/resume state | Continue a workflow after a clarification and preserve graph context across requests/restarts. |
+| Chat conversation tables | User-visible messages, thread title/metadata, optional transaction link | Render prior chats and sidebar; controlled by conversation-storage preference. |
+
+`AgenticSupervisorGraph.invoke` uses `thread_id=f"{user_id}:{thread_id}"`, preventing a bare thread ID from crossing user boundaries. In production, PostgreSQL checkpointer mode should be configured and initialized by `AsyncPostgresSaver.setup()`. In-memory mode is for local/test use and loses graph state at process restart. The API startup code normalizes SQLAlchemy asyncpg URLs for the psycopg-based LangGraph saver; connection parameters need the syntax expected by each driver.
+
+Conversation storage being disabled does not make a LangGraph interrupt durable forever: the checkpointer is responsible for workflow resume, while transcript persistence is a separate user-facing feature.
+
+## Memory lifecycle
+
+Memory is structured and evidence-based; it is not an unrestricted transcript summary.
+
+```mermaid
+flowchart LR
+    A[User edits or clarifies a transaction/split] --> B[Structured review event]
+    B --> C[Outbox row committed with evidence]
+    C --> D[Background worker claims pending batch]
+    D --> E[Normalize candidate + fingerprint]
+    E --> F{Enough matching evidence?}
     F -->|no| G[Keep evidence count]
-    F -->|yes| H[Mark suggestion]
-    H --> I[Suggestions API / notification UI]
+    F -->|yes| H[Create suggestion]
+    H --> I[User confirms or dismisses]
     I -->|confirm| J[Confirmed memory]
-    I -->|dismiss| K[Dismissed memory]
-    J --> L[Relevant confirmed memory in future handoffs]
+    I -->|dismiss| K[Dismissed suggestion]
+    J --> L[Supervisor injects relevant confirmed memory]
 ```
 
-Current candidate examples include:
+Current candidates include repeated merchant-to-category/account choices and repeated split patterns for a person. Outbox processing decouples transaction latency from memory derivation. The API lifespan starts a polling task when enabled; claims are bounded and database row locking supports multiple pollers. The worker can retry failures. Suggestions generally require repeated matching evidence (currently three exact candidate fingerprints); merely having many transactions for a merchant does not necessarily create a suggestion if they did not produce qualifying review events.
 
-- A user changes a merchant's category repeatedly: candidate `{scope: "merchant", subject: "apollo pharmacy", type: "category_mapping", value: {category_id: ...}}`.
-- A user changes a merchant's account repeatedly: `account_mapping`.
-- A user repeatedly creates or edits the same split mode/share pattern with a named person: `split_method` for that external person.
+Only confirmed memories are used as preferences. A suggestion is not a fact until the user confirms it. A memory must not silently alter an already saved transaction or split.
 
-Each candidate gets a deterministic fingerprint. The outbox event is committed together with its review event, then the worker claims batches, retries failures with backoff, and processes events idempotently. A memory becomes visible as a suggestion after three evidence events. The current grouping is based on a candidate's normalized identity/value, so materially different values can form separate patterns.
+## Security and data correctness
 
-Only confirmed memories are loaded into a supervisor handoff as preferences. A suggested memory does not influence transactions/splits as if it were already true. Users can confirm, dismiss, edit, or delete memories through the memory API/UI.
-
-The memory worker starts from the FastAPI lifespan when `MEMORY_OUTBOX_ENABLED` is true (default true), polling every five seconds by default. Look for `memory.outbox.scheduler.started`, `memory.outbox.completed`, and `memory.outbox.*failed` in API logs. If the worker cannot connect to the database, events can remain queued and suggestions will not appear. The asyncpg session URL must use `ssl`, not libpq's `sslmode` parameter.
-
-The current memory fingerprint groups an **exact candidate value**. For split patterns that includes the split mode and recorded share ratio, so three shares of exactly 25% can produce a suggestion, while 25%, 30%, and 33% currently form separate candidates. This is one reason a user can have review activity but still see no suggestion: there may not yet be three matching events.
-
-## 11. Authorization and trust boundaries
-
-The model is not an authorization layer. Every tool handler receives the authenticated user ID from graph state, which is initially populated by the API service. Services/repositories query by that user ID. Resource IDs proposed by an LLM are checked against that user's records before mutation/read.
-
-The trusted boundary is:
+The trust chain is:
 
 ```text
-JWT-authenticated API request
-  -> current_user.id
-  -> HandoffContext.user_id (server-created)
-  -> tool handler with scoped service call
-  -> repository query filtered by user_id
+JWT authentication -> current_user.id -> graph state.user_id
+ -> server-built HandoffContext -> service/repository filter by user_id
 ```
 
-The LLM may choose a tool and supply arguments, but it cannot choose another owner identity. The specialist's tool registry is also a capability boundary: category tools are not available to analytics, and analytics is read-only. Deletion is confirmed before the tool can execute.
+Never accept the user identity from an LLM-generated tool argument. Tools use the authenticated user ID injected from state. Account, category, transaction, split, and memory queries must be scoped to that user in application code/database access. A prompt or tool description is not authorization.
 
-Tool arguments and results should be treated as untrusted inputs/observations. Domain validation still checks monetary values, transaction types, account/category compatibility, split totals, and ownership. Successful `ToolObservation` data, not free-form model text, is the evidence used by the supervisor to mark a task complete.
+Other correctness boundaries:
 
-## 12. Checkpointing, thread identity, and transcript storage
+- Money uses integer paise for storage and exact split arithmetic.
+- Category type, account compatibility, ownership, split totals, and transaction fields are validated by application/domain services.
+- Tool results are authoritative. Model text saying “done” cannot prove a write happened.
+- Analytics tools are read-only and should return bounded date windows/pages.
+- Delete tools require explicit confirmation.
+- Tool schemas must describe the real model-visible shape; `InjectedState` is internal runtime input, not a required model argument.
+- ToolNode may run calls concurrently. Shared async sessions require serialization or one session per call.
+- Retries around a mutation can duplicate effects if commit succeeded but the response was lost. Do not blindly retry ambiguous commits; check persistence/idempotency first.
 
-`AgenticSupervisorGraph.invoke()` loads a snapshot before invoking the graph. The configured checkpointer is compiled into the graph and addressed with `thread_id=f"{user_id}:{thread_id}"`.
+## How to read a LangSmith trace
 
-- PostgreSQL saver: durable LangGraph checkpoint tables; startup calls `setup()`.
-- In-memory saver: useful for local/testing, but pending operations disappear on process restart.
-- `LANGGRAPH_CHECKPOINTER_MODE=postgres`: strict mode; startup fails instead of silently losing durability if Postgres cannot initialize.
+1. **Root supervisor input:** inspect `task_request`, `task_queue`, recent history, and user-scoped snapshots.
+2. **Supervisor decision:** inspect route/action and handoff. The task should be explicit and ordered.
+3. **Specialist input:** verify active task, latest reply, and context arrived; do not assume root state automatically reached every tool.
+4. **Tool call:** inspect tool name and parsed `arguments`. If the tool has no arguments, confirm its schema permits an empty/default input.
+5. **Tool output:** inspect `ok`, `error`, and returned `data`. `ok: true` is the operation evidence.
+6. **Specialist finish:** inspect `status`, `tool_observations`, and `observed_actions`.
+7. **Supervisor reconciliation:** inspect completed tasks, remaining queue, and final status.
+8. **UI response:** an interrupt should appear as a question and wait for input; a completion popup should only be flagged after verified completion.
 
-Separately, `ChatService` persists the visible transcript and thread metadata when `conversation_storage_enabled` is on. The transaction chat route resolves or creates a thread linked to the transaction, so a different device can open the same persisted chat if it has the same authenticated account and thread association.
+Do not paste access tokens, database URLs, passwords, or unnecessary personal transaction data into traces or support documents.
 
-## 13. Useful ways to reason about failures
+## Failures we encountered and what they taught us
 
-When a request fails, inspect these in order:
+| Symptom | Why it happened | Protection / lesson |
+| --- | --- | --- |
+| `INVALID_CONCURRENT_GRAPH_UPDATE` for `conversation_history` | Multiple graph nodes/resume updates wrote the same plain state key in one step. | Use an intentional reducer for multi-writer channels; test divergent and stale snapshots. |
+| Follow-up “Health” or “yes” lost the original operation | Latest reply was treated as the new request, or resume omitted pending task/queue. | Preserve `task_request` and pending queue separately from `latest_user_reply`; resume from checkpoint. |
+| Category clarification completed transaction but no memory evidence | Root and model had history, but the persistent tool adapter did not pass history to `HandoffContext`. | Treat context forwarding through every adapter as a first-class contract; regression-test it. |
+| `list_split_contacts` / `get_split_summary` Pydantic `arguments` missing | Empty-input tools had an inferred schema requiring a wrapper despite injected state. | Give zero-argument and optional tools explicit schemas with defaults and test real `ToolNode` execution. |
+| “I could not verify” after specialist said success | Queue was not consumed because the supervisor saw no matching structured observation, or the active task had become only “yes.” | Fix resume/context and reconciliation; do not trust the summary alone. |
+| Multiple requested categories: one existed, one created, but request failed | LLM handled both in one specialist turn, while task queue still retained a redundant item or observations did not reconcile as one-to-many. | Match each successful observation to queue semantics; refresh state for idempotent creates. |
+| `GraphInterrupt` appeared in an error trace | `interrupt()` raises a graph-control exception by design. | Re-raise `GraphBubbleUp`; convert `__interrupt__` into a question; do not retry it as a tool failure. |
+| Split tool said item sum did not equal transaction total | Receipt rows omitted tax/rounding, or item allocation was based on inconsistent OCR/turn context. | Preserve exact line amounts, include shared-charge rows, validate total in code, ask when missing. |
+| Duplicate transaction after retry | A successful write could be repeated after an ambiguous response or task was rerun as a fresh operation. | Reuse checkpointed transaction IDs for follow-up split/corrections; mutation idempotency needs special care. |
+| Missing `checkpoint` column or `sslmode` connection errors | LangGraph saver schema setup/naming and psycopg URL conventions differed from application SQLAlchemy configuration. | Isolate LangGraph-owned checkpoint schema, call saver setup at startup, normalize driver/SSL options, verify migrations. |
+| Long valid response failed result validation | `SpecialistResult.summary` limit was too small for valid transaction detail. | Bound output to a realistic size; keep structured data separately from narrative text. |
+| Memory suggestions absent despite transactions | Transactions alone are not always qualifying review evidence; the outbox could be disabled/failing or candidates may not share an exact fingerprint. | Inspect review event, outbox status/error, worker logs, candidate count/fingerprint, and confirmation state. |
 
-1. **Was the active request understood?** Check the supervisor input, `task_request`, and `task_queue`.
-2. **Did it route to the correct specialist?** Check `next_specialist` and its handoff.
-3. **Was the needed tool available?** Check the specialist registry and tool schema.
-4. **What did the tool actually return?** Inspect each `ToolObservation` (`ok`, arguments, data, error).
-5. **Did the supervisor reconcile that observation against the right queued task?** Check `completed_tasks`, remaining queue, and `_matches_observed_action` conditions.
-6. **Was there an interrupt?** If so, it is waiting for a user answer; it is not an incomplete graph crash.
-7. **Was graph state durable?** Check the app's `langgraph_checkpointer_backend` and startup logs.
-8. **For absent memory suggestions:** check review-event count, outbox statuses/errors, candidate evidence counts, and whether there are three matching events. Also check worker startup and DB connection logs.
+More incident detail and regression rules are in [`LANGGRAPH_INTEGRATION_RELIABILITY.md`](LANGGRAPH_INTEGRATION_RELIABILITY.md). A second, older architecture overview is [`LANGGRAPH_ARCHITECTURE.md`](LANGGRAPH_ARCHITECTURE.md); when it conflicts with this code-oriented guide, verify against source.
 
-LangSmith traces can show the root graph, attached specialist subgraph, model calls, tool calls, and returned observations. Avoid placing credentials, raw tokens, or unnecessary sensitive transaction details into trace metadata.
+## What the system does not promise
 
-## 14. Compact end-to-end example
+- The LLM is not guaranteed to infer every ambiguous intent perfectly. Missing material fields should cause a clarification, not a fabricated value.
+- A prompt snapshot can become stale. The tool's scoped service read is authoritative.
+- “Remember this” does not mean every ordinary transaction is immediately stored as a permanent preference. A review event must qualify, outbox processing must succeed, evidence must reach policy thresholds, and the user may need to confirm.
+- A tool call is not inherently atomic with every later task. Transaction creation can succeed while a split awaits information/confirmation; the state must report partial progress accurately.
+- In-memory checkpointing is not durable. Restart-safe conversations require a functioning PostgreSQL checkpointer and compatible schema.
 
-Request:
+## Reading the code in a useful order
 
-> “Spent ₹2,000 on dinner with Isha and Piyush. ₹750 was chicken; Piyush is vegetarian. Split the rest equally.”
+1. [`contracts.py`](../apps/api/app/infrastructure/ai/agents/contracts.py): typed handoff, decisions, observations, and results.
+2. [`prompts.py`](../apps/api/app/infrastructure/ai/agents/prompts.py): role boundaries and instructions.
+3. [`brains.py`](../apps/api/app/infrastructure/ai/agents/brains.py): structured LLM contracts.
+4. [`supervisor_graph.py`](../apps/api/app/infrastructure/ai/agents/supervisor_graph.py): graph state, invoke/resume, planning, routing, queue reconciliation, and output.
+5. [`runtime.py`](../apps/api/app/infrastructure/ai/agents/runtime.py): tool schemas, `ToolNode`, injected context, lock/retry, interrupt, and result parsing.
+6. One adapter, such as [`transaction.py`](../apps/api/app/infrastructure/ai/agents/transaction.py) or [`split.py`](../apps/api/app/infrastructure/ai/agents/split.py), then follow its application service and repository.
+7. [`chat_service.py`](../apps/api/app/application/services/chat_service.py): transcript persistence and chat response construction.
+8. [`main.py`](../apps/api/app/main.py), memory service/repository/job: startup, checkpointer, outbox, and background processing.
 
-Conceptual execution:
+## Practical checklist when changing the graph
 
-```text
-API authenticates user and receives request
-  -> guardrail allows personal-finance task
-  -> supervisor creates ordered transaction + itemized-split tasks
-  -> transaction specialist resolves account/category and records ₹2,000
-  -> tool observation returns transaction ID T
-  -> supervisor verifies transaction task and advances queue
-  -> split specialist gets T, Isha/Piyush, confirmed preferences
-  -> exact itemized calculator allocates chicken only to eligible sharers
-  -> tool interrupts with a proposed breakdown for user review
-  -> user confirms or corrects
-  -> split is saved against T; user share stays separate from contacts
-  -> supervisor verifies split observation and empties queue
-  -> API returns final response and completion-popup flag
-```
-
-The LLM interprets “Piyush is vegetarian” and which items each person shared, but the prompt requires it to ask when an assignment is uncertain. The calculator performs exact paise allocation; tool/service validation enforces the total. The user must confirm the itemized split before it is saved. This division of work is the main architectural principle: language understanding is probabilistic, financial persistence and arithmetic are validated application behavior.
-
-The underlying calculation is ordinary application code, for example:
-
-```python
-calculation = calculate_itemized_split(
-    total_paise=200_000,
-    participant_names=["Isha", "Piyush"],  # external people only
-    items=[
-        ItemAllocation("Chicken", 75_000, ["me", "Isha"], food_type="contains_meat"),
-        ItemAllocation("Other food", 125_000, ["me", "Isha", "Piyush"]),
-    ],
-    preferences={"piyush": "vegetarian"},
-)
-```
-
-Here, `me` is a marker in `shared_by`, not a participant record. The result has a separate owner share plus shares for Isha and Piyush; integer remainder paise are assigned deterministically. Because the second row's ingredients are unknown, the calculator can return a warning for Piyush instead of assuming that it is vegetarian.
-
-## 15. Architecture trade-offs and current limits
-
-- The supervisor is a single planning/routing brain; specialists own domain actions. This keeps tool permissions and prompts focused while allowing multi-domain tasks.
-- The task queue is explicit state rather than relying only on a long transcript. It makes ordering and “all requested work is complete” machine-checkable.
-- The transcript and specialist working messages are separate. Specialist messages can be reset at handoff without deleting what the user said.
-- Tool calls are bounded by schemas, retries, timeouts, and iteration limits. Failures should be surfaced as partial/failed observations rather than converted to success.
-- Some fast-path routing and task recognition is deterministic alongside LLM reasoning. This is intentional for fixed safety/order constraints such as transaction-before-split and repeatable request patterns.
-- Memory is currently structured and evidence-count based, not a free-form semantic memory model. Three-evidence thresholds and candidate normalization can delay or fragment suggestions; those are policy choices that can be tuned separately from the graph architecture.
-- The in-process outbox worker is simple to deploy, but each API instance may run its own poller. Row locking and `skip_locked` are used for claims; a separate worker service can be introduced if throughput or independent scaling becomes necessary.
-
-## 16. Suggested reading order in the source
-
-1. Read `contracts.py` for the typed request/decision/result envelopes.
-2. Read `supervisor_graph.py` for state, checkpoint loading, task planning, routing, queue reconciliation, and output conversion.
-3. Read `brains.py` and `prompts.py` to see the LLM contracts and specialist operating rules.
-4. Read `runtime.py` for tool schemas, registries, interrupt behavior, tool execution, observations, and the inner specialist subgraph.
-5. Read one toolset such as `transaction.py` or `split.py`, then its application service and repository.
-6. Read `memory_service.py`, `sqlalchemy_memory_repository.py`, and `memory_jobs.py` for review-event processing.
-7. Read `chat_service.py` and `threads_router.py` to distinguish graph checkpoints from persisted user-visible chat history.
+- [ ] Does each multi-writer state key have a reducer or a single writer?
+- [ ] Does the active request remain separate from the newest user reply?
+- [ ] Does context reach the supervisor, specialist, and tool adapter that need it?
+- [ ] Does every tool have the right schema, description, registry, and user-scoped handler?
+- [ ] Are no-argument and optional tool calls tested through `ToolNode` with injected state?
+- [ ] Does an interrupt pause/resume without losing state or repeating completed writes?
+- [ ] Does the queue advance only on authoritative evidence or a narrow tested recovery path?
+- [ ] Are monetary totals calculated and validated in application code?
+- [ ] Are tool calls safe with the session/concurrency model, timeout, retry, and rollback behavior?
+- [ ] Does a PostgreSQL restart/resume test cover persistent checkpoints and schema setup?
+- [ ] Are read operations bounded and scoped to the authenticated user?
+- [ ] Do memory tests cover event creation, outbox processing, threshold/fingerprint, and confirmed-only injection?

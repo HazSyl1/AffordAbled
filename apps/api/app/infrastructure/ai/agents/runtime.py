@@ -56,6 +56,7 @@ def _persistent_tool_context(state: dict[str, Any]) -> HandoffContext:
             "available_accounts": state.get("available_accounts", []),
             "available_split_contacts": state.get("available_split_contacts", []),
             "confirmed_memories": state.get("confirmed_memories", []),
+            "memory_review_signal": state.get("memory_review_signal"),
         },
     )
 
@@ -111,6 +112,12 @@ class SplitItemArguments(BaseModel):
     food_type: Literal['vegetarian', 'vegan', 'contains_meat', 'unknown', 'shared_charge'] = 'unknown'
 
 
+class QuantitySplitArguments(BaseModel):
+    people: list[str] = Field(min_length=1, description='Named participants receiving this priced quantity.')
+    quantity_per_person: int = Field(gt=0, description='Number of items each named person received.')
+    unit_price_rupees: Decimal = Field(gt=0, description='Price of one item in rupees; code converts to paise.')
+
+
 class CreateSplitArguments(BaseModel):
     transaction_id: str | None = Field(default=None, description='Expense ID; omit for a newly recorded expense.')
     title: str | None = None
@@ -123,10 +130,27 @@ class CreateSplitArguments(BaseModel):
         default=None, max_length=20,
         description='Every verified receipt line and shared charge for an itemized split. Omit for equal splits.',
     )
+    quantity_allocations: list[QuantitySplitArguments] | None = Field(
+        default=None,
+        description=(
+            'For "N items each at X rupees; divide the rest equally". Supply only names, quantity, and unit '
+            'price. The tool calculates fixed shares and the remainder from the saved transaction.'
+        ),
+    )
 
 
 class CreateSplitToolInput(BaseModel):
     arguments: CreateSplitArguments
+
+
+class CreateOwedArguments(BaseModel):
+    name: str = Field(min_length=1, max_length=100, description='Person who owes the authenticated user.')
+    amount_paise: int = Field(gt=0, description='Amount they owe, in paise.')
+    title: str | None = Field(default=None, max_length=255, description='Optional short reason for the debt.')
+
+
+class CreateOwedToolInput(BaseModel):
+    arguments: CreateOwedArguments
 
 
 class SetSplitContactPreferenceArguments(BaseModel):
@@ -144,6 +168,17 @@ class EmptyArgumentsToolInput(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
 
 
+class GetAccountBalancesArguments(BaseModel):
+    account_names: list[str] | None = Field(
+        default=None,
+        description="Optional account names to filter by; omit to return balances for all accounts.",
+    )
+
+
+class GetAccountBalancesToolInput(BaseModel):
+    arguments: GetAccountBalancesArguments = Field(default_factory=GetAccountBalancesArguments)
+
+
 class GetTransactionsArguments(BaseModel):
     mode: Literal['recent', 'previous_window', 'date_range'] = Field(
         default='recent',
@@ -158,7 +193,7 @@ class GetTransactionsArguments(BaseModel):
 
 
 class GetTransactionsToolInput(BaseModel):
-    arguments: GetTransactionsArguments
+    arguments: GetTransactionsArguments = Field(default_factory=GetTransactionsArguments)
 
 
 class CreateTransactionReportArguments(BaseModel):
@@ -168,14 +203,22 @@ class CreateTransactionReportArguments(BaseModel):
 
 
 class CreateTransactionReportToolInput(BaseModel):
-    arguments: CreateTransactionReportArguments
+    arguments: CreateTransactionReportArguments = Field(default_factory=CreateTransactionReportArguments)
 
 
 _TOOL_SCHEMAS: dict[str, type[BaseModel]] = {
+    "list_accounts": EmptyArgumentsToolInput,
+    "list_categories": EmptyArgumentsToolInput,
+    "list_transactions": EmptyArgumentsToolInput,
+    "list_split_contacts": EmptyArgumentsToolInput,
+    "extract_transaction": EmptyArgumentsToolInput,
+    "delete_account": EmptyArgumentsToolInput,
+    "get_account_balances": GetAccountBalancesToolInput,
     "create_account": CreateAccountToolInput,
     "create_category": CreateCategoryToolInput,
     "create_transaction": CreateTransactionToolInput,
     "create_split": CreateSplitToolInput,
+    "create_owed": CreateOwedToolInput,
     "set_split_contact_preference": SetSplitContactPreferenceToolInput,
     "get_transactions": GetTransactionsToolInput,
     "get_split_summary": EmptyArgumentsToolInput,
@@ -226,10 +269,18 @@ _TOOL_DESCRIPTIONS = {
     ),
     "create_split": (
         "Create a split after its expense exists. For itemized receipts, supply every item with amount_paise, "
+        "and use only amounts printed in the user's receipt/OCR; never invent a remaining-bill or residual row. "
         "shared_by names (use me for the owner). Never list the owner (me/myself/you) as a participant or ask "
         "what to call the owner; the owner's share is tracked separately. Include food_type. The tool calculates "
         "exact shares and asks the "
         "user to confirm before saving. Do not invent item prices or who ate an item."
+        " For quantity and unit-price requests with the rest split equally, provide quantity_allocations; "
+        "the tool calculates the remainder from the saved transaction."
+    ),
+    "create_owed": (
+        "Record money a named person owes the authenticated user, even when there is no expense transaction. "
+        "Use only when the user explicitly says someone owes/is to repay them; provide amount_paise and a reason. "
+        "This is a receivable tracker entry, not an expense split and does not create a transaction."
     ),
     "create_transaction_report": (
         "Generate a user-owned transaction report for download. Use for export or download requests; "
@@ -306,7 +357,12 @@ class SpecialistRuntime:
                 if not decision.question:
                     errors.append("brain_requested_input_without_question")
                     continue
-                answer = interrupt({"agent": self.name, "question": decision.question})
+                answer = interrupt({
+                    "agent": self.name,
+                    "question": decision.question,
+                    "memory_signal": decision.memory_signal,
+                    "subject_hint": decision.memory_subject_hint,
+                })
                 observations.append(ToolObservation(tool="user_input", ok=True, data={"answer": str(answer)}))
                 continue
             if decision.action == "delegate":
@@ -535,6 +591,7 @@ class ToolBoundSpecialistRuntime:
                 "delete_transaction",
                 "restore_transaction",
                 "create_split",
+                "create_owed",
                 "set_split_contact_preference",
                 "get_account_balances",
                 "get_transactions",
@@ -675,9 +732,20 @@ class ToolBoundSpecialistRuntime:
             tools.append(self._persistent_tool(name, handler))
         if self.allow_interrupts:
 
-            async def ask_user(question: str) -> str:
-                """Pause to ask the user one focused question and return their answer."""
-                return json.dumps({"ok": True, "answer": str(interrupt({"agent": self.name, "question": question}))})
+            async def ask_user(
+                question: str,
+                memory_signal: Literal[
+                    "category_mapping", "account_mapping", "preference", "split_preference",
+                ] | None = None,
+                subject_hint: str | None = None,
+            ) -> str:
+                """Ask one question. Mark memory_signal for reusable preference clarifications, not missing fields."""
+                return json.dumps({"ok": True, "answer": str(interrupt({
+                    "agent": self.name,
+                    "question": question,
+                    "memory_signal": memory_signal,
+                    "subject_hint": subject_hint,
+                }))})
 
             tools.append(
                 StructuredTool.from_function(coroutine=ask_user, name="ask_user", description=ask_user.__doc__ or "")

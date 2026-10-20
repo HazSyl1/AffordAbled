@@ -3,6 +3,7 @@ import { CheckCircle2 } from 'lucide-react';
 
 import { Button } from '../../atoms/Button';
 import { Card } from '../../atoms/Card';
+import { useBodyScrollLock } from '../../../lib/useBodyScrollLock';
 
 interface TransactionSuccessOverlayProps {
   message: string;
@@ -14,6 +15,7 @@ interface TransactionSuccessOverlayProps {
 
 export function TransactionSuccessOverlay({ message, expiresAt, onClose, onContinue, onEditTransaction }: TransactionSuccessOverlayProps) {
   const [secondsRemaining, setSecondsRemaining] = useState(() => Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000)));
+  useBodyScrollLock(true);
 
   useEffect(() => {
     const timer = window.setInterval(() => {

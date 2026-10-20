@@ -81,6 +81,20 @@ class SqlAlchemySplitRepository:
             raise
         return await self.get_for_user(user_id, split.id)
 
+    async def create_owed(
+        self, user_id: uuid.UUID, title: str, person: ParticipantShare,
+    ) -> SplitModel:
+        split = SplitModel(
+            id=uuid.uuid4(), user_id=user_id, transaction_id=None, title=title,
+            owner_share_paise=0, item_breakdown=None,
+            participants=[SplitParticipantModel(
+                id=uuid.uuid4(), name=person.name, share_paise=person.share_paise, settled_paise=0,
+            )],
+        )
+        self.session.add(split)
+        await self.session.commit()
+        return await self.get_for_user(user_id, split.id)
+
     async def list_for_user(self, user_id: uuid.UUID) -> list[SplitModel]:
         rows = await self.session.scalars(
             select(SplitModel).where(SplitModel.user_id == user_id)
@@ -102,6 +116,8 @@ class SqlAlchemySplitRepository:
         split = await self.get_for_user(user_id, split_id)
         if split is None:
             return None
+        if split.transaction_id is None:
+            raise ValueError('Edit standalone money owed entries from the owed amount form.')
         amount_paise = await self.session.scalar(
             select(TransactionModel.amount_paise).where(
                 TransactionModel.id == split.transaction_id,
