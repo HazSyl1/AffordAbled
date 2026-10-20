@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
@@ -11,6 +12,24 @@ from app.application.services.transaction_service import TransactionService
 from app.domain.entities import TransactionType
 from app.infrastructure.ai.agents.contracts import HandoffContext
 from app.infrastructure.ai.agents.extraction import TransactionExtractionAgent
+
+
+def _category_was_explicitly_requested(history: list[dict[str, str]]) -> bool:
+    """Only learn a merchant mapping when the user answered a category question."""
+    if not history or history[-1].get("role") != "user":
+        return False
+    for message in reversed(history[:-1]):
+        role = message.get("role")
+        if role == "user":
+            break
+        if role != "assistant":
+            continue
+        text = message.get("content", "").casefold()
+        return bool(
+            re.search(r"\b(?:which|what)\s+(?:expense\s+)?categor(?:y|ies)\b", text)
+            or re.search(r"\bcategor(?:y|ies)\s+should\s+(?:i|be)\b", text)
+        )
+    return False
 
 
 class TransactionToolset:
@@ -70,17 +89,28 @@ class TransactionToolset:
         if amount_paise <= 0:
             raise ValueError("transaction amount must be greater than zero")
         occurred_at = self._occurred_at(args.get("occurred_at"), context.timezone)
+        merchant = args.get("merchant")
+        category_id = uuid.UUID(str(args["category_id"])) if args.get("category_id") else None
+        review_event = None
+        if category_id and merchant and _category_was_explicitly_requested(context.history):
+            review_event = {
+                "action": "accepted",
+                "source": "chat_category_clarification",
+                "before": {},
+                "after": {"merchant": merchant, "category_id": str(category_id)},
+            }
         transaction = await self._service.create_transaction(
             CreateTransactionInput(
                 user_id=context.user_id,
                 account_id=uuid.UUID(str(args["account_id"])),
-                category_id=uuid.UUID(str(args["category_id"])) if args.get("category_id") else None,
+                category_id=category_id,
                 to_account_id=uuid.UUID(str(args["to_account_id"])) if args.get("to_account_id") else None,
                 type=TransactionType(str(args["type"]).lower()),
                 amount_paise=amount_paise,
                 occurred_at=occurred_at,
-                merchant=args.get("merchant"),
+                merchant=merchant,
                 note=args.get("note"),
+                review_event=review_event,
             )
         )
         return {"transaction": self._serialize(transaction)}

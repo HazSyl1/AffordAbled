@@ -37,6 +37,29 @@ def _tool_error_message(exc: Exception) -> str:
     return f"{type(exc).__name__}: {first_line}"[:600]
 
 
+def _persistent_tool_context(state: dict[str, Any]) -> HandoffContext:
+    """Build trusted handler context, preserving the conversation needed for follow-ups."""
+    return HandoffContext(
+        user_id=state["user_id"],
+        request=(state.get("task_queue") or [state["task_request"]])[0],
+        history=(state.get("conversation_history") or [])[-20:],
+        timezone=state.get("timezone", "UTC"),
+        constraints={
+            "latest_user_reply": str(state["messages"][-1].content) if state.get("messages") else "",
+            "last_transaction_window": state.get("last_transaction_window"),
+            "original_request": state.get("task_request"),
+            "created_transaction_ids": state.get("created_transaction_ids", []),
+            "prior_specialist_results": state.get("prior_results", []),
+            "supervisor_handoff": state.get("handoff", {}),
+            "pending_split_transaction_id": state.get("pending_split_transaction_id"),
+            "available_categories": state.get("available_categories", []),
+            "available_accounts": state.get("available_accounts", []),
+            "available_split_contacts": state.get("available_split_contacts", []),
+            "confirmed_memories": state.get("confirmed_memories", []),
+        },
+    )
+
+
 class CreateAccountArguments(BaseModel):
     name: str = Field(min_length=1, max_length=120, description="Account name, for example Axis.")
     type: Literal["cash", "bank", "card", "wallet"] = Field(
@@ -665,24 +688,7 @@ class ToolBoundSpecialistRuntime:
         """Create one tool with only model-visible arguments in its schema."""
 
         async def execute(arguments: dict[str, Any], state: Annotated[dict[str, Any], InjectedState]) -> str:
-            context = HandoffContext(
-                user_id=state["user_id"],
-                request=(state.get("task_queue") or [state["task_request"]])[0],
-                timezone=state.get("timezone", "UTC"),
-                constraints={
-                    "latest_user_reply": str(state["messages"][-1].content) if state.get("messages") else "",
-                    "last_transaction_window": state.get("last_transaction_window"),
-                    "original_request": state.get("task_request"),
-                    "created_transaction_ids": state.get("created_transaction_ids", []),
-                    "prior_specialist_results": state.get("prior_results", []),
-                    "supervisor_handoff": state.get("handoff", {}),
-                    "pending_split_transaction_id": state.get("pending_split_transaction_id"),
-                    "available_categories": state.get("available_categories", []),
-                    "available_accounts": state.get("available_accounts", []),
-                    "available_split_contacts": state.get("available_split_contacts", []),
-                    "confirmed_memories": state.get("confirmed_memories", []),
-                },
-            )
+            context = _persistent_tool_context(state)
             values = arguments.model_dump() if isinstance(arguments, BaseModel) else {
                 key: value.model_dump() if isinstance(value, BaseModel) else value
                 for key, value in arguments.items()
