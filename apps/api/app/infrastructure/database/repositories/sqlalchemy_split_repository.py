@@ -45,6 +45,7 @@ class SqlAlchemySplitRepository:
     async def create(
         self, user_id: uuid.UUID, transaction_id: uuid.UUID, title: str,
         owner_share_paise: int, participants: list[ParticipantShare], item_breakdown: list[dict] | None = None,
+        settlement_breakdown: dict | None = None,
     ) -> SplitModel:
         transaction = await self.session.scalar(
             select(TransactionModel).where(
@@ -64,6 +65,7 @@ class SqlAlchemySplitRepository:
         split = SplitModel(
             id=uuid.uuid4(), user_id=user_id, transaction_id=transaction_id,
             title=title, owner_share_paise=owner_share_paise, item_breakdown=item_breakdown,
+            settlement_breakdown=settlement_breakdown,
             participants=[
                 SplitParticipantModel(id=uuid.uuid4(), name=person.name, share_paise=person.share_paise,
                                       settled_paise=0)
@@ -146,6 +148,12 @@ class SqlAlchemySplitRepository:
                 for person in participants
             )
         )
+        has_settlement_repayments = any(
+            transfer.get('repayment_transaction_id')
+            for transfer in (split.settlement_breakdown or {}).get('transfers', [])
+        )
+        if has_settlement_repayments and not same_allocations:
+            raise ValueError('A settlement plan with recorded repayments cannot be changed.')
         for person in split.participants:
             if person.repayment_transaction_id is not None or person.settled_paise > 0:
                 updated = requested.get(person.id)
@@ -169,6 +177,7 @@ class SqlAlchemySplitRepository:
             split.owner_share_paise = owner_share_paise
             if not same_allocations:
                 split.item_breakdown = None
+                split.settlement_breakdown = None
             for person in participants:
                 if person.id is None:
                     split.participants.append(SplitParticipantModel(
@@ -269,6 +278,73 @@ class SqlAlchemySplitRepository:
             account.updated_at = now
             participant.settled_paise = participant.share_paise
             participant.repayment_transaction_id = transaction.id
+            await self.session.commit()
+        except Exception:
+            await self.session.rollback()
+            raise
+        return await self.get_for_user(user_id, split_id)
+
+    async def repay_settlement_transfer(
+        self, user_id: uuid.UUID, split_id: uuid.UUID, debtor: str, account_id: uuid.UUID,
+    ) -> SplitModel | None:
+        await self.session.scalar(select(UserModel.id).where(UserModel.id == user_id).with_for_update())
+        split = await self.get_for_user(user_id, split_id)
+        if split is None:
+            return None
+        breakdown = split.settlement_breakdown
+        if breakdown is None:
+            raise ValueError('This split has no settlement plan.')
+        transfers = [dict(item) for item in breakdown.get('transfers', [])]
+        matches = [
+            transfer for transfer in transfers
+            if str(transfer.get('debtor', '')).casefold() == debtor.strip().casefold()
+            and str(transfer.get('creditor', '')).strip().casefold() == 'you'
+        ]
+        if len(matches) != 1:
+            raise LookupError('A settlement transfer payable to you was not found.')
+        transfer = matches[0]
+        if transfer.get('repayment_transaction_id'):
+            raise ValueError('This settlement transfer is already repaid.')
+        participant = next(
+            (person for person in split.participants if person.name.casefold() == debtor.strip().casefold()), None,
+        )
+        if participant is None:
+            raise LookupError('Settlement participant was not found.')
+        if participant.repayment_transaction_id is not None or participant.settled_paise > 0:
+            raise ValueError('This participant already has a linked repayment.')
+        amount_paise = int(transfer.get('amount_paise') or 0)
+        if amount_paise <= 0:
+            raise ValueError('Settlement transfer amount must be positive.')
+        account = await self.session.scalar(select(AccountModel).where(
+            AccountModel.id == account_id, AccountModel.user_id == user_id, AccountModel.is_active.is_(True),
+        ))
+        if account is None:
+            raise LookupError('Receiving account was not found or is inactive.')
+        category = await self.session.scalar(select(CategoryModel).where(
+            CategoryModel.user_id == user_id, CategoryModel.type == 'income',
+            CategoryModel.name == SPLIT_REPAYMENT_CATEGORY,
+        ))
+        now = datetime.now(UTC)
+        if category is None:
+            category = CategoryModel(
+                id=uuid.uuid4(), user_id=user_id, name=SPLIT_REPAYMENT_CATEGORY, type='income',
+            )
+            self.session.add(category)
+        transaction = TransactionModel(
+            id=uuid.uuid4(), user_id=user_id, account_id=account_id,
+            category_id=category.id, type='income', amount_paise=amount_paise,
+            merchant=debtor.strip(), note=f'Repayment for split: {split.title}',
+            occurred_at=now, created_at=now, updated_at=now,
+        )
+        self.session.add(transaction)
+        try:
+            await self.session.flush()
+            account.balance_paise += amount_paise
+            account.updated_at = now
+            participant.settled_paise = amount_paise
+            participant.repayment_transaction_id = transaction.id
+            transfer['repayment_transaction_id'] = str(transaction.id)
+            split.settlement_breakdown = {**breakdown, 'transfers': transfers}
             await self.session.commit()
         except Exception:
             await self.session.rollback()

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import uuid
+
 from httpx import AsyncClient
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.infrastructure.database.models import SplitModel
 from tests.helpers import auth_headers, register_and_get_token
 
 
@@ -266,4 +269,54 @@ async def test_mark_repaid_creates_and_links_a_single_categorized_transaction(
                                json={'amount_paise': 900}, headers=headers)).status_code == 400
     assert (await client.delete(f'/api/v1/transactions/{repayment_id}', headers=headers)).status_code == 400
     assert (await client.post(path, json={'account_id': account_id}, headers=headers)).status_code == 422
+    assert len((await client.get('/api/v1/transactions', headers=headers)).json()) == 2
+
+
+async def test_mark_settlement_transfer_repaid_records_exact_plan_amount(
+    client: AsyncClient, db_session: AsyncSession,
+) -> None:
+    owner = await register_and_get_token(client, 'settlement-transfer-repaid@example.com')
+    headers = auth_headers(owner)
+    account_id, transaction_id = await _expense(client, owner, amount=1000)
+    created = await client.post('/api/v1/splits', json={
+        'transaction_id': transaction_id, 'title': 'Adjusted dinner', 'amount_paise': 1000,
+        'mode': 'custom', 'owner_share_paise': 200,
+        'participants': [{'name': 'A', 'share_paise': 800}],
+    }, headers=headers)
+    assert created.status_code == 201, created.text
+    split_id = created.json()['id']
+    split_model = await db_session.scalar(select(SplitModel).where(SplitModel.id == uuid.UUID(split_id)))
+    assert split_model is not None
+    split_model.settlement_breakdown = {'transfers': [
+        {'debtor': 'A', 'creditor': 'You', 'amount_paise': 1250},
+        {'debtor': 'B', 'creditor': 'C', 'amount_paise': 500},
+    ]}
+    await db_session.commit()
+
+    listed = (await client.get('/api/v1/splits', headers=headers)).json()[0]
+    assert listed['outstanding_paise'] == 1250
+    path = f'/api/v1/splits/{split_id}/settlement-transfers/repay'
+    not_payable_to_owner = await client.post(path, headers=headers, json={
+        'debtor': 'B', 'account_id': account_id,
+    })
+    assert not_payable_to_owner.status_code == 404
+
+    repaid = await client.post(path, headers=headers, json={'debtor': 'A', 'account_id': account_id})
+    assert repaid.status_code == 200, repaid.text
+    assert repaid.json()['outstanding_paise'] == 0
+    transfer = repaid.json()['settlement_breakdown']['transfers'][0]
+    repayment_id = transfer['repayment_transaction_id']
+    assert repaid.json()['participants'][0]['settled_paise'] == 1250
+    assert repaid.json()['participants'][0]['repayment_transaction_id'] == repayment_id
+    transactions = (await client.get('/api/v1/transactions', headers=headers)).json()
+    repayment = next(item for item in transactions if item['id'] == repayment_id)
+    assert repayment['type'] == 'income'
+    assert repayment['amount_paise'] == 1250
+    categories = (await client.get('/api/v1/categories', headers=headers)).json()
+    repayment_category = next(category for category in categories if category['id'] == repayment['category_id'])
+    assert repayment_category['name'] == 'Split repayment'
+    assert (await client.get(f'/api/v1/accounts/{account_id}', headers=headers)).json()['balance_paise'] == 20250
+    duplicate = await client.post(path, headers=headers, json={'debtor': 'A', 'account_id': account_id})
+    assert duplicate.status_code == 422
+    assert (await client.delete(f'/api/v1/transactions/{repayment_id}', headers=headers)).status_code == 400
     assert len((await client.get('/api/v1/transactions', headers=headers)).json()) == 2

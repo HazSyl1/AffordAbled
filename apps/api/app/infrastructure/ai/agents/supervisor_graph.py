@@ -73,11 +73,14 @@ def _split_task_for_request(request: str) -> str | None:
         or re.search(r"\bonly after\b.{0,60}\b(?:agree|confirm)\b", normalized)
     ):
         return None
-    has_split_context = re.search(r"\b(?:split|shared|with)\b", normalized)
+    has_split_context = re.search(
+        r"\b(?:split|shared|with|divid(?:e|ed|ing)|remainder|remaining\s+(?:bill|amount|balance))\b",
+        normalized,
+    )
     has_transaction = re.search(r"\b(?:spent|spend|paid|pay|expense|transaction)\b", normalized)
     if not (has_split_context and has_transaction):
         return None
-    if not re.search(r"\bwith\b", normalized) and "split" not in normalized:
+    if not re.search(r"\b(?:with|split|shared|divid(?:e|ed|ing)|remainder)\b", normalized):
         return None
     match = re.search(r"\bwith\s+(.+?)(?:\s+for\s+me)?(?:[.!?]|$)", request, re.IGNORECASE)
     names = match.group(1).strip() if match else "the named people"
@@ -85,7 +88,63 @@ def _split_task_for_request(request: str) -> str | None:
         not re.search(r'\b(?:equal|equally)\b', normalized)
         and re.search(r'\b(?:by item|itemized|had|ate|ordered|shared the)\b', normalized)
     ) else 'equal'
-    return f"create an {split_kind} split for the transaction just recorded with participants {names}. {request}"
+    return (
+        f"create an {split_kind} split for the transaction just recorded with participants {names}. "
+        f"Full original request: {request}"
+    )
+
+
+def _with_verified_split_total(task: str, transaction: Mapping[str, Any]) -> str:
+    """Carry the database-confirmed amount into the pending split handoff."""
+    amount_paise = transaction.get("amount_paise")
+    if amount_paise is None:
+        return task
+    try:
+        amount_paise = int(amount_paise)
+    except (TypeError, ValueError):
+        return task
+    rupees, paise = divmod(amount_paise, 100)
+    verified_total = f"Verified recorded transaction total: ₹{rupees:,}.{paise:02d}."
+    task_without_total = re.sub(
+        r"\s*Verified recorded transaction total: ₹[\d,]+\.\d{2}\.", "", task,
+        flags=re.IGNORECASE,
+    ).strip()
+    return f"{task_without_total} {verified_total}"
+
+
+def _canonicalize_split_task_queue(task_queue: list[str], original_request: str) -> list[str]:
+    """Keep one split task tied to the full request, not lossy or duplicate LLM paraphrases."""
+    split_task = _split_task_for_request(original_request)
+    if not split_task:
+        return task_queue
+    canonical_queue = list(task_queue)
+    transaction_task_index = next(
+        (index for index, task in enumerate(canonical_queue) if _obvious_specialist(task) == "transaction"),
+        None,
+    )
+    if transaction_task_index is None:
+        canonical_queue.insert(0, original_request)
+    else:
+        # Keep the full source on the transaction task too; a terse supervisor
+        # paraphrase can drop amount, merchant, or other required details.
+        canonical_queue[transaction_task_index] = original_request
+    split_task_indices = [
+        index for index, task in enumerate(canonical_queue)
+        if _required_tools(task, "split") == {"create_split"}
+    ]
+    if not split_task_indices:
+        canonical_queue.append(split_task)
+    else:
+        # The model may compress or duplicate split tasks, sometimes treating
+        # a remainder as a new bill. Rebuild the first from the original user
+        # request and discard the other create_split tasks for this transaction.
+        first_split_index = split_task_indices[0]
+        canonical_queue = [
+            task for index, task in enumerate(canonical_queue)
+            if index not in split_task_indices or index == first_split_index
+        ]
+        canonical_queue[first_split_index] = split_task
+    return canonical_queue
 
 
 def _is_elaboration_followup(message: str) -> bool:
@@ -423,6 +482,10 @@ def _obvious_specialist(task: str) -> str | None:
         for word in ("transaction", "transactions", "report", "spending", "expenses", "history")
     ):
         return "export"
+    if re.search(r"\b(?:create|make|prepare|calculate)\b.{0,40}\bsplit\b", normalized):
+        return "split"
+    if re.search(r"\b(?:record|log|add)\b.{0,30}\b(?:expense|transaction|purchase)\b", normalized):
+        return "transaction"
     if re.search(r"\b(?:\w+)\s+(?:owes|owed)\s+me\b|\b(?:owe|pay)\s+me\s+\d", normalized):
         return "split"
     if "split" in normalized and not re.search(r"\b(?:spent|spend|paid|pay|record|log)\b", normalized):
@@ -913,7 +976,8 @@ class AgenticSupervisorGraph:
             ),
             "split": ToolBoundSpecialistRuntime(
                 name="split", llm=split_llm, system_prompt=SPLIT_PROMPT,
-                tools=split_tools, db_session=db_session, tool_lock=tool_lock,
+                tools=split_tools, non_retryable_tools={"create_split", "create_owed"},
+                db_session=db_session, tool_lock=tool_lock,
             ),
             "analytics": ToolBoundSpecialistRuntime(
                 name="analytics",
@@ -1288,12 +1352,10 @@ class AgenticSupervisorGraph:
                 # The generated receipt prompt mentions a later optional split.
                 # That is not user consent and must not become a queued action.
                 task_queue = [task for task in task_queue if _obvious_specialist(task) != "split"]
-            split_task = _split_task_for_request(state.get("task_request", ""))
-            if split_task:
-                if not any(_obvious_specialist(task) == "transaction" for task in task_queue):
-                    task_queue.insert(0, state.get("task_request") or str(state["messages"][-1].content))
-                if not any("split" in task.casefold() for task in task_queue):
-                    task_queue.append(split_task)
+            task_queue = _canonicalize_split_task_queue(
+                task_queue,
+                state.get("task_request") or str(state["messages"][-1].content),
+            )
             if not task_queue:
                 task_queue = [state.get("task_request") or str(state["messages"][-1].content)]
         receipt_upload = _is_receipt_upload_request(str(state.get("task_request") or ""))
@@ -1372,6 +1434,26 @@ class AgenticSupervisorGraph:
                 available_categories=available_categories,
                 verify_categories=latest_result.get("specialist") == "category",
             )
+            if latest_result.get("specialist") == "transaction" and remaining_tasks:
+                created = (latest_result.get("data") or {}).get("created_transactions") or []
+                if not created:
+                    transaction = (latest_result.get("data") or {}).get("transaction")
+                    created = [transaction] if isinstance(transaction, Mapping) else []
+                verified_transaction = next(
+                    (
+                        item
+                        for item in reversed(created)
+                        if isinstance(item, Mapping) and item.get("amount_paise") is not None
+                    ),
+                    None,
+                )
+                if verified_transaction is not None:
+                    remaining_tasks = [
+                        _with_verified_split_total(task, verified_transaction)
+                        if _obvious_specialist(task) == "split"
+                        else task
+                        for task in remaining_tasks
+                    ]
             # A resumed transaction turn can be a confirmation/correction
             # reply after the transaction was already created. In that case
             # the specialist may return a verified success summary without

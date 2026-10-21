@@ -31,6 +31,7 @@ class SplitStore(Protocol):
     async def create(
         self, user_id: uuid.UUID, transaction_id: uuid.UUID, title: str,
         owner_share_paise: int, participants: list[ParticipantShare], item_breakdown: list[dict] | None = None,
+        settlement_breakdown: dict | None = None,
     ): ...
 
     async def create_owed(self, user_id: uuid.UUID, title: str, person: ParticipantShare): ...
@@ -52,6 +53,10 @@ class SplitStore(Protocol):
     async def repay(
         self, user_id: uuid.UUID, split_id: uuid.UUID,
         participant_id: uuid.UUID, account_id: uuid.UUID,
+    ): ...
+
+    async def repay_settlement_transfer(
+        self, user_id: uuid.UUID, split_id: uuid.UUID, debtor: str, account_id: uuid.UUID,
     ): ...
 
     async def delete(self, user_id: uuid.UUID, split_id: uuid.UUID) -> bool: ...
@@ -92,7 +97,7 @@ class SplitService:
     async def create(
         self, user_id: uuid.UUID, transaction_id: uuid.UUID, title: str, amount_paise: int,
         mode: str, participants: list[ParticipantShare], owner_share_paise: int | None,
-        item_breakdown: list[dict] | None = None,
+        item_breakdown: list[dict] | None = None, settlement_breakdown: dict | None = None,
     ):
         clean_title = title.strip()
         if not clean_title or len(clean_title) > 255:
@@ -144,7 +149,13 @@ class SplitService:
                 },
                 transaction_id=transaction_id,
             )
-        return await self.store.create(user_id, transaction_id, clean_title, owner_share_paise, shares, item_breakdown)
+        if settlement_breakdown is None:
+            return await self.store.create(
+                user_id, transaction_id, clean_title, owner_share_paise, shares, item_breakdown,
+            )
+        return await self.store.create(
+            user_id, transaction_id, clean_title, owner_share_paise, shares, item_breakdown, settlement_breakdown,
+        )
 
     async def list_for_user(self, user_id: uuid.UUID):
         return await self.store.list_for_user(user_id)
@@ -211,6 +222,11 @@ class SplitService:
         participant_id: uuid.UUID, account_id: uuid.UUID,
     ):
         return await self.store.repay(user_id, split_id, participant_id, account_id)
+
+    async def repay_settlement_transfer(
+        self, user_id: uuid.UUID, split_id: uuid.UUID, debtor: str, account_id: uuid.UUID,
+    ):
+        return await self.store.repay_settlement_transfer(user_id, split_id, debtor, account_id)
 
     async def delete(self, user_id: uuid.UUID, split_id: uuid.UUID) -> bool:
         return await self.store.delete(user_id, split_id)

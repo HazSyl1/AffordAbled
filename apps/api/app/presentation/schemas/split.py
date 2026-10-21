@@ -57,6 +57,11 @@ class RepayParticipantRequest(BaseModel):
     account_id: uuid.UUID
 
 
+class RepaySettlementTransferRequest(BaseModel):
+    debtor: str = Field(min_length=1, max_length=100)
+    account_id: uuid.UUID
+
+
 class SplitContactPreferenceRequest(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     dietary_preference: Literal['vegetarian', 'vegan', 'omnivore'] | None = None
@@ -105,6 +110,7 @@ class SplitResponse(BaseModel):
     created_at: datetime
     participants: list[ParticipantResponse]
     item_breakdown: list[dict] | None = None
+    settlement_breakdown: dict | None = None
 
     @classmethod
     def from_model(cls, split: SplitModel) -> SplitResponse:
@@ -116,7 +122,15 @@ class SplitResponse(BaseModel):
             title=split.title,
             owner_share_paise=split.owner_share_paise,
             total_paise=split.owner_share_paise + sum(person.share_paise for person in people),
-            outstanding_paise=sum(person.share_paise - person.settled_paise for person in people),
+            outstanding_paise=(
+                sum(
+                    int(transfer.get('amount_paise') or 0)
+                    for transfer in (split.settlement_breakdown or {}).get('transfers', [])
+                    if transfer.get('creditor') == 'You' and not transfer.get('repayment_transaction_id')
+                )
+                if split.settlement_breakdown is not None
+                else sum(person.share_paise - person.settled_paise for person in people)
+            ),
             created_at=split.created_at,
             participants=[
                 ParticipantResponse(
@@ -126,4 +140,5 @@ class SplitResponse(BaseModel):
                 ) for person in people
             ],
             item_breakdown=split.item_breakdown,
+            settlement_breakdown=split.settlement_breakdown,
         )
