@@ -127,6 +127,24 @@ def test_split_allows_clear_typo_resolution_to_a_saved_contact() -> None:
     SplitToolset._validate_requested_people([ParticipantShare('Piyush', 0)], context)
 
 
+def test_split_uses_preserved_history_when_specialist_request_is_shortened() -> None:
+    context = HandoffContext(
+        user_id=uuid.uuid4(),
+        request='Create the split for the recorded expense.',
+        history=[{
+            'role': 'user',
+            'content': (
+                'Spent 927383 on 7 people: A, B, C, D, E, F, G and myself. '
+                'A, B and C got 7 vodka cranberries each at 7000 each.'
+            ),
+        }],
+        constraints={'original_request': 'record the expense and then split it'},
+    )
+    SplitToolset._validate_requested_people(
+        [ParticipantShare(name, 0) for name in 'ABCDEFG'], context,
+    )
+
+
 @pytest.mark.asyncio
 async def test_receipt_ocr_keeps_item_lines_within_chat_request_limit() -> None:
     class FakeOcr:

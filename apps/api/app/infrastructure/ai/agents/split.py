@@ -31,6 +31,7 @@ class SplitToolset:
                 context.request,
                 context.constraints.get('original_request'),
                 context.constraints.get('latest_user_reply'),
+                *(message.get('content') for message in context.history if isinstance(message, dict)),
             )
             if value
         )
