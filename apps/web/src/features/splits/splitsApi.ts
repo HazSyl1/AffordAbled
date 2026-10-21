@@ -20,6 +20,17 @@ export interface Split {
   participants: SplitParticipant[];
   item_breakdown?: { name: string; amount_paise: number; food_type: string;
     allocations: { person: string; amount_paise: number }[] }[] | null;
+  settlement_breakdown?: {
+    priced_items_paise: number;
+    remainder_paise: number;
+    contributions: { person: string; amount_paise: number }[];
+    debts: { debtor: string; creditor: string; amount_paise: number }[];
+    transfers: { debtor: string; creditor: string; amount_paise: number; repayment_transaction_id?: string | null }[];
+    quantity_allocations: {
+      item_name: string; people: string[]; quantity_per_person: number;
+      unit_price_paise: number; total_paise: number;
+    }[];
+  } | null;
 }
 
 export interface SplitContactPreference {
@@ -99,6 +110,13 @@ const splitsApi = apiClient.injectEndpoints({
       }),
       invalidatesTags: ['Split', 'Transaction', 'Account', 'Category'],
     }),
+    repaySettlementTransfer: builder.mutation<Split, { splitId: string; debtor: string; accountId: string }>({
+      query: ({ splitId, debtor, accountId }) => ({
+        url: `/splits/${splitId}/settlement-transfers/repay`, method: 'POST',
+        body: { debtor, account_id: accountId },
+      }),
+      invalidatesTags: ['Split', 'Transaction', 'Account', 'Category'],
+    }),
     deleteSplit: builder.mutation<void, string>({
       query: (splitId) => ({ url: `/splits/${splitId}`, method: 'DELETE' }),
       invalidatesTags: ['Split'],
@@ -110,6 +128,7 @@ export const {
   useListSplitsQuery, useListSplitContactsQuery, useCreateSplitMutation, useCreateOwedMutation,
   useSettleSplitParticipantMutation,
   useDeleteSplitMutation, useUpdateSplitMutation, useRepaySplitParticipantMutation,
+  useRepaySettlementTransferMutation,
   useListSplitContactPreferencesQuery, useSetSplitContactPreferenceMutation,
   useListSplitPreferenceSuggestionsQuery,
   useDeleteSplitContactPreferenceMutation,

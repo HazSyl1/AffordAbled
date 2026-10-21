@@ -9,7 +9,12 @@ from typing import Any
 from langgraph.types import interrupt
 
 from app.application.services.itemized_split import ItemAllocation, calculate_itemized_split
-from app.application.services.quantity_split import QuantityAllocation, calculate_quantity_split
+from app.application.services.quantity_split import QuantityAllocation
+from app.application.services.settlement_split import (
+    SettlementDebt,
+    SplitContribution,
+    calculate_settlement_split,
+)
 from app.application.services.split_service import ParticipantShare, SplitService, is_owner_participant_label
 from app.application.services.transaction_service import TransactionService
 from app.infrastructure.ai.agents.contracts import HandoffContext
@@ -31,6 +36,7 @@ class SplitToolset:
                 context.request,
                 context.constraints.get('original_request'),
                 context.constraints.get('latest_user_reply'),
+                *(message.get('content') for message in context.history if isinstance(message, dict)),
             )
             if value
         )
@@ -232,13 +238,17 @@ class SplitToolset:
         if owner_share is None and args.get("owner_share_rupees") is not None:
             owner_share = round(float(args["owner_share_rupees"]) * 100)
         item_breakdown = None
-        if args.get('quantity_allocations') is not None:
+        settlement_breakdown = None
+        has_quantity_allocations = args.get('quantity_allocations') is not None
+        has_settlement_adjustments = bool(args.get('debts') or args.get('contributions'))
+        if has_quantity_allocations or has_settlement_adjustments:
             source_numbers = {
                 Decimal(value.replace(',', ''))
                 for value in re.findall(r'(?<!\d)\d[\d,]*(?:\.\d+)?(?!\d)', source_request)
             }
             allocations: list[QuantityAllocation] = []
-            for raw in args['quantity_allocations']:
+            allocation_details: list[dict[str, Any]] = []
+            for raw in args.get('quantity_allocations') or []:
                 if not isinstance(raw, dict):
                     raise ValueError('Each quantity allocation needs people, quantity, and unit price.')
                 quantity = raw.get('quantity_per_person')
@@ -255,22 +265,98 @@ class SplitToolset:
                     quantity_per_person=quantity,
                     unit_price_paise=int(price_paise),
                 ))
-            owner_share, calculated_shares, remaining_paise = calculate_quantity_split(
-                transaction.amount_paise, [person.name for person in people], allocations,
+                allocation_details.append({
+                    'item_name': str(raw.get('item_name') or 'Priced item').strip(),
+                    'people': list(raw.get('people') or []),
+                    'quantity_per_person': quantity,
+                    'unit_price_paise': int(price_paise),
+                    'total_paise': len(raw.get('people') or []) * quantity * int(price_paise),
+                })
+            debts: list[SettlementDebt] = []
+            for raw in args.get('debts') or []:
+                amount_rupees = Decimal(str(raw.get('amount_rupees')))
+                amount_paise = amount_rupees * 100
+                if amount_rupees not in source_numbers or amount_paise != amount_paise.to_integral_value():
+                    raise ValueError('Every debt amount must match an amount stated in the user request.')
+                debts.append(SettlementDebt(
+                    debtor=str(raw.get('debtor') or '').strip(),
+                    creditor=str(raw.get('creditor') or '').strip(),
+                    amount_paise=int(amount_paise),
+                ))
+            contributions: list[SplitContribution] = []
+            for raw in args.get('contributions') or []:
+                amount_rupees = Decimal(str(raw.get('amount_rupees')))
+                amount_paise = amount_rupees * 100
+                if amount_rupees not in source_numbers or amount_paise != amount_paise.to_integral_value():
+                    raise ValueError('Every contribution amount must match an amount stated in the user request.')
+                contributions.append(SplitContribution(
+                    person=str(raw.get('person') or '').strip(), amount_paise=int(amount_paise),
+                ))
+
+            calculation = calculate_settlement_split(
+                transaction.amount_paise,
+                [person.name for person in people],
+                allocations,
+                contributions,
+                debts,
             )
+            owner_share = calculation.owner_share_paise
+            calculated_shares = calculation.participant_shares
+            remaining_paise = calculation.remainder_paise
+
             def amount(paise: int) -> str:
                 return f'₹{Decimal(paise) / 100:,.2f}'
+
             summary = ', '.join(
                 [f'you: {amount(owner_share)}', *[
                     f'{name}: {amount(share)}' for name, share in calculated_shares.items()
                 ]]
             )
+            allocation_summary = (
+                f'Priced items total {amount(calculation.priced_items_paise)}; '
+                if allocation_details else ''
+            )
+            remainder_summary = (
+                f'{amount(remaining_paise)} is divided equally among you and {len(people)} other people. '
+                if allocation_details else ''
+            )
+            settlement_summary = ''
+            if has_settlement_adjustments:
+                transfer_summary = '; '.join(
+                    f"{transfer.debtor} pays {transfer.creditor} {amount(transfer.amount_paise)}"
+                    for transfer in calculation.transfers
+                ) or 'No transfers are needed after netting the listed payments and debts.'
+                settlement_summary = f' Settlement plan: {transfer_summary}.'
+                settlement_breakdown = {
+                    'priced_items_paise': calculation.priced_items_paise,
+                    'remainder_paise': calculation.remainder_paise,
+                    'contributions': [
+                        {'person': item.person, 'amount_paise': item.amount_paise}
+                        for item in calculation.contributions
+                    ],
+                    'debts': [
+                        {
+                            'debtor': item.debtor,
+                            'creditor': item.creditor,
+                            'amount_paise': item.amount_paise,
+                        }
+                        for item in calculation.debts
+                    ],
+                    'transfers': [
+                        {
+                            'debtor': item.debtor,
+                            'creditor': item.creditor,
+                            'amount_paise': item.amount_paise,
+                        }
+                        for item in calculation.transfers
+                    ],
+                    'quantity_allocations': allocation_details,
+                }
             answer = interrupt({
                 'agent': 'split',
                 'question': (
-                    f'Priced items total {amount(transaction.amount_paise - remaining_paise)}; '
-                    f'{amount(remaining_paise)} is divided equally among you and {len(people)} other people. '
-                    f'Shares: {summary}. Confirm this split?'
+                    f'{allocation_summary}{remainder_summary}Expense shares: {summary}.'
+                    f'{settlement_summary} Confirm this split?'
                 ),
             })
             if str(answer).strip().casefold() not in {'yes', 'y', 'confirm', 'confirmed', 'proceed'}:
@@ -351,6 +437,7 @@ class SplitToolset:
             people,
             int(owner_share) if owner_share is not None else None,
             item_breakdown,
+            settlement_breakdown,
         )
         return {
             "split": {
@@ -363,5 +450,6 @@ class SplitToolset:
                     {"name": person.name, "share_paise": person.share_paise}
                     for person in split.participants
                 ],
+                "settlement_breakdown": settlement_breakdown,
             }
         }

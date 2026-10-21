@@ -113,9 +113,24 @@ class SplitItemArguments(BaseModel):
 
 
 class QuantitySplitArguments(BaseModel):
-    people: list[str] = Field(min_length=1, description='Named participants receiving this priced quantity.')
+    item_name: str = Field(default='Priced item', min_length=1, max_length=255,
+                           description='Short item label for the reviewed allocation.')
+    people: list[str] = Field(
+        min_length=1, max_length=20, description='Named participants receiving this priced quantity.'
+    )
     quantity_per_person: int = Field(gt=0, description='Number of items each named person received.')
     unit_price_rupees: Decimal = Field(gt=0, description='Price of one item in rupees; code converts to paise.')
+
+
+class SplitDebtArguments(BaseModel):
+    debtor: str = Field(min_length=1, max_length=100, description='Person who owes the other person.')
+    creditor: str = Field(min_length=1, max_length=100, description='Person who should receive the debt.')
+    amount_rupees: Decimal = Field(gt=0, description='Existing debt amount in rupees.')
+
+
+class SplitContributionArguments(BaseModel):
+    person: str = Field(min_length=1, max_length=100, description='Participant who already paid part of this bill.')
+    amount_rupees: Decimal = Field(gt=0, description='Amount already contributed toward this bill, in rupees.')
 
 
 class CreateSplitArguments(BaseModel):
@@ -131,11 +146,19 @@ class CreateSplitArguments(BaseModel):
         description='Every verified receipt line and shared charge for an itemized split. Omit for equal splits.',
     )
     quantity_allocations: list[QuantitySplitArguments] | None = Field(
-        default=None,
+        default=None, min_length=1, max_length=50,
         description=(
             'For "N items each at X rupees; divide the rest equally". Supply only names, quantity, and unit '
             'price. The tool calculates fixed shares and the remainder from the saved transaction.'
         ),
+    )
+    debts: list[SplitDebtArguments] | None = Field(
+        default=None, max_length=50,
+        description='Existing debts between the listed participants to include in the settlement plan.',
+    )
+    contributions: list[SplitContributionArguments] | None = Field(
+        default=None, max_length=20,
+        description='Amounts participants already paid toward this transaction; the owner paid the remainder.',
     )
 
 
@@ -275,7 +298,9 @@ _TOOL_DESCRIPTIONS = {
         "exact shares and asks the "
         "user to confirm before saving. Do not invent item prices or who ate an item."
         " For quantity and unit-price requests with the rest split equally, provide quantity_allocations; "
-        "the tool calculates the remainder from the saved transaction."
+        "the tool calculates the remainder from the saved transaction. Provide a separate allocation for each "
+        "item/group with different people, quantities, or prices. Include existing debts as debts and prior "
+        "payments toward this bill as contributions; the tool calculates a separate net settlement plan."
     ),
     "create_owed": (
         "Record money a named person owes the authenticated user, even when there is no expense transaction. "
@@ -456,6 +481,7 @@ class ToolBoundSpecialistRuntime:
         tools: dict[str, ToolHandler],
         allow_interrupts: bool = True,
         destructive_tools: set[str] | None = None,
+        non_retryable_tools: set[str] | None = None,
         max_iterations: int = 8,
         max_tool_retries: int = 3,
         timeout_seconds: float = 45,
@@ -468,6 +494,7 @@ class ToolBoundSpecialistRuntime:
         self.tools = dict(tools)
         self.allow_interrupts = allow_interrupts
         self.destructive_tools = destructive_tools or set()
+        self.non_retryable_tools = non_retryable_tools or set()
         self.max_iterations = max_iterations
         self.max_tool_retries = max_tool_retries
         self.timeout_seconds = timeout_seconds
@@ -487,7 +514,8 @@ class ToolBoundSpecialistRuntime:
         self, context: HandoffContext, name: str, handler: ToolHandler, arguments: dict[str, Any]
     ) -> ToolObservation:
         started = time.perf_counter()
-        for attempt in range(self.max_tool_retries + 1):
+        retry_limit = 0 if name in self.non_retryable_tools else self.max_tool_retries
+        for attempt in range(retry_limit + 1):
             try:
                 async with asyncio.timeout(self.timeout_seconds):
                     data = await handler(context, arguments)
@@ -514,7 +542,7 @@ class ToolBoundSpecialistRuntime:
                             arguments=arguments,
                             error=_tool_error_message(rollback_exc),
                         )
-                if isinstance(exc, ValueError) or attempt == self.max_tool_retries:
+                if isinstance(exc, ValueError) or attempt == retry_limit:
                     return ToolObservation(tool=name, ok=False, arguments=arguments, error=_tool_error_message(exc))
         raise AssertionError("unreachable")
 

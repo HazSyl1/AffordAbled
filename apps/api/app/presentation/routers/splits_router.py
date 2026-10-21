@@ -19,6 +19,7 @@ from app.presentation.schemas.split import (
     ItemizedSplitPreviewResponse,
     ItemizedSplitRequest,
     RepayParticipantRequest,
+    RepaySettlementTransferRequest,
     SettleParticipantRequest,
     SplitContactPreferenceRequest,
     SplitContactPreferenceResponse,
@@ -237,6 +238,24 @@ async def repay_split_participant(
         raise HTTPException(status_code=422, detail=str(error)) from error
     if split is None:
         raise HTTPException(status_code=404, detail='Split participant not found.')
+    return SplitResponse.from_model(split)
+
+
+@router.post('/{split_id}/settlement-transfers/repay', response_model=SplitResponse)
+async def repay_settlement_transfer(
+    split_id: uuid.UUID, payload: RepaySettlementTransferRequest,
+    current_user: User = Depends(get_current_user), service: SplitService = Depends(get_split_service),
+) -> SplitResponse:
+    try:
+        split = await service.repay_settlement_transfer(
+            current_user.id, split_id, payload.debtor, payload.account_id,
+        )
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    if split is None:
+        raise HTTPException(status_code=404, detail='Split not found.')
     return SplitResponse.from_model(split)
 
 

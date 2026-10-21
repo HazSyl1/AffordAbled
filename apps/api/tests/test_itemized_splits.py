@@ -20,9 +20,11 @@ from app.infrastructure.ai.agents.runtime import ToolBoundSpecialistRuntime
 from app.infrastructure.ai.agents.split import SplitToolset
 from app.infrastructure.ai.agents.supervisor_graph import (
     AgentGraphState,
+    _canonicalize_split_task_queue,
     _obvious_specialist,
     _required_tools,
     _split_task_for_request,
+    _with_verified_split_total,
 )
 from tests.helpers import auth_headers, register_and_get_token
 
@@ -98,6 +100,82 @@ def test_supervisor_keeps_itemized_and_preference_tasks_distinct() -> None:
     assert _required_tools('Piyush eats meat', 'split') == {'set_split_contact_preference'}
 
 
+def test_split_task_preserves_complete_multi_person_allocation_request() -> None:
+    request = (
+        'Spent 927383 rs on 7 people: A, B, C, D, E, F, G and myself. '
+        'A, B and C got 7 vodka cranberries each, which were 7000 rs each. '
+        'Rest of the bill will be divided among everyone equally.'
+    )
+
+    task = _split_task_for_request(request)
+
+    assert task is not None
+    assert request in task
+    assert '927383' in task
+    assert '7 vodka cranberries each' in task
+    assert 'divided among everyone equally' in task
+
+
+def test_supervisor_replaces_compressed_split_task_with_full_original_request() -> None:
+    request = (
+        'Spent 927383 rs on 7 people: A, B, C, D, E, F, G and myself. '
+        'A, B and C got 7 vodka cranberries each, which were 7000 rs each. '
+        'Rest of the bill will be divided among everyone equally.'
+    )
+
+    queue = _canonicalize_split_task_queue(
+        ['Record the expense.', 'Split the remainder equally among the group.'],
+        request,
+    )
+
+    assert len(queue) == 2
+    assert queue[0] == request
+    assert request in queue[1]
+    assert '7000 rs each' in queue[1]
+    assert '927383' in queue[1]
+
+    split_only_queue = _canonicalize_split_task_queue(
+        ['Split the remainder equally among the group.'],
+        request,
+    )
+    assert split_only_queue[0] == request
+    assert len(split_only_queue) == 2
+    assert request in split_only_queue[1]
+
+
+def test_supervisor_collapses_duplicate_remainder_split_tasks() -> None:
+    request = (
+        'Spent 927383 rs on 7 people: A, B, C, D, E, F, G and myself. '
+        'A, B and C got 7 vodka cranberries each at 7000 rs each. '
+        'Rest divided equally. A owes C 17000. B contributed 29000. C owes B 20000.'
+    )
+
+    queue = _canonicalize_split_task_queue(
+        [
+            'Record the expense.',
+            'Split the full expense with the listed people.',
+            'Confirm the split of ₹780,383 equally among everyone with the specified settlement plan.',
+            'Remember Isha is vegetarian.',
+        ],
+        request,
+    )
+
+    assert queue[0] == request
+    assert sum(_required_tools(task, 'split') == {'create_split'} for task in queue) == 1
+    canonical_split_task = next(task for task in queue if _required_tools(task, 'split') == {'create_split'})
+    assert request in canonical_split_task
+    assert '780,383' not in canonical_split_task
+    assert 'Remember Isha is vegetarian.' in queue
+
+
+def test_pending_split_task_carries_database_verified_transaction_total() -> None:
+    task = 'Create an equal split. Original request: spent 100 on dinner.'
+
+    enriched = _with_verified_split_total(task, {'amount_paise': 92738300})
+
+    assert enriched.endswith('Verified recorded transaction total: ₹927,383.00.')
+
+
 def test_split_rejects_saved_contacts_not_named_in_the_request() -> None:
     context = HandoffContext(
         user_id=uuid.uuid4(),
@@ -125,6 +203,24 @@ def test_split_allows_clear_typo_resolution_to_a_saved_contact() -> None:
         },
     )
     SplitToolset._validate_requested_people([ParticipantShare('Piyush', 0)], context)
+
+
+def test_split_uses_preserved_history_when_specialist_request_is_shortened() -> None:
+    context = HandoffContext(
+        user_id=uuid.uuid4(),
+        request='Create the split for the recorded expense.',
+        history=[{
+            'role': 'user',
+            'content': (
+                'Spent 927383 on 7 people: A, B, C, D, E, F, G and myself. '
+                'A, B and C got 7 vodka cranberries each at 7000 each.'
+            ),
+        }],
+        constraints={'original_request': 'record the expense and then split it'},
+    )
+    SplitToolset._validate_requested_people(
+        [ParticipantShare(name, 0) for name in 'ABCDEFG'], context,
+    )
 
 
 @pytest.mark.asyncio
@@ -456,6 +552,69 @@ async def test_itemized_split_tool_pauses_and_resumes_inside_graph(answer: str, 
     assert resumed['results'][-1]['status'] == ('success' if expected_saves else 'partial')
     if not expected_saves:
         assert answer in resumed['results'][-1]['errors'][0]
+
+
+@pytest.mark.asyncio
+async def test_confirmed_split_save_failure_does_not_restart_confirmation() -> None:
+    transaction_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    save_attempts = 0
+
+    class FailingSplits:
+        async def list_contact_preferences(self, _user_id):
+            return []
+
+        async def create(self, *_args):
+            nonlocal save_attempts
+            save_attempts += 1
+            raise RuntimeError('settlement_breakdown column is missing')
+
+    class FakeTransactions:
+        async def get_transaction(self, _user_id, _transaction_id):
+            return SimpleNamespace(
+                id=transaction_id, type=SimpleNamespace(value='expense'),
+                amount_paise=30000, merchant='Dinner', note=None,
+            )
+
+    class FakeModel:
+        def bind_tools(self, _tools):
+            async def respond(messages):
+                if isinstance(messages[-1], ToolMessage):
+                    return AIMessage(content='The split could not be saved.')
+                return AIMessage(content='', tool_calls=[{
+                    'name': 'create_split', 'id': 'itemized-split-save-failure', 'args': {'arguments': {
+                        'participants': ['Isha'],
+                        'items': [{'name': 'Dinner', 'amount_paise': 30000,
+                                   'shared_by': ['me', 'Isha'], 'food_type': 'unknown'}],
+                    }},
+                }])
+
+            return RunnableLambda(respond)
+
+    runtime = ToolBoundSpecialistRuntime(
+        name='split', llm=FakeModel(), system_prompt='You are the split specialist.',
+        tools=SplitToolset(FailingSplits(), FakeTransactions()).registry(),
+        non_retryable_tools={'create_split'},
+    )
+    parent = StateGraph(AgentGraphState)
+    parent.add_node('split', runtime.build_persistent_subgraph(AgentGraphState))
+    parent.add_edge(START, 'split')
+    graph = parent.compile(checkpointer=MemorySaver())
+    config = {'configurable': {'thread_id': str(uuid.uuid4())}}
+    initial = await graph.ainvoke({
+        'user_id': str(user_id), 'task_request': 'Create an itemized split with Isha',
+        'task_queue': ['Create an itemized split with Isha'],
+        'created_transaction_ids': [str(transaction_id)],
+        'specialist_messages': [SystemMessage(content='Split specialist'), HumanMessage(content='Dinner with Isha')],
+    }, config)
+    assert initial.get('__interrupt__')
+
+    resumed = await graph.ainvoke(Command(resume='yes'), config)
+
+    assert not resumed.get('__interrupt__')
+    assert save_attempts == 1
+    assert resumed['results'][-1]['status'] == 'partial'
+    assert 'settlement_breakdown column is missing' in resumed['results'][-1]['errors'][0]
 
 
 @pytest.mark.asyncio

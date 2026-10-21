@@ -46,7 +46,7 @@ export function RegisterPage() {
       catchphrase='A fresh start for your everyday finances.'
       description='Bring your accounts, transactions, and shared expenses together, then let helpful insights make the picture clearer.'
     >
-      <form className='mx-auto w-full max-w-[420px]' onSubmit={onSubmit} noValidate>
+      <form className='mx-auto min-w-0 w-full max-w-[420px]' onSubmit={onSubmit} noValidate>
         <p className='mb-1 text-xs font-semibold uppercase tracking-[0.16em] text-[var(--brand-primary)]'>Your next money habit starts here</p>
         <h2 className='mb-2 text-2xl font-semibold text-[var(--text-primary)]'>{AUTH_UI_TEXT.registerTitle}</h2>
         <p className='mb-6 text-sm text-[var(--text-secondary)]'>Create a personal space for tracking, understanding, and sharing expenses.</p>
@@ -56,7 +56,7 @@ export function RegisterPage() {
         </FormField>
 
         <FormField label={AUTH_UI_TEXT.dobLabel} htmlFor='date_of_birth' error={errors.date_of_birth?.message}>
-          <Input id='date_of_birth' type='date' className='min-w-0 max-w-full' max={maxDob} {...register('date_of_birth')} />
+          <Input id='date_of_birth' type='date' className='block w-full min-w-0 max-w-full' max={maxDob} {...register('date_of_birth')} />
         </FormField>
 
         <FormField label={AUTH_UI_TEXT.emailLabel} htmlFor='email' error={errors.email?.message}>
