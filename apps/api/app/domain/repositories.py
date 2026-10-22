@@ -68,6 +68,9 @@ class TransactionRepository(Protocol):
         offset: int = 0,
         transaction_type: Any | None = None,
         category_id: uuid.UUID | None = None,
+        account_id: uuid.UUID | None = None,
+        order_by: str = "occurred_at",
+        sort_order: str = "desc",
     ) -> tuple[list[Transaction], int]: ...
     async def spending_summary_for_user(
         self, user_id: uuid.UUID, *, date_from: datetime, date_to: datetime, category_id: uuid.UUID | None = None

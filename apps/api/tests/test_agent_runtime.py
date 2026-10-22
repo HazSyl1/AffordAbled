@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Annotated, Any, TypedDict
 
 import pytest
@@ -18,6 +19,8 @@ from app.infrastructure.ai.agents.analytics import AnalyticsToolset
 from app.infrastructure.ai.agents.brains import scoped_specialist_decision_schema
 from app.infrastructure.ai.agents.contracts import HandoffContext, SpecialistDecision, ToolAction
 from app.infrastructure.ai.agents.runtime import (
+    _TOOL_DESCRIPTIONS,
+    _TOOL_SCHEMAS,
     SpecialistRuntime,
     ToolBoundSpecialistRuntime,
     _persistent_tool_context,
@@ -32,6 +35,76 @@ class ScriptedBrain:
 
     async def decide(self, _context, _observations):
         return self._decisions.pop(0)
+
+
+def test_every_registered_specialist_tool_has_a_schema_and_description() -> None:
+    registered_tools = {
+        'list_accounts', 'create_account', 'update_account', 'set_default_account', 'delete_account',
+        'rename_account', 'activate_account', 'deactivate_account', 'list_categories', 'create_category',
+        'update_category', 'delete_category', 'extract_transaction', 'list_transactions', 'create_transaction',
+        'update_transaction', 'delete_transaction', 'restore_transaction', 'create_transaction_batch',
+        'list_split_contacts', 'set_split_contact_preference', 'create_split', 'create_owed',
+        'create_settlement_draft', 'get_split_summary', 'get_account_balances', 'get_transactions',
+        'get_spending_summary', 'get_spending_by_account', 'get_spending_comparison',
+        'create_transaction_report',
+    }
+
+    assert registered_tools <= _TOOL_SCHEMAS.keys()
+    assert registered_tools <= _TOOL_DESCRIPTIONS.keys()
+
+
+def test_query_tool_schemas_expose_filters_ordering_dates_and_limits() -> None:
+    transaction_input = _TOOL_SCHEMAS['get_transactions'].model_validate({
+        'arguments': {
+            'mode': 'relative_range', 'transaction_type': 'expense', 'category_name': 'Food',
+            'account_name': 'Axis', 'order_by': 'amount', 'sort_order': 'desc', 'limit': 3,
+        }
+    })
+    comparison_input = _TOOL_SCHEMAS['get_spending_comparison'].model_validate({
+        'arguments': {
+            'date_period': 'this_week', 'comparison_period': 'last_week', 'category_name': 'Food',
+        }
+    })
+    split_input = _TOOL_SCHEMAS['get_split_summary'].model_validate({
+        'arguments': {
+            'kind': 'expense_split', 'status': 'outstanding', 'order_by': 'outstanding',
+            'sort_order': 'desc', 'limit': 5,
+        }
+    })
+
+    assert transaction_input.arguments.category_name == 'Food'
+    assert comparison_input.arguments.comparison_period == 'last_week'
+    assert split_input.arguments.limit == 5
+
+
+@pytest.mark.asyncio
+async def test_split_summary_limit_keeps_totals_for_all_matching_rows() -> None:
+    class SplitServiceStub:
+        async def list_for_user(self, _user_id: uuid.UUID) -> list[SimpleNamespace]:
+            return [
+                SimpleNamespace(
+                    id=uuid.uuid4(), transaction_id=uuid.uuid4(), title='Large', owner_share_paise=100,
+                    created_at=datetime(2026, 10, 2, tzinfo=UTC),
+                    participants=[SimpleNamespace(name='A', share_paise=900, settled_paise=0)],
+                ),
+                SimpleNamespace(
+                    id=uuid.uuid4(), transaction_id=None, title='Small', owner_share_paise=0,
+                    created_at=datetime(2026, 10, 1, tzinfo=UTC),
+                    participants=[SimpleNamespace(name='B', share_paise=300, settled_paise=0)],
+                ),
+            ]
+
+    tools = AnalyticsToolset(None, split_service=SplitServiceStub())  # type: ignore[arg-type]
+    context = HandoffContext(user_id=uuid.uuid4(), request='largest outstanding split')
+
+    result = await tools.get_split_summary(context, {
+        'status': 'outstanding', 'order_by': 'outstanding', 'sort_order': 'desc', 'limit': 1,
+    })
+
+    assert result['total_outstanding_paise'] == 1200
+    assert result['matching_split_count'] == 2
+    assert result['truncated_split_count'] == 1
+    assert [item['title'] for item in result['splits']] == ['Large']
 
 
 def test_tool_error_diagnostics_stay_within_observation_limit() -> None:
@@ -73,6 +146,8 @@ def test_persistent_tool_context_includes_recent_conversation_history() -> None:
         "get_split_summary",
         "get_account_balances",
         "get_transactions",
+        "get_spending_summary",
+        "get_spending_by_account",
         "create_transaction_report",
         "extract_transaction",
         "delete_account",
@@ -143,6 +218,48 @@ async def test_zero_argument_tool_runs_through_tool_node_with_injected_state() -
 
     assert len(calls) == 1
     assert calls[0][0].history == [{"role": "user", "content": "List split contacts"}]
+
+
+@pytest.mark.asyncio
+async def test_quantity_remainder_split_does_not_offer_complex_draft_tool() -> None:
+    class SharedState(TypedDict, total=False):
+        specialist_messages: Annotated[list[BaseMessage], add_messages]
+        specialist_steps: int
+        task_request: str
+
+    invoked_with: list[set[str]] = []
+
+    class TrackingModel:
+        def bind_tools(self, tools: list[Any], **_kwargs: Any) -> RunnableLambda:
+            names = {tool.name for tool in tools}
+
+            async def respond(_messages: list[BaseMessage]) -> AIMessage:
+                invoked_with.append(names)
+                return AIMessage(content="Ready to calculate the split.")
+
+            return RunnableLambda(respond)
+
+    async def unused(_context: HandoffContext, _arguments: dict[str, Any]) -> dict[str, Any]:
+        raise AssertionError("The model should only inspect the available tools.")
+
+    runtime = ToolBoundSpecialistRuntime(
+        name="split", llm=TrackingModel(), system_prompt="",
+        tools={"create_split": unused, "create_settlement_draft": unused},
+    )
+    graph = runtime.build_persistent_subgraph(SharedState)
+    request = (
+        "Spent 927383 rs on A, B, C, D, E, F, G and myself. A, B and C got 7 vodka cranberries "
+        "each, which were 7000rs each. Rest of the bill divided equally. A owes C 17000, "
+        "B contributed 29000, and C owes B 20000."
+    )
+    await graph.ainvoke({"specialist_messages": [HumanMessage(content=request)], "task_request": request})
+    assert "create_split" in invoked_with[-1]
+    assert "create_settlement_draft" not in invoked_with[-1]
+
+    complex_request = request + " Apply a 10% coupon to the bill."
+    await graph.ainvoke({"specialist_messages": [HumanMessage(content=complex_request)],
+                         "task_request": complex_request})
+    assert "create_settlement_draft" in invoked_with[-1]
 
 
 @pytest.mark.asyncio
@@ -366,6 +483,85 @@ async def test_analytics_period_comparison_is_scoped_to_handoff_user_and_timezon
     assert queries.window_args == ("this_month", "last_month", "Asia/Kolkata")
     assert queries.comparison_args["user_id"] == user_id
     assert result == {"direction": "higher", "delta_paise": 100}
+
+
+@pytest.mark.asyncio
+async def test_spending_tools_resolve_missing_dates_from_relative_request() -> None:
+    user_id = uuid.uuid4()
+    expected_from = datetime(2026, 10, 19, 18, 30, tzinfo=UTC)
+    expected_to = datetime(2026, 10, 22, 12, 0, tzinfo=UTC)
+
+    class SpendingQueries:
+        def __init__(self) -> None:
+            self.resolve_calls: list[tuple[str, str]] = []
+            self.summary_args: dict[str, object] = {}
+            self.account_args: dict[str, object] = {}
+
+        def resolve_date_window(self, request: str, *, timezone_name: str) -> tuple[datetime, datetime]:
+            self.resolve_calls.append((request, timezone_name))
+            return expected_from, expected_to
+
+        async def get_spending_summary(self, **kwargs: object) -> dict[str, object]:
+            self.summary_args = kwargs
+            return {"total_paise": 9900}
+
+        async def get_spending_by_account(self, **kwargs: object) -> dict[str, object]:
+            self.account_args = kwargs
+            return {"accounts": []}
+
+    queries = SpendingQueries()
+    tools = AnalyticsToolset(queries)  # type: ignore[arg-type]
+    context = HandoffContext(
+        user_id=user_id, request="what did I spend the most on this week", timezone="Asia/Kolkata"
+    )
+
+    assert await tools.get_spending_summary(context, {}) == {"total_paise": 9900}
+    assert await tools.get_spending_by_account(context, {}) == {"accounts": []}
+    assert queries.resolve_calls == [
+        (context.request, "Asia/Kolkata"),
+        (context.request, "Asia/Kolkata"),
+    ]
+    assert queries.summary_args == {
+        "user_id": user_id, "date_from": expected_from, "date_to": expected_to,
+    }
+    assert queries.account_args == {
+        "user_id": user_id, "date_from": expected_from, "date_to": expected_to, "limit": 10,
+    }
+
+
+@pytest.mark.asyncio
+async def test_spending_tools_reject_partial_explicit_date_range() -> None:
+    context = HandoffContext(user_id=uuid.uuid4(), request="spending", timezone="Asia/Kolkata")
+    with pytest.raises(ValueError, match="both date_from and date_to"):
+        await AnalyticsToolset(_ComparisonQueries()).get_spending_summary(  # type: ignore[arg-type]
+            context, {"date_from": "2026-10-20T00:00:00+00:00"},
+        )
+
+
+@pytest.mark.asyncio
+async def test_largest_spending_transaction_uses_amount_ranking_and_expense_filter() -> None:
+    class RankedQueries:
+        def __init__(self) -> None:
+            self.query_args: dict[str, object] = {}
+
+        async def get_transactions(self, **kwargs: object) -> list[dict[str, object]]:
+            self.query_args = kwargs
+            return [{"id": "largest", "amount_paise": 99900, "type": "expense"}]
+
+    queries = RankedQueries()
+    context = HandoffContext(
+        user_id=uuid.uuid4(), request="which transaction I spent most on", timezone="Asia/Kolkata"
+    )
+
+    result = await AnalyticsToolset(queries).get_transactions(context, {})  # type: ignore[arg-type]
+
+    assert result["transactions"][0]["id"] == "largest"
+    assert queries.query_args["date_from"] == datetime(1970, 1, 1, tzinfo=UTC)
+    assert queries.query_args["transaction_type"].value == "expense"  # type: ignore[union-attr]
+    assert queries.query_args["order_by"] == "amount"
+    assert queries.query_args["sort_order"] == "desc"
+    assert queries.query_args["limit"] == 1
+    assert result["order_by"] == "amount"
 
 
 @pytest.mark.asyncio

@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.services.account_service import AccountService
 from app.application.services.category_service import CategoryService
+from app.application.services.complex_settlement_service import ComplexSettlementService
 from app.application.services.export_service import ExportService
 from app.application.services.split_service import SplitService
 from app.application.services.transaction_service import TransactionService
@@ -40,9 +41,20 @@ from app.infrastructure.ai.agents.runtime import ToolBoundSpecialistRuntime
 from app.infrastructure.ai.agents.split import SplitToolset
 from app.infrastructure.ai.agents.transaction import TransactionToolset
 from app.infrastructure.ai.tools.transaction_query_tools import TransactionQueryTools
+from app.infrastructure.database.repositories.sqlalchemy_complex_settlement_repository import (
+    SqlAlchemyComplexSettlementRepository,
+)
 from app.infrastructure.database.repositories.sqlalchemy_memory_repository import SqlAlchemyMemoryRepository
 
 _MAX_REROUTES = 3
+
+
+def _is_complex_settlement_request(request: str) -> bool:
+    """Route group bill adjustments to a review draft before any expense is recorded."""
+    text = request.casefold()
+    group = re.search(r'\b(?:split|shared|share|among|divided|people|friends?)\b', text)
+    adjustment = re.search(r'\b(?:discount|coupon|tip|fee|fees|multiple bills?|cafes?)\b', text)
+    return bool(group and adjustment and re.search(r'\b(?:bill|meal|expense|spent|paid|transaction)\b', text))
 _MUTATION_TOOLS = {
     "create_category",
     "update_category",
@@ -64,6 +76,8 @@ _MUTATION_TOOLS = {
 
 
 def _split_task_for_request(request: str) -> str | None:
+    if _is_complex_settlement_request(request):
+        return None
     normalized = request.casefold()
     # Receipt workflow instructions mention splitting as a later optional step;
     # those words are not consent to queue a split with the original transaction.
@@ -301,6 +315,8 @@ def _matches_observed_action(task: str, action: dict[str, Any]) -> bool:
             _mentions(task, str(split.get("title") or ""))
             or any(_mentions(task, str(person.get("name") or "")) for person in split.get("participants", []))
         )
+    if tool == 'create_settlement_draft':
+        return _is_complex_settlement_request(task) and bool((data.get('settlement_draft') or {}).get('id'))
     if tool == "create_owed":
         receivable = data.get('receivable') or {}
         return (
@@ -323,8 +339,10 @@ def _matches_observed_action(task: str, action: dict[str, Any]) -> bool:
             _mentions(task, word) for word in ("spending", "spent", "breakdown")
         )
     if tool == "get_spending_summary":
-        return any(_mentions(task, word) for word in ("spending", "spend", "spent")) and any(
-            _mentions(task, word) for word in ("summary", "total", "much")
+        return "transaction" not in normalized_task and any(
+            _mentions(task, word) for word in ("spending", "spend", "spent")
+        ) and any(
+            _mentions(task, word) for word in ("summary", "total", "much", "most")
         )
     if tool == "create_transaction_report":
         return bool(data.get("export_id")) and any(
@@ -460,6 +478,8 @@ def _required_tools(task: str, specialist: str | None) -> set[str] | None:
         ):
             return {"create_transaction", "create_transaction_batch"}
     if specialist == "split":
+        if _is_complex_settlement_request(task):
+            return {"create_settlement_draft"}
         if says('owe', 'owes', 'owed', 'pay me', 'repay me') and not says('split', 'shared', 'participants'):
             return {"create_owed"}
         if says("split", "shared", "participants") and not says('remember', 'save preference'):
@@ -474,6 +494,8 @@ def _required_tools(task: str, specialist: str | None) -> set[str] | None:
 def _obvious_specialist(task: str) -> str | None:
     """Keep an actionable first turn from being finished before any tool runs."""
     normalized = task.casefold()
+    if _is_complex_settlement_request(task):
+        return 'split'
     wants_report_file = any(
         _mentions(task, word) for word in ("export", "download", "csv", "xlsx", "excel", "pdf")
     )
@@ -547,7 +569,7 @@ def _obvious_specialist(task: str) -> str | None:
     if any(_mentions(task, word) for word in ("owe", "owed", "remaining", "outstanding", "splits")):
         return "analytics"
     if any(_mentions(task, word) for word in ("spend", "spent")) and any(
-        _mentions(task, word) for word in ("how", "much", "compare", "total")
+        _mentions(task, word) for word in ("how", "much", "compare", "total", "most")
     ):
         return "analytics"
     return None
@@ -555,6 +577,8 @@ def _obvious_specialist(task: str) -> str | None:
 
 def _fast_route_specialist(task: str) -> str | None:
     """Return a high-confidence route only for a clearly single-domain request."""
+    if _is_complex_settlement_request(task):
+        return 'split'
     if _explicit_action_clauses(task) or _split_task_for_request(task) or _is_receipt_upload_request(task):
         return None
     # Keep connectors that often indicate separate work on the LLM planning path.
@@ -945,7 +969,14 @@ class AgenticSupervisorGraph:
         transaction_tools = TransactionToolset(transaction_service, extraction_agent=extraction_agent).registry()
         analytics_tools = AnalyticsToolset(query_tools, split_service=split_service).registry()
         export_tools = ExportToolset(export_service).registry() if export_service else {}
-        split_tools = SplitToolset(split_service, transaction_service).registry() if split_service else {}
+        complex_settlements = (
+            ComplexSettlementService(SqlAlchemyComplexSettlementRepository(db_session))
+            if db_session is not None else None
+        )
+        split_tools = (
+            SplitToolset(split_service, transaction_service, complex_settlements).registry()
+            if split_service else {}
+        )
         tool_lock = asyncio.Lock()
         self._specialists = {
             "category": ToolBoundSpecialistRuntime(
@@ -976,7 +1007,7 @@ class AgenticSupervisorGraph:
             ),
             "split": ToolBoundSpecialistRuntime(
                 name="split", llm=split_llm, system_prompt=SPLIT_PROMPT,
-                tools=split_tools, non_retryable_tools={"create_split", "create_owed"},
+                tools=split_tools, non_retryable_tools={"create_split", "create_owed", "create_settlement_draft"},
                 db_session=db_session, tool_lock=tool_lock,
             ),
             "analytics": ToolBoundSpecialistRuntime(
@@ -1426,6 +1457,22 @@ class AgenticSupervisorGraph:
             }
         if latest_result.get("status") in {"success", "partial"}:
             observed_actions = (latest_result.get("data") or {}).get("observed_actions") or []
+            draft_action = next((
+                action for action in reversed(observed_actions)
+                if action.get('tool') == 'create_settlement_draft'
+                and (action.get('data') or {}).get('settlement_draft', {}).get('id')
+            ), None)
+            if draft_action is not None:
+                draft = draft_action['data']['settlement_draft']
+                return {
+                    'final_response': (
+                        f"I prepared a review for {draft['title']} across {draft['bill_count']} bill(s). "
+                        'Check every amount and person before saving. No wallet transaction has been recorded yet.\n'
+                        f"[[settlement:{draft['id']}]]"
+                    ),
+                    'next_specialist': None, 'task_queue': [], 'tasks_completed': False,
+                    'awaiting_user_input': False, 'show_completion_popup': False,
+                }
             remaining_tasks, satisfied_tasks = _reconcile_task_queue(
                 task_queue,
                 observed_actions,

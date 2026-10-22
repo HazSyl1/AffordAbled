@@ -508,10 +508,14 @@ async def test_account_balances_are_user_scoped_active_and_filterable_by_exact_n
     )
 
     all_balances = await query_tools.get_account_balances(user_id=user_id)
+    highest_balance = await query_tools.get_account_balances(
+        user_id=user_id, order_by='balance', sort_order='desc', limit=1,
+    )
     one_balance = await query_tools.get_account_balances(user_id=user_id, account_names=['savings'])
     not_found = await query_tools.get_account_balances(user_id=user_id, account_names=['Private'])
 
     assert [account['name'] for account in all_balances['accounts']] == ['Checking', 'Savings']
+    assert [account['name'] for account in highest_balance['accounts']] == ['Savings']
     assert [account['name'] for account in one_balance['accounts']] == ['Savings']
     assert one_balance['accounts'][0]['balance_paise'] == 50000
     assert one_balance['accounts'][0]['balance_display'] == 'INR 500.00'
@@ -700,3 +704,70 @@ async def test_transaction_query_returns_newest_rows_before_applying_limit() -> 
     )
 
     assert [transaction['merchant'] for transaction in result] == ['Merchant 11', 'Merchant 10', 'Merchant 9']
+
+
+@pytest.mark.asyncio
+async def test_transaction_query_can_rank_largest_expense_before_applying_limit() -> None:
+    user_id = uuid.uuid4()
+    base = datetime(2026, 10, 1, tzinfo=UTC)
+    transactions = [
+        Transaction(
+            id=uuid.uuid4(), user_id=user_id, account_id=uuid.uuid4(), to_account_id=None,
+            category_id=None, type=transaction_type, amount_paise=amount_paise,
+            merchant=merchant, note=None, occurred_at=base + timedelta(days=day), deleted_at=None,
+            created_at=base + timedelta(days=day), updated_at=base + timedelta(days=day),
+        )
+        for merchant, amount_paise, day, transaction_type in [
+            ('Recent small expense', 10_000, 3, TransactionType.EXPENSE),
+            ('Largest expense', 90_000, 1, TransactionType.EXPENSE),
+            ('Larger income', 200_000, 2, TransactionType.INCOME),
+        ]
+    ]
+    query_tools = TransactionQueryTools(
+        transaction_repository=StubTransactionRepository(transactions),
+        account_repository=StubAccountRepository(),
+        category_repository=StubCategoryRepository([]),
+    )
+
+    result = await query_tools.get_transactions(
+        user_id=user_id, date_from=base, date_to=base + timedelta(days=5), limit=1,
+        transaction_type=TransactionType.EXPENSE, order_by='amount', sort_order='desc',
+    )
+
+    assert [transaction['merchant'] for transaction in result] == ['Largest expense']
+
+
+@pytest.mark.asyncio
+async def test_transaction_query_combines_account_category_and_amount_ranking_filters() -> None:
+    user_id = uuid.uuid4()
+    axis_id = uuid.uuid4()
+    cash_id = uuid.uuid4()
+    food_id = uuid.uuid4()
+    shopping_id = uuid.uuid4()
+    base = datetime(2026, 10, 1, tzinfo=UTC)
+
+    def transaction(merchant: str, amount: int, account_id: uuid.UUID, category_id: uuid.UUID) -> Transaction:
+        return Transaction(
+            id=uuid.uuid4(), user_id=user_id, account_id=account_id, to_account_id=None,
+            category_id=category_id, type=TransactionType.EXPENSE, amount_paise=amount,
+            merchant=merchant, note=None, occurred_at=base, deleted_at=None,
+            created_at=base, updated_at=base,
+        )
+
+    query_tools = TransactionQueryTools(
+        transaction_repository=StubTransactionRepository([
+            transaction('Axis Food', 90_000, axis_id, food_id),
+            transaction('Cash Food', 100_000, cash_id, food_id),
+            transaction('Axis Shopping', 120_000, axis_id, shopping_id),
+        ]),
+        account_repository=StubAccountRepository(),
+        category_repository=StubCategoryRepository([]),
+    )
+
+    result = await query_tools.get_transactions(
+        user_id=user_id, date_from=base - timedelta(days=1), date_to=base + timedelta(days=1),
+        account_id=axis_id, category_id=food_id, transaction_type=TransactionType.EXPENSE,
+        order_by='amount', sort_order='desc', limit=1,
+    )
+
+    assert [transaction['merchant'] for transaction in result] == ['Axis Food']

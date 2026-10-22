@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 
+import { PageLoader } from '../components/molecules/PageLoader';
 import { useRefreshSessionMutation } from '../features/auth/authApi';
 import { setCredentials } from '../features/auth/authSlice';
 import { useAppDispatch } from './hooks';
@@ -40,7 +41,7 @@ export function AppInitializer({ children }: { children: ReactNode }) {
   }, [dispatch, refreshSession]);
 
   if (isChecking) {
-    return <p>Loading…</p>;
+    return <PageLoader />;
   }
 
   return <>{children}</>;

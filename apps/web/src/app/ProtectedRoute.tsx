@@ -1,6 +1,7 @@
 import { Navigate, Outlet } from 'react-router-dom';
 
 import { Button } from '../components/atoms/Button';
+import { PageLoader } from '../components/molecules/PageLoader';
 import { CreateAccountForm } from '../components/organisms/CreateAccountForm';
 import { Layout } from '../components/templates/Layout';
 import { APP_NAME } from '../constants';
@@ -16,11 +17,7 @@ export function ProtectedRoute() {
   }
 
   if (isLoading) {
-    return (
-      <main className='flex min-h-screen items-center justify-center bg-[var(--bg-app)] px-4 text-sm text-[var(--text-secondary)]' aria-live='polite'>
-        Loading your wallet...
-      </main>
-    );
+    return <PageLoader />;
   }
 
   if (isError) {

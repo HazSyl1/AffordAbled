@@ -196,6 +196,7 @@ class BatchMutationLLM:
 
         return RunnableLambda(respond)
 
+
     def bind_tools(self, _tools: list[Any], **_kwargs: Any) -> RunnableLambda:
         async def respond(messages: list[Any]) -> AIMessage:
             assert f"{self.specialist} specialist" in str(messages[0].content).casefold()
@@ -217,6 +218,39 @@ class BatchMutationLLM:
             return AIMessage(content=self.specialist_reply)
 
         return RunnableLambda(respond)
+
+
+@pytest.mark.asyncio
+async def test_complex_chat_bill_creates_review_draft_before_expense(client: AsyncClient, app: FastAPI) -> None:
+    token = await register_and_get_token(client, 'complex-chat@example.com')
+    message = 'I paid 102 rupees for food shared with A, including a 2 rupee card fee that A covers.'
+    llm = BatchMutationLLM(
+        'split', [message], [('create_settlement_draft', {'arguments': {'data': {
+            'title': 'Shared food', 'participants': ['You', 'A'], 'debts': [],
+            'bills': [{
+                'id': 'meal', 'merchant': 'Food',
+                'charges': [{'id': 'food', 'label': 'Food', 'amount_paise': 10000,
+                             'shared_by': ['You', 'A'],
+                             'source_quote': '102 rupees for food shared with A, including a 2 rupee card fee'}],
+                'discounts': [],
+                'extras': [{'label': 'Card fee', 'kind': 'fee', 'amount_paise': 200,
+                            'shared_by': ['A']}],
+                'payments': [{'person': 'You', 'amount_paise': 10200}],
+            }],
+        }}})], 'Draft prepared.', specialist_reply='Draft prepared.',
+    )
+    app.dependency_overrides[get_semantic_guardrail] = lambda: AllowingGuardrail()
+    app.dependency_overrides[get_transaction_extraction_llm] = lambda: llm
+    try:
+        response = await client.post('/api/v1/chat', json={'message': message}, headers=auth_headers(token))
+        assert response.status_code == 200, response.text
+        assert response.json()['show_completion_popup'] is False
+        assert response.json()['transaction_logged'] is False
+        assert '[[settlement:' in response.json()['message']
+        assert (await client.get('/api/v1/transactions', headers=auth_headers(token))).json() == []
+    finally:
+        app.dependency_overrides.pop(get_semantic_guardrail, None)
+        app.dependency_overrides.pop(get_transaction_extraction_llm, None)
 
 
 @pytest.mark.asyncio

@@ -28,6 +28,9 @@ class TransactionQueryTools:
         limit: int = 10,
         transaction_type: TransactionType | None = None,
         category_id: uuid.UUID | None = None,
+        account_id: uuid.UUID | None = None,
+        order_by: str = "occurred_at",
+        sort_order: str = "desc",
     ) -> list[dict[str, Any]]:
         account_names = await self._account_names_for_user(user_id)
         category_names = await self._category_names_for_user(user_id)
@@ -35,12 +38,25 @@ class TransactionQueryTools:
         normalized_date_from = self._to_utc_datetime(date_from)
         normalized_date_to = self._to_utc_datetime(date_to)
 
+        if order_by not in {"occurred_at", "amount"}:
+            raise ValueError("order_by must be occurred_at or amount")
+        if sort_order not in {"asc", "desc"}:
+            raise ValueError("sort_order must be asc or desc")
+
         capped_limit = max(1, min(limit, 25))
         # The analytics layer uses the Unix epoch as a sentinel for a
         # standalone relative request (for example, "previous transaction").
         # Use the repository's indexed recent query directly instead of
         # scanning a 1970-to-now date window.
-        if normalized_date_from.year <= 1970 and hasattr(self.transaction_repository, 'list_recent_for_user'):
+        if (
+            normalized_date_from.year <= 1970
+            and order_by == "occurred_at"
+            and sort_order == "desc"
+            and transaction_type is None
+            and category_id is None
+            and account_id is None
+            and hasattr(self.transaction_repository, 'list_recent_for_user')
+        ):
             selected_transactions = await self.transaction_repository.list_recent_for_user(
                 user_id, limit=capped_limit,
             )
@@ -52,6 +68,9 @@ class TransactionQueryTools:
                 limit=capped_limit,
                 transaction_type=transaction_type,
                 category_id=category_id,
+                account_id=account_id,
+                order_by=order_by,
+                sort_order=sort_order,
             )
         else:
             transactions = await self.transaction_repository.list_for_user(user_id)
@@ -61,15 +80,22 @@ class TransactionQueryTools:
                 if normalized_date_from <= self._to_utc_datetime(transaction.occurred_at) <= normalized_date_to
                 and (transaction_type is None or transaction.type == transaction_type)
                 and (category_id is None or transaction.category_id == category_id)
+                and (account_id is None or transaction.account_id == account_id)
             ]
-            scoped_transactions.sort(
-                key=lambda transaction: (
+            def sort_key(transaction: Any) -> tuple[Any, ...]:
+                if order_by == "amount":
+                    return (
+                        transaction.amount_paise,
+                        self._to_utc_datetime(transaction.occurred_at),
+                        self._to_utc_datetime(transaction.created_at),
+                        str(transaction.id),
+                    )
+                return (
                     self._to_utc_datetime(transaction.occurred_at),
                     self._to_utc_datetime(transaction.created_at),
                     str(transaction.id),
-                ),
-                reverse=True,
-            )
+                )
+            scoped_transactions.sort(key=sort_key, reverse=sort_order == "desc")
             selected_transactions = scoped_transactions[:capped_limit]
         return [
             {
@@ -92,8 +118,15 @@ class TransactionQueryTools:
         *,
         user_id: uuid.UUID,
         account_names: list[str] | None = None,
+        account_types: list[str] | None = None,
+        order_by: str = 'default',
+        sort_order: str = 'asc',
+        limit: int = 25,
     ) -> dict[str, Any]:
         accounts = [account for account in await self.account_repository.list_for_user(user_id) if account.is_active]
+        requested_types = {str(value).strip().casefold() for value in (account_types or []) if str(value).strip()}
+        if requested_types:
+            accounts = [account for account in accounts if account.type.value.casefold() in requested_types]
         requested_names = list(dict.fromkeys(name.strip() for name in (account_names or []) if name.strip()))
         if not requested_names:
             selected_accounts = accounts
@@ -120,9 +153,21 @@ class TransactionQueryTools:
                     }
                 selected_accounts.append(matches[0])
 
-        selected_accounts.sort(key=lambda account: (not account.is_default, account.name.casefold()))
+        if order_by not in {'default', 'name', 'balance'}:
+            raise ValueError('order_by must be default, name, or balance')
+        if sort_order not in {'asc', 'desc'}:
+            raise ValueError('sort_order must be asc or desc')
+        if order_by == 'balance':
+            selected_accounts.sort(
+                key=lambda account: (int(account.balance_paise), account.name.casefold()),
+                reverse=sort_order == 'desc',
+            )
+        elif order_by == 'name':
+            selected_accounts.sort(key=lambda account: account.name.casefold(), reverse=sort_order == 'desc')
+        else:
+            selected_accounts.sort(key=lambda account: (not account.is_default, account.name.casefold()))
         total_account_count = len(selected_accounts)
-        bounded_accounts = selected_accounts[:25]
+        bounded_accounts = selected_accounts[:max(1, min(int(limit), 25))]
 
         return {
             'status': 'ok',
@@ -149,6 +194,9 @@ class TransactionQueryTools:
         date_from: datetime,
         date_to: datetime,
         category_id: uuid.UUID | None = None,
+        order_by: str = 'amount',
+        sort_order: str = 'desc',
+        limit: int = 5,
     ) -> dict[str, Any]:
         categories = await self.category_repository.list_for_user(user_id)
         expense_category_names = {
@@ -192,16 +240,26 @@ class TransactionQueryTools:
                 )
                 by_category[category_label] = by_category.get(category_label, 0) + transaction.amount_paise
 
-        sorted_categories = sorted(by_category.items(), key=lambda item: item[1], reverse=True)
+        if order_by not in {'amount', 'name'}:
+            raise ValueError('order_by must be amount or name')
+        if sort_order not in {'asc', 'desc'}:
+            raise ValueError('sort_order must be asc or desc')
+        if order_by == 'name':
+            sorted_categories = sorted(
+                by_category.items(), key=lambda item: item[0].casefold(), reverse=sort_order == 'desc'
+            )
+        else:
+            sorted_categories = sorted(by_category.items(), key=lambda item: item[1], reverse=sort_order == 'desc')
+        bounded_limit = max(1, min(int(limit), 25))
         return {
             'total_spent_paise': total_spent_paise,
             'transaction_count': transaction_count,
             'top_categories': [
                 {'category_name': category_name, 'amount_paise': amount_paise}
-                for category_name, amount_paise in sorted_categories[:5]
+                for category_name, amount_paise in sorted_categories[:bounded_limit]
             ],
             'category_count': len(sorted_categories),
-            'truncated_category_count': max(0, len(sorted_categories) - 5),
+            'truncated_category_count': max(0, len(sorted_categories) - bounded_limit),
             'date_from': date_from.isoformat(),
             'date_to': date_to.isoformat(),
         }
@@ -214,9 +272,12 @@ class TransactionQueryTools:
         date_to: datetime,
         category_id: uuid.UUID | None = None,
         limit: int = 10,
+        account_names: list[str] | None = None,
+        order_by: str = 'amount',
+        sort_order: str = 'desc',
     ) -> dict[str, Any]:
         accounts = [account for account in await self.account_repository.list_for_user(user_id) if account.is_active]
-        account_names = {account.id: account.name for account in accounts}
+        account_name_by_id = {account.id: account.name for account in accounts}
         start = self._to_utc_datetime(date_from)
         end = self._to_utc_datetime(date_to)
         if hasattr(self.transaction_repository, 'spending_by_account_for_user'):
@@ -226,13 +287,13 @@ class TransactionQueryTools:
             breakdowns = [
                 {
                     'account_id': str(row['account_id']),
-                    'account_name': account_names.get(row['account_id'], 'Unknown account'),
+                    'account_name': account_name_by_id.get(row['account_id'], 'Unknown account'),
                     'total_spent_paise': int(row['total_spent_paise']),
                     'transaction_count': int(row['transaction_count']),
                     'total_spent_display': self._format_paise(int(row['total_spent_paise'])),
                 }
                 for row in grouped_rows
-                if row['account_id'] in account_names
+                if row['account_id'] in account_name_by_id
             ]
         else:
             transactions = await self.transaction_repository.list_for_user(user_id)
@@ -240,7 +301,7 @@ class TransactionQueryTools:
             for transaction in transactions:
                 if (
                     transaction.type != TransactionType.EXPENSE
-                    or transaction.account_id not in account_names
+                    or transaction.account_id not in account_name_by_id
                     or not start <= self._to_utc_datetime(transaction.occurred_at) <= end
                     or (category_id is not None and transaction.category_id != category_id)
                 ):
@@ -251,14 +312,31 @@ class TransactionQueryTools:
             breakdowns = [
                 {
                     'account_id': str(account_id),
-                    'account_name': account_names[account_id],
+                    'account_name': account_name_by_id[account_id],
                     **totals,
                     'total_spent_display': self._format_paise(totals['total_spent_paise']),
                 }
                 for account_id, totals in grouped.items()
             ]
-        breakdowns.sort(key=lambda item: (-item['total_spent_paise'], item['account_name'].casefold()))
-        bounded_limit = max(1, min(int(limit), 10))
+        requested_names = {self._normalize_lookup_text(name) for name in (account_names or []) if name.strip()}
+        if requested_names:
+            breakdowns = [
+                item for item in breakdowns
+                if self._normalize_lookup_text(str(item['account_name'])) in requested_names
+            ]
+        if order_by not in {'amount', 'transaction_count', 'name'}:
+            raise ValueError('order_by must be amount, transaction_count, or name')
+        if sort_order not in {'asc', 'desc'}:
+            raise ValueError('sort_order must be asc or desc')
+        if order_by == 'name':
+            breakdowns.sort(key=lambda item: item['account_name'].casefold(), reverse=sort_order == 'desc')
+        else:
+            key_name = 'transaction_count' if order_by == 'transaction_count' else 'total_spent_paise'
+            breakdowns.sort(
+                key=lambda item: (item[key_name], item['account_name'].casefold()),
+                reverse=sort_order == 'desc',
+            )
+        bounded_limit = max(1, min(int(limit), 25))
         total_spent_paise = sum(item['total_spent_paise'] for item in breakdowns)
         return {
             'total_spent_paise': total_spent_paise,
@@ -390,6 +468,33 @@ class TransactionQueryTools:
         if len(best_matches) != 1:
             return None, True
         return best_matches[0], False
+
+    async def resolve_account_id(self, *, user_id: uuid.UUID, account_name: str) -> uuid.UUID:
+        normalized_name = self._normalize_lookup_text(account_name)
+        matches = [
+            account for account in await self.account_repository.list_for_user(user_id)
+            if account.is_active and self._normalize_lookup_text(account.name) == normalized_name
+        ]
+        if not matches:
+            raise ValueError(f'Active account was not found: {account_name}')
+        if len(matches) > 1:
+            raise ValueError(f'Active account name is ambiguous: {account_name}')
+        return matches[0].id
+
+    async def resolve_category_id(
+        self, *, user_id: uuid.UUID, category_name: str, category_type: CategoryType | None = None,
+    ) -> uuid.UUID:
+        normalized_name = self._normalize_lookup_text(category_name)
+        matches = [
+            category for category in await self.category_repository.list_for_user(user_id)
+            if self._normalize_lookup_text(category.name) == normalized_name
+            and (category_type is None or category.type == category_type)
+        ]
+        if not matches:
+            raise ValueError(f'Category was not found: {category_name}')
+        if len(matches) > 1:
+            raise ValueError(f'Category name is ambiguous: {category_name}')
+        return matches[0].id
 
     @staticmethod
     def resolve_date_window(

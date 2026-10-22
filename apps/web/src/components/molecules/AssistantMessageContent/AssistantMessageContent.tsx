@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { ReactNode } from 'react';
+import { Link } from 'react-router-dom';
 
 import { useLazyGetTransactionExportDownloadUrlQuery } from '../../../features/transactions/transactionFilesApi';
 import { API_BASE_URL } from '../../../lib/env';
@@ -11,9 +12,11 @@ interface AssistantMessageContentProps {
 type ContentBlock =
   | { kind: 'text'; content: string }
   | { kind: 'table'; headers: string[]; rows: string[][] }
-  | { kind: 'export'; exportId: string };
+  | { kind: 'export'; exportId: string }
+  | { kind: 'settlement'; draftId: string };
 
 const exportMarker = /^\[\[export:([0-9a-fA-F-]{36})\]\]$/;
+const settlementMarker = /^\[\[settlement:([0-9a-fA-F-]{36})\]\]$/;
 
 function ExportDownloadButton({ exportId }: { exportId: string }) {
   const [getDownloadUrl, { isFetching }] = useLazyGetTransactionExportDownloadUrlQuery();
@@ -77,6 +80,13 @@ function parseContent(content: string): ContentBlock[] {
       index += 1;
       continue;
     }
+    const settlementMatch = settlementMarker.exec(lines[index].trim());
+    if (settlementMatch) {
+      flushText();
+      blocks.push({ kind: 'settlement', draftId: settlementMatch[1] });
+      index += 1;
+      continue;
+    }
     if (index + 1 < lines.length && lines[index].includes('|') && isTableSeparator(lines[index + 1])) {
       const headers = splitTableRow(lines[index]);
       const rows: string[][] = [];
@@ -103,6 +113,12 @@ function parseContent(content: string): ContentBlock[] {
 function renderBlock(block: ContentBlock, index: number): ReactNode {
   if (block.kind === 'export') {
     return <ExportDownloadButton key={`export-${index}`} exportId={block.exportId} />;
+  }
+  if (block.kind === 'settlement') {
+    return <Link key={`settlement-${index}`} to={`/splits?draft=${block.draftId}`}
+      className='inline-block rounded-lg bg-[var(--brand-primary)] px-3 py-2 text-sm font-semibold text-white'>
+      Review settlement
+    </Link>;
   }
   if (block.kind === 'text') {
     return (

@@ -117,6 +117,9 @@ class SqlAlchemyTransactionRepository:
         offset: int = 0,
         transaction_type: TransactionType | None = None,
         category_id: uuid.UUID | None = None,
+        account_id: uuid.UUID | None = None,
+        order_by: str = "occurred_at",
+        sort_order: str = "desc",
     ) -> tuple[list[Transaction], int]:
         filters = [
             TransactionModel.user_id == user_id,
@@ -128,13 +131,20 @@ class SqlAlchemyTransactionRepository:
             filters.append(TransactionModel.type == transaction_type.value)
         if category_id is not None:
             filters.append(TransactionModel.category_id == category_id)
+        if account_id is not None:
+            filters.append(TransactionModel.account_id == account_id)
         count_result = await self._session.execute(select(func.count()).select_from(TransactionModel).where(*filters))
         total_count = int(count_result.scalar_one())
+        primary_order = TransactionModel.amount_paise if order_by == "amount" else TransactionModel.occurred_at
+        primary_order = primary_order.asc() if sort_order == "asc" else primary_order.desc()
         result = await self._session.execute(
             select(TransactionModel)
             .where(*filters)
             .order_by(
-                TransactionModel.occurred_at.desc(), TransactionModel.created_at.desc(), TransactionModel.id.desc()
+                primary_order,
+                TransactionModel.occurred_at.desc(),
+                TransactionModel.created_at.desc(),
+                TransactionModel.id.desc(),
             )
             .offset(max(0, offset))
             .limit(max(1, min(limit, 100)))

@@ -1,0 +1,19 @@
+# Group settlement plans
+
+Use **Splits → Plan group settlement** for purchases involving several bills, coupons, fees, tips, or payers. Chat can prepare the same draft when the user supplies enough facts; its **Review settlement** button opens the planner.
+
+Each bill has priced charges, the people sharing each charge, optional coupons, fees or tips, and actual payments. Coupons apply proportionally to the selected charges. By default a coupon applies before fees and tips; select **Apply coupon after fees and tips** when it covers the fee-inclusive bill. A percentage fee or tip uses the selected charges after any earlier coupon savings, or an explicit base amount. The people covering a fee can differ from the people sharing the meal. Existing debts between friends are separate from bill shares.
+
+Each priced item and fee/tip has an optional **Paid by** field for the person who actually paid the merchant. **Shared by** is the separate list of people who bear its cost. When every row has a payer, the planner groups the rows into payment records; the payment details section holds wallet account/category information. A bill with several payers and a coupon still needs each actual final payment amount. A charge paid jointly by several people uses the payment details section's explicit amounts instead of a single row payer.
+
+Percentages are stored as basis points: 2% is `rate_bps=200`, and the calculator derives ₹36 from a ₹1,800 fare. The `200` value is a rate, not a ₹200 fee.
+
+The calculator uses integer paise and checks that each bill's payments equal its calculated total. When a bill has one payer, their payment amount can be left blank and the calculator uses its final adjusted total. With multiple payers, a payment can be entered directly or calculated from the exact item, fee, and tip rows the person paid for. For example, a ₹1,000 item plus a 5% tip is ₹1,050. Every row used to derive a payment must have a unique ID; the same row cannot be used twice. If a coupon changes a selected row, enter the actual paid amount instead. A stated final bill total, when provided, must also match. Previewing a draft makes no wallet transaction. Confirming it records only the owner's new payments as expenses and links any existing owner expenses. Friends' payments affect settlement balances only. A promise to cover or repay a tip changes who bears the cost, but does not count as money already paid.
+
+The settlement plan nets what each person paid against what they consumed and any directed debts. Marking a payment between friends records its settled state without changing the owner's wallet. Marking a payment involving the owner creates the corresponding income or expense transaction. A revision recalculates outstanding transfers after subtracting transfers already marked settled; recorded wallet transactions remain linked and cannot be edited or deleted while linked.
+
+Example: add a dinner bill paid by You, a cafe bill paid by A, a 10% dinner coupon, a card fee covered by selected friends, and a cafe tip covered by E. Review the row allocations and final transfers, then confirm the entire plan. If the amount paid at a cafe or the fee base is unclear, clarify it before previewing.
+
+For a ₹17,000 meal with a 2.7% card fee on the original meal followed by a 10% coupon on the entire fee-inclusive bill: fee ₹459; coupon ₹1,745.90; final payment ₹15,713.10. Enter ₹17,000 as the charge, select the fee's original ₹17,000 base, and apply the coupon after fees. If one person paid the final bill, leave the payment amount blank to derive ₹15,713.10. If the coupon excludes the fee, its amount is ₹1,700 and the final bill is ₹15,759 instead.
+
+Deployment requires Alembic revision `u1_complex_settlement` (`alembic upgrade head`) before using the new endpoints. The API lives under `/api/v1/settlement-plans`.
