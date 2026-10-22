@@ -93,7 +93,6 @@ export const DASHBOARD_CHAT_UI_TEXT = {
   draftExpiryDisclaimer: 'Drafts expire automatically after 72 hours.',
   manualPrefillBadgeLabel: 'Manual Prefill',
   manualPrefillHint: 'Low confidence extraction. Review and edit before adding.',
-  openFinanceChat: 'Open Finance Chat',
   closeChatTitle: 'Close this chat?',
   closeChatPrompt: 'Choose what to do with this chat before closing.',
   discardAndCloseLabel: 'Discard & close',

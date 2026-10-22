@@ -699,9 +699,6 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
 
       <p className='text-xs text-[var(--text-muted)]'>{DASHBOARD_CHAT_UI_TEXT.voiceHint}</p>
       <p className='text-xs text-[var(--text-muted)]'>{DASHBOARD_CHAT_UI_TEXT.transactionDetailHint}</p>
-      <Button type='button' variant='secondary' className='min-h-9 w-auto px-3 py-2 text-xs' onClick={() => navigate('/chat')}>
-        {DASHBOARD_CHAT_UI_TEXT.openFinanceChat}
-      </Button>
     </div>
   );
 
