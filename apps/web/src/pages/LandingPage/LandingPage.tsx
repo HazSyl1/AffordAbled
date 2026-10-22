@@ -1,6 +1,6 @@
 import {
   ArrowDown, ArrowRight, BarChart3, Bot, Camera, Check, CircleHelp, FileDown, Mail, Mic,
-  Plus, ReceiptText, ShieldCheck, Split, Wallet,
+  Plus, ReceiptText, ShieldCheck, Split, Wallet, Users, BadgePercent, Scale, ListChecks,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
@@ -50,6 +50,34 @@ const features = [
     location: 'Splits',
   },
   {
+    icon: Users,
+    title: 'Plan a group settlement',
+    description: 'Combine several bills, payers, and shared items into one plan. See who owes whom before anything is saved.',
+    how: 'Open Splits, choose Plan group settlement, then review the preview. Finance Chat can prepare a draft too.',
+    location: 'Splits',
+  },
+  {
+    icon: BadgePercent,
+    title: 'Coupons, fees, and tips',
+    description: 'Apply a coupon before or after fees, add card fees or tips by percentage, and let different people cover them.',
+    how: 'Add them to a bill in the planner. “Paid by” is who paid the merchant; “Shared by” is who bears the cost.',
+    location: 'Splits',
+  },
+  {
+    icon: Scale,
+    title: 'Settle with exact math',
+    description: 'Amounts are checked to the paisa, so payments must match each bill’s total. Settled transfers are tracked as you go.',
+    how: 'Mark transfers settled in Splits. Only payments involving you create wallet transactions; edit a plan to recalculate the rest.',
+    location: 'Splits',
+  },
+  {
+    icon: ListChecks,
+    title: 'Several requests, one message',
+    description: 'Ask for more than one thing at once, such as creating categories. The assistant finishes each task, then shows a summary.',
+    how: 'Try “Create categories Food and Misc” in Finance Chat. Money is only saved after you confirm it.',
+    location: 'Finance Chat',
+  },
+  {
     icon: FileDown,
     title: 'Bring your history along',
     description: 'Preview CSV or Excel imports before saving, then export transactions as CSV, Excel, or PDF.',
@@ -76,6 +104,8 @@ const examples = [
   { label: 'Record a purchase', prompt: 'Spent ₹450 on lunch from my bank account', help: 'The assistant can use your accounts and categories to help record it.' },
   { label: 'Understand spending', prompt: 'How much did I spend on food this month?', help: 'Ask questions about transactions you have already recorded.' },
   { label: 'Share an expense', prompt: 'Split this ₹900 dinner equally with Isha and Piyush', help: 'Review the people and amounts before saving the split.' },
+  { label: 'Settle a group trip', prompt: 'I paid ₹17,000 for dinner with a 2.7% card fee and a 10% coupon. Split it with Isha, Piyush and Dev', help: 'Chat prepares a draft; use Review settlement to check fees, coupons, and transfers.' },
+  { label: 'Do several things at once', prompt: 'Create categories Food and Misc as expenses', help: 'Each task is completed in turn, then you get a short summary.' },
 ];
 
 export function LandingPage() {
@@ -197,7 +227,7 @@ export function LandingPage() {
           <p className='text-xs font-semibold uppercase tracking-[0.18em] text-[var(--brand-primary)]'>Try it in Finance Chat</p>
           <h2 className='mt-3 max-w-2xl text-3xl font-bold tracking-tight sm:text-4xl'>Start with a simple message.</h2>
           <p className='mt-3 max-w-2xl text-sm leading-6 text-[var(--text-secondary)]'>Use everyday language. The assistant can ask for missing details, and you can review a split before saving it.</p>
-          <div className='mt-8 grid gap-4 md:grid-cols-3'>
+          <div className='mt-8 grid gap-4 md:grid-cols-2 lg:grid-cols-3'>
             {examples.map(({ label, prompt, help }) => (
               <article key={label} className='flex min-w-0 flex-col rounded-2xl border border-[var(--bg-border)] bg-[var(--bg-card)] p-5'>
                 <p className='text-xs font-semibold uppercase tracking-[0.12em] text-purple-300'>{label}</p>
@@ -221,6 +251,7 @@ export function LandingPage() {
             <article className='py-4 first:pt-0'><h3 className='font-semibold'>Do I need to use the assistant?</h3><p className='mt-2 text-sm leading-6 text-[var(--text-secondary)]'>No. You can add transactions manually and manage accounts, categories, and splits through the app.</p></article>
             <article className='py-4'><h3 className='font-semibold'>What if a receipt needs more detail?</h3><p className='mt-2 text-sm leading-6 text-[var(--text-secondary)]'>Upload it in Finance Chat. The assistant can ask about anything unclear; check the transaction and its category when it appears.</p></article>
             <article className='py-4'><h3 className='font-semibold'>Can I record money owed without logging a purchase?</h3><p className='mt-2 text-sm leading-6 text-[var(--text-secondary)]'>Yes. Open Splits and choose Record money owed. When someone pays you back, choose the receiving account and mark it repaid.</p></article>
+            <article className='py-4'><h3 className='font-semibold'>How do I split a bill with coupons, fees, or several payers?</h3><p className='mt-2 text-sm leading-6 text-[var(--text-secondary)]'>Open Splits and choose Plan group settlement. Add each bill, who shared each item, who paid, and any coupon, fee, or tip. Previewing never touches your wallet; confirming records only your own payments.</p></article>
             <article className='py-4'><h3 className='font-semibold'>Can I review assistant preferences?</h3><p className='mt-2 text-sm leading-6 text-[var(--text-secondary)]'>Yes. Suggested preferences can be accepted or dismissed, and saved memories can be reviewed from your profile.</p></article>
             <article className='py-4'><h3 className='font-semibold'>Where do I start?</h3><p className='mt-2 text-sm leading-6 text-[var(--text-secondary)]'>Register and add your first money account. Starter categories are already there, so you can record a purchase in Transactions or Finance Chat.</p></article>
           </div>
@@ -247,6 +278,9 @@ export function LandingPage() {
         </div>
         <span className='inline-flex items-center gap-1.5'><Check className='h-3.5 w-3.5 text-emerald-300' aria-hidden='true' /> You stay in control of what gets recorded.</span>
       </footer>
+      <p className='mx-auto max-w-7xl px-5 pb-6 text-center text-[11px] text-[var(--text-muted)] sm:px-8 lg:px-10'>
+        {APP_NAME} uses AI and may make mistakes. Please double-check its responses.
+      </p>
     </main>
   );
 }
