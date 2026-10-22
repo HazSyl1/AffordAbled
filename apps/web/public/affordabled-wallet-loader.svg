@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 280" role="img" aria-labelledby="title desc">
+<title id="title">AffordAbled money wallet loader</title><desc id="desc">Lavender banknotes and violet coins flowing into a dark wallet.</desc>
+<defs>
+<linearGradient id="wallet" x1="65" y1="141" x2="291" y2="259" gradientUnits="userSpaceOnUse"><stop stop-color="#282031"/><stop offset="1" stop-color="#15121E"/></linearGradient>
+<linearGradient id="flap" x1="220" y1="187" x2="324" y2="243" gradientUnits="userSpaceOnUse"><stop stop-color="#A649F4"/><stop offset="1" stop-color="#7526CB"/></linearGradient>
+<linearGradient id="note" x1="-36" y1="-20" x2="36" y2="20" gradientUnits="userSpaceOnUse"><stop stop-color="#F0D5FF"/><stop offset="1" stop-color="#C18BEF"/></linearGradient>
+<filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="10"/></filter>
+<g id="bill"><rect x="-36" y="-20" width="72" height="40" rx="6" fill="url(#note)" stroke="#F7E9FF" stroke-width="2"/><rect x="-29" y="-13" width="58" height="26" rx="3" fill="none" stroke="#9851D3" stroke-dasharray="4 3" stroke-width="1.5"/><circle r="12" fill="#E5BDFF" stroke="#9A4DDD" stroke-width="1.5"/><path d="M4-6c-7-4-11 0-11 4 0 6 14 1 14 8 0 5-7 6-12 3M0-10v20" fill="none" stroke="#8D3BC9" stroke-width="2.3" stroke-linecap="round"/></g>
+<g id="coin"><circle r="18" fill="#9F47EF" stroke="#E4B8FF" stroke-width="3"/><circle r="13" fill="#C67AFF" stroke="#7A23C4" stroke-width="1.7"/><path d="M5-6C0-10-8-7-8-2c0 6 15 2 15 9 0 5-10 7-15 2M0-12v24" fill="none" stroke="#6E21B8" stroke-width="2.5" stroke-linecap="round"/></g>
+</defs>
+<style>
+.b1{animation:a1 2.8s ease-in-out infinite}.b2{animation:a2 2.8s ease-in-out .93s infinite}.b3{animation:a3 2.8s ease-in-out 1.86s infinite}.c1{animation:k1 2.8s ease-in .38s infinite}.c2{animation:k2 2.8s ease-in 1.55s infinite}.wallet-group{animation:pulse 2.8s ease-in-out infinite;transform-origin:182px 224px}.star{animation:shine 1.6s ease-in-out infinite alternate}
+@keyframes a1{0%{transform:translate(65px,37px) rotate(-21deg) scale(.7);opacity:0}15%,65%{opacity:1}93%,100%{transform:translate(174px,164px) rotate(6deg) scale(.42);opacity:0}}
+@keyframes a2{0%{transform:translate(289px,28px) rotate(18deg) scale(.7);opacity:0}15%,65%{opacity:1}93%,100%{transform:translate(184px,164px) rotate(-6deg) scale(.42);opacity:0}}
+@keyframes a3{0%{transform:translate(178px,-12px) rotate(-8deg) scale(.78);opacity:0}15%,65%{opacity:1}93%,100%{transform:translate(180px,164px) rotate(4deg) scale(.42);opacity:0}}
+@keyframes k1{0%{transform:translate(123px,19px) scale(.65);opacity:0}15%,72%{opacity:1}100%{transform:translate(178px,162px) scale(.33);opacity:0}}
+@keyframes k2{0%{transform:translate(249px,18px) scale(.65);opacity:0}15%,72%{opacity:1}100%{transform:translate(189px,162px) scale(.33);opacity:0}}
+@keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.018)}}@keyframes shine{from{opacity:.22}to{opacity:.8}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important}.b1,.b2,.b3,.c1,.c2{opacity:1!important}}
+</style>
+<ellipse cx="182" cy="259" rx="112" ry="11" fill="#A649F4" opacity=".16" filter="url(#glow)"/>
+<g class="star" fill="#DDB0FA"><path d="M41 104h5v-5h3v5h5v3h-5v5h-3v-5h-5Z"/><circle cx="319" cy="79" r="2.5"/><circle cx="54" cy="49" r="2"/></g>
+<use href="#bill" class="b1"/><use href="#bill" class="b2"/><use href="#bill" class="b3"/><use href="#coin" class="c1"/><use href="#coin" class="c2"/>
+<g class="wallet-group"><path d="M73 151v-17c0-13 9-22 22-22h155c12 0 21 9 21 21v19Z" fill="#35263F" stroke="#744794" stroke-width="3"/><rect x="52" y="148" width="255" height="111" rx="23" fill="url(#wallet)" stroke="#8757AA" stroke-width="3"/><path d="M55 173h247" stroke="#5A3A71" stroke-width="2"/><rect x="219" y="184" width="104" height="62" rx="17" fill="url(#flap)" stroke="#CA91FA" stroke-width="2.5"/><circle cx="270" cy="215" r="12" fill="#F0C9FF" stroke="#FFE8FF" stroke-width="2"/><circle cx="270" cy="215" r="4" fill="#A649F4"/><path d="M76 240h85" stroke="#69467E" stroke-width="3" stroke-linecap="round"/></g>
+</svg>

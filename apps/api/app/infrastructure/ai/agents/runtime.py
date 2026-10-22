@@ -19,6 +19,7 @@ from langgraph.types import Command, interrupt
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.services.complex_settlement import SettlementInput
 from app.infrastructure.ai.agents.contracts import (
     HandoffContext,
     SpecialistDecision,
@@ -29,6 +30,16 @@ from app.infrastructure.ai.agents.contracts import (
 logger = logging.getLogger(__name__)
 
 ToolHandler = Callable[[HandoffContext, dict[str, Any]], Awaitable[dict[str, Any]]]
+
+
+def _is_single_bill_quantity_split(request: str) -> bool:
+    """Keep a priced-per-person remainder split on the transaction-backed calculator."""
+    text = request.casefold()
+    return bool(
+        re.search(r'\b\d+\b.{0,100}\beach\b', text)
+        and re.search(r'\b(?:rest|remainder|remaining)\b', text)
+        and not re.search(r'\b(?:discount|coupon|tip|fee|fees|multiple bills?|cafes?)\b', text)
+    )
 
 
 def _tool_error_message(exc: Exception) -> str:
@@ -74,6 +85,31 @@ class CreateAccountToolInput(BaseModel):
     arguments: CreateAccountArguments
 
 
+class AccountIdArguments(BaseModel):
+    account_id: str = Field(min_length=1, description='ID returned by list_accounts.')
+
+
+class AccountIdToolInput(BaseModel):
+    arguments: AccountIdArguments
+
+
+class UpdateAccountArguments(AccountIdArguments):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    is_active: bool | None = None
+
+
+class UpdateAccountToolInput(BaseModel):
+    arguments: UpdateAccountArguments
+
+
+class RenameAccountArguments(AccountIdArguments):
+    name: str = Field(min_length=1, max_length=120, description='New account name.')
+
+
+class RenameAccountToolInput(BaseModel):
+    arguments: RenameAccountArguments
+
+
 class CreateCategoryArguments(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     type: Literal["expense", "income"]
@@ -81,6 +117,25 @@ class CreateCategoryArguments(BaseModel):
 
 class CreateCategoryToolInput(BaseModel):
     arguments: CreateCategoryArguments
+
+
+class UpdateCategoryArguments(BaseModel):
+    category_id: str = Field(min_length=1, description='ID returned by list_categories.')
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    type: Literal['expense', 'income'] | None = None
+
+
+class UpdateCategoryToolInput(BaseModel):
+    arguments: UpdateCategoryArguments
+
+
+class DeleteCategoryArguments(BaseModel):
+    category_id: str = Field(min_length=1, description='ID returned by list_categories.')
+    confirmed: bool = False
+
+
+class DeleteCategoryToolInput(BaseModel):
+    arguments: DeleteCategoryArguments
 
 
 class CreateTransactionArguments(BaseModel):
@@ -96,6 +151,34 @@ class CreateTransactionArguments(BaseModel):
 
 class CreateTransactionToolInput(BaseModel):
     arguments: CreateTransactionArguments
+
+
+class CreateTransactionBatchArguments(BaseModel):
+    transactions: list[CreateTransactionArguments] = Field(min_length=1, max_length=10)
+
+
+class CreateTransactionBatchToolInput(BaseModel):
+    arguments: CreateTransactionBatchArguments
+
+
+class UpdateTransactionArguments(BaseModel):
+    transaction_id: str = Field(min_length=1, description='ID returned by list_transactions or get_transactions.')
+    amount_paise: int | None = Field(default=None, gt=0, description='Corrected amount in paise.')
+    merchant: str | None = Field(default=None, max_length=255)
+    note: str | None = None
+
+
+class UpdateTransactionToolInput(BaseModel):
+    arguments: UpdateTransactionArguments
+
+
+class TransactionIdArguments(BaseModel):
+    transaction_id: str = Field(min_length=1, description='A verified user-owned transaction ID.')
+    confirmed: bool = False
+
+
+class TransactionIdToolInput(BaseModel):
+    arguments: TransactionIdArguments
 
 
 class SplitPersonArguments(BaseModel):
@@ -176,6 +259,14 @@ class CreateOwedToolInput(BaseModel):
     arguments: CreateOwedArguments
 
 
+class CreateSettlementDraftArguments(BaseModel):
+    data: SettlementInput = Field(description='Complete verified bills, charges, discounts, fees, payments, and debts.')
+
+
+class CreateSettlementDraftToolInput(BaseModel):
+    arguments: CreateSettlementDraftArguments
+
+
 class SetSplitContactPreferenceArguments(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     dietary_preference: Literal['vegetarian', 'vegan', 'omnivore'] | None = Field(
@@ -196,6 +287,14 @@ class GetAccountBalancesArguments(BaseModel):
         default=None,
         description="Optional account names to filter by; omit to return balances for all accounts.",
     )
+    account_types: list[Literal['cash', 'bank', 'card', 'wallet']] | None = Field(
+        default=None, description='Optional account kinds to include.'
+    )
+    order_by: Literal['default', 'name', 'balance'] = Field(
+        default='default', description='Use balance for richest/lowest-balance account questions.'
+    )
+    sort_order: Literal['asc', 'desc'] = Field(default='asc')
+    limit: int = Field(default=25, ge=1, le=25)
 
 
 class GetAccountBalancesToolInput(BaseModel):
@@ -203,20 +302,99 @@ class GetAccountBalancesToolInput(BaseModel):
 
 
 class GetTransactionsArguments(BaseModel):
-    mode: Literal['recent', 'previous_window', 'date_range'] = Field(
+    mode: Literal['recent', 'previous_window', 'relative_range', 'date_range', 'all_time'] = Field(
         default='recent',
         description=(
             'recent for latest rows, previous_window for the period before the last query, '
-            'date_range for explicit dates.'
+            'relative_range for a period named in the request, date_range for explicit dates, '
+            'or all_time for the full history.'
         ),
     )
     date_from: str | None = Field(default=None, description='Required only for date_range. Inclusive ISO start date.')
     date_to: str | None = Field(default=None, description='Required only for date_range. Inclusive ISO end date.')
-    limit: int = Field(default=10, ge=1, le=25, description='Maximum number of transactions to return.')
+    limit: int | None = Field(
+        default=None, ge=1, le=25,
+        description='Maximum rows. Omit to use 1 for a largest/smallest query and 10 otherwise.',
+    )
+    transaction_type: Literal['expense', 'income', 'transfer'] | None = Field(
+        default=None, description='Filter transaction kind. Use expense when the user asks what they spent.'
+    )
+    category_name: str | None = Field(default=None, description='Optional exact user-owned category name.')
+    account_name: str | None = Field(default=None, description='Optional exact active account name.')
+    order_by: Literal['occurred_at', 'amount'] | None = Field(
+        default=None, description='Use amount for largest, highest, smallest, or lowest transaction questions.'
+    )
+    sort_order: Literal['asc', 'desc'] | None = Field(
+        default=None, description='Use desc for largest/highest and asc for smallest/lowest.'
+    )
 
 
 class GetTransactionsToolInput(BaseModel):
     arguments: GetTransactionsArguments = Field(default_factory=GetTransactionsArguments)
+
+
+class SpendingWindowArguments(BaseModel):
+    mode: Literal['relative_range', 'date_range', 'all_time'] = Field(
+        default='relative_range',
+        description='relative_range for a named period, date_range for explicit dates, or all_time.',
+    )
+    date_from: str | None = Field(
+        default=None, description="Optional ISO start for an explicit range; omit for relative periods."
+    )
+    date_to: str | None = Field(
+        default=None, description="Optional ISO end for an explicit range; omit for relative periods."
+    )
+    category_name: str | None = Field(
+        default=None, description='Optional exact user-owned expense category name to filter.'
+    )
+
+
+class GetSpendingSummaryArguments(SpendingWindowArguments):
+    limit: int = Field(default=5, ge=1, le=25, description='Maximum category rows to return.')
+    order_by: Literal['amount', 'name'] = Field(default='amount', description='Category ranking field.')
+    sort_order: Literal['asc', 'desc'] = Field(default='desc')
+
+
+class GetSpendingSummaryToolInput(BaseModel):
+    arguments: GetSpendingSummaryArguments = Field(default_factory=GetSpendingSummaryArguments)
+
+
+class GetSpendingByAccountArguments(SpendingWindowArguments):
+    limit: int = Field(default=10, ge=1, le=25, description='Maximum account rows to return.')
+    account_names: list[str] | None = Field(
+        default=None, description='For account breakdowns, optional exact account names to include.'
+    )
+    order_by: Literal['amount', 'transaction_count', 'name'] = Field(
+        default='amount', description='Ranking field. transaction_count applies only to account breakdowns.'
+    )
+    sort_order: Literal['asc', 'desc'] = Field(default='desc')
+
+
+class GetSpendingToolInput(BaseModel):
+    arguments: GetSpendingByAccountArguments = Field(default_factory=GetSpendingByAccountArguments)
+
+
+class GetSpendingComparisonArguments(BaseModel):
+    date_period: Literal['this_week', 'this_month']
+    comparison_period: Literal['last_week', 'last_month']
+    category_name: str | None = Field(default=None, description='Optional exact expense category name.')
+
+
+class GetSpendingComparisonToolInput(BaseModel):
+    arguments: GetSpendingComparisonArguments
+
+
+class GetSplitSummaryArguments(BaseModel):
+    kind: Literal['all', 'expense_split', 'money_owed'] = 'all'
+    status: Literal['all', 'outstanding', 'settled'] = 'all'
+    person_name: str | None = Field(default=None, description='Optional participant name filter.')
+    order_by: Literal['outstanding', 'created_at', 'title'] = 'outstanding'
+    sort_order: Literal['asc', 'desc'] = 'desc'
+    limit: int = Field(default=10, ge=1, le=25)
+
+
+class GetSplitSummaryToolInput(BaseModel):
+    arguments: GetSplitSummaryArguments = Field(default_factory=GetSplitSummaryArguments)
 
 
 class CreateTransactionReportArguments(BaseModel):
@@ -238,13 +416,28 @@ _TOOL_SCHEMAS: dict[str, type[BaseModel]] = {
     "delete_account": EmptyArgumentsToolInput,
     "get_account_balances": GetAccountBalancesToolInput,
     "create_account": CreateAccountToolInput,
+    "update_account": UpdateAccountToolInput,
+    "rename_account": RenameAccountToolInput,
+    "activate_account": AccountIdToolInput,
+    "deactivate_account": AccountIdToolInput,
+    "set_default_account": AccountIdToolInput,
     "create_category": CreateCategoryToolInput,
+    "update_category": UpdateCategoryToolInput,
+    "delete_category": DeleteCategoryToolInput,
     "create_transaction": CreateTransactionToolInput,
+    "create_transaction_batch": CreateTransactionBatchToolInput,
+    "update_transaction": UpdateTransactionToolInput,
+    "delete_transaction": TransactionIdToolInput,
+    "restore_transaction": TransactionIdToolInput,
     "create_split": CreateSplitToolInput,
     "create_owed": CreateOwedToolInput,
+    "create_settlement_draft": CreateSettlementDraftToolInput,
     "set_split_contact_preference": SetSplitContactPreferenceToolInput,
     "get_transactions": GetTransactionsToolInput,
-    "get_split_summary": EmptyArgumentsToolInput,
+    "get_spending_summary": GetSpendingSummaryToolInput,
+    "get_spending_by_account": GetSpendingToolInput,
+    "get_spending_comparison": GetSpendingComparisonToolInput,
+    "get_split_summary": GetSplitSummaryToolInput,
     "create_transaction_report": CreateTransactionReportToolInput,
 }
 
@@ -271,16 +464,32 @@ _TOOL_DESCRIPTIONS = {
     "update_transaction": "Edit a user transaction by transaction_id when explicitly requested.",
     "delete_transaction": "Soft-delete one user-owned transaction only after explicit confirmation.",
     "restore_transaction": "Restore one previously deleted user-owned transaction when explicitly requested.",
-    "get_account_balances": "Read current account balances for balance questions, not transaction history.",
-    "get_transactions": (
-        "Read user-owned transactions. Use mode=recent for latest rows, "
-        "previous_window for the period before the last query, or date_range for explicit dates."
+    "get_account_balances": (
+        "Read and rank current active account balances. Filter by exact account names or account types; use "
+        "order_by=balance with desc for highest and asc for lowest. This tool does not read transaction history."
     ),
-    "get_spending_summary": "Read aggregate spending for a supplied date range, not individual transactions.",
-    "get_spending_by_account": "Read spending grouped by account for a supplied date range.",
-    "get_spending_comparison": "Compare two supported spending periods.",
+    "get_transactions": (
+        "Read and rank user-owned transactions. For largest expense use transaction_type=expense, "
+        "order_by=amount, sort_order=desc, and limit=1. Use relative_range for a named period, all_time when no "
+        "period is given, recent for latest rows, previous_window for the prior page, or date_range for explicit "
+        "dates. Use category_name and account_name for verified user-visible filters; never invent IDs."
+    ),
+    "get_spending_summary": (
+        "Read and rank aggregate expense spending by category. Use relative_range for named periods, date_range "
+        "with both ISO dates, or all_time. Filter by exact category_name; order by amount or name and set limit."
+    ),
+    "get_spending_by_account": (
+        "Read and rank expense spending grouped by account. Use relative_range for named periods, date_range with "
+        "both ISO dates, or all_time. Filter by account_names or category_name; order by amount, transaction_count, "
+        "or name and set limit."
+    ),
+    "get_spending_comparison": (
+        "Compare verified expense totals for this_week versus last_week or this_month versus last_month. An "
+        "optional exact category_name limits both windows consistently."
+    ),
     "get_split_summary": (
-        "Read outstanding split balances for money-owed or remaining-split questions; no arguments are required."
+        "Read split and standalone receivable balances. Filter by kind, settled status, or participant; rank by "
+        "outstanding amount, creation time, or title and set a bounded limit."
     ),
     "list_split_contacts": (
         "Read prior split names and explicitly confirmed dietary preferences. Preferences guide suggestions "
@@ -306,6 +515,15 @@ _TOOL_DESCRIPTIONS = {
         "Record money a named person owes the authenticated user, even when there is no expense transaction. "
         "Use only when the user explicitly says someone owes/is to repay them; provide amount_paise and a reason. "
         "This is a receivable tracker entry, not an expense split and does not create a transaction."
+    ),
+    "create_settlement_draft": (
+        "Calculate and save a review-only draft for a complex group settlement. Provide every bill and who paid it. "
+        "No wallet transaction is created until the user confirms the draft in the planner. Do not invent missing "
+        "bill amounts, allocations, fee bases, or coupon eligibility; ask_user first. If a single payer's quoted "
+        "amount is before fee/discount, omit payment.amount_paise and the calculator derives the final payment. "
+        "With multiple payers, use covered_charge_ids and covered_extra_ids to derive a payment from known "
+        "item and tip rows; give referenced extras unique IDs. Keep promises separate from actual payments. "
+        "Set discount.include_extras=true only when the coupon applies after fees/tips."
     ),
     "create_transaction_report": (
         "Generate a user-owned transaction report for download. Use for export or download requests; "
@@ -620,6 +838,7 @@ class ToolBoundSpecialistRuntime:
                 "restore_transaction",
                 "create_split",
                 "create_owed",
+                "create_settlement_draft",
                 "set_split_contact_preference",
                 "get_account_balances",
                 "get_transactions",
@@ -671,6 +890,10 @@ class ToolBoundSpecialistRuntime:
         """Build an attached subgraph; its ToolNode messages are parent-checkpointed."""
         tools = self._persistent_tools()
         model = self.llm.bind_tools(tools)
+        quantity_split_model = (
+            self.llm.bind_tools([tool for tool in tools if tool.name != "create_settlement_draft"])
+            if self.name == "split" and "create_settlement_draft" in self.tools else None
+        )
 
         async def agent(state: dict[str, Any]) -> dict[str, Any]:
             steps = int(state.get("specialist_steps", 0))
@@ -714,8 +937,13 @@ class ToolBoundSpecialistRuntime:
                         ],
                         "specialist_steps": steps + 1,
                     }
+            active_model = model
+            if quantity_split_model is not None and _is_single_bill_quantity_split(
+                str(state.get("task_request") or "")
+            ):
+                active_model = quantity_split_model
             return {
-                "specialist_messages": [await model.ainvoke(state["specialist_messages"])],
+                "specialist_messages": [await active_model.ainvoke(state["specialist_messages"])],
                 "specialist_steps": steps + 1,
             }
 

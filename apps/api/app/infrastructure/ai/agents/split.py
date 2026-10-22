@@ -4,10 +4,13 @@ import re
 import uuid
 from decimal import Decimal
 from difflib import SequenceMatcher
+from itertools import combinations
 from typing import Any
 
 from langgraph.types import interrupt
 
+from app.application.services.complex_settlement import ExtraChargeInput, SettlementInput
+from app.application.services.complex_settlement_service import ComplexSettlementService
 from app.application.services.itemized_split import ItemAllocation, calculate_itemized_split
 from app.application.services.quantity_split import QuantityAllocation
 from app.application.services.settlement_split import (
@@ -23,9 +26,11 @@ from app.infrastructure.ai.agents.contracts import HandoffContext
 class SplitToolset:
     """Scoped chat tools for creating and inspecting expense splits."""
 
-    def __init__(self, split_service: SplitService, transaction_service: TransactionService) -> None:
+    def __init__(self, split_service: SplitService, transaction_service: TransactionService,
+                 complex_settlement_service: ComplexSettlementService | None = None) -> None:
         self._splits = split_service
         self._transactions = transaction_service
+        self._complex_settlements = complex_settlement_service
 
     @staticmethod
     def _validate_requested_people(people: list[ParticipantShare], context: HandoffContext) -> None:
@@ -101,13 +106,179 @@ class SplitToolset:
             return None
         return int(Decimal(match.group(1).replace(',', '')) * 100)
 
+    @staticmethod
+    def _settlement_user_text(context: HandoffContext) -> str:
+        user_text = '\n'.join([
+            *(str(message.get('content') or '') for message in context.history
+              if str(message.get('role') or '').casefold() == 'user'),
+            str(context.constraints.get('original_request') or ''),
+            context.request,
+        ])
+        return ' '.join(user_text.split()).casefold()
+
+    @classmethod
+    def _normalize_percentage_charges(cls, data: SettlementInput, context: HandoffContext) -> None:
+        """Represent an unambiguous AI-proposed percentage fee as a calculated extra."""
+        user_text = cls._settlement_user_text(context)
+        for bill in data.bills:
+            for charge in list(bill.charges):
+                quote = (charge.source_quote or '').strip()
+                if not re.search(r'\b(?:fee|tip|surcharge|service charge)\b', charge.label, re.IGNORECASE):
+                    continue
+                rate_match = re.search(r'(?<!\d)(\d+(?:\.\d{1,2})?)\s*%', quote)
+                if rate_match is None:
+                    continue
+                if not quote or ' '.join(quote.split()).casefold() not in user_text:
+                    raise ValueError(f'{bill.merchant}: {charge.label} needs an exact percentage source quote.')
+                rate_bps = int(Decimal(rate_match.group(1)) * 100)
+                remaining = [row for row in bill.charges if row.id != charge.id]
+                if not remaining or len(remaining) > 8:
+                    raise ValueError(f'{bill.merchant}: specify which priced items the percentage fee uses.')
+                possible_bases = [group for count in range(1, len(remaining) + 1)
+                                  for group in combinations(remaining, count)]
+                quoted_bases = [
+                    group for group in possible_bases
+                    if any(
+                        int(Decimal(match.group(1).replace(',', '')) * 100 *
+                            (1000 if (match.group(2) or '').casefold() == 'k' else 1))
+                        == sum(row.amount_paise for row in group)
+                        for match in re.finditer(r'(?<!\d)(\d[\d,]*(?:\.\d{1,2})?)\s*(k)?\b', quote, re.I)
+                        if not quote[match.end():].lstrip().startswith('%')
+                    )
+                ]
+                if len(quoted_bases) == 1:
+                    base = quoted_bases[0]
+                elif len(remaining) == 1:
+                    base = tuple(remaining)
+                elif re.search(r'\b(?:whole|full|subtotal|all items)\b', quote, re.I):
+                    base = tuple(remaining)
+                else:
+                    raise ValueError(
+                        f'{bill.merchant}: {charge.label} needs the priced items used as its percentage base; '
+                        'use extras with rate_bps and base_charge_ids. Do not ask the user to calculate the fee.'
+                    )
+                affected_discounts = [discount for discount in bill.discounts
+                                      if charge.id in discount.charge_ids]
+                if affected_discounts and bill.extras:
+                    raise ValueError(
+                        f'{bill.merchant}: move {charge.label} to extras and specify which fees the coupon covers.'
+                    )
+                if any(len(discount.charge_ids) == 1 for discount in affected_discounts):
+                    raise ValueError(f'{bill.merchant}: a coupon needs at least one priced item.')
+                if any(extra.id == charge.id for extra in bill.extras):
+                    raise ValueError(f'{bill.merchant}: fee and item IDs must be distinct.')
+                for discount in affected_discounts:
+                    discount.charge_ids.remove(charge.id)
+                    discount.include_extras = True
+                for payment in bill.payments:
+                    if charge.id in payment.covered_charge_ids:
+                        payment.covered_charge_ids.remove(charge.id)
+                        payment.covered_extra_ids.append(charge.id)
+                bill.extras.append(ExtraChargeInput(
+                    id=charge.id, label=charge.label,
+                    kind='tip' if re.search(r'\btip\b', charge.label, re.IGNORECASE) else 'fee',
+                    shared_by=charge.shared_by, paid_by=charge.paid_by, rate_bps=rate_bps,
+                    base_charge_ids=[row.id for row in base], source_quote=quote,
+                ))
+                bill.charges.remove(charge)
+
+    @classmethod
+    def _validate_settlement_amount_evidence(cls, data: SettlementInput, context: HandoffContext) -> None:
+        """Reject AI draft charges whose rupee values cannot be traced to the user's words."""
+        normalized_user_text = cls._settlement_user_text(context)
+        for bill in data.bills:
+            for row in [*bill.discounts, *bill.extras]:
+                if row.rate_bps is None:
+                    continue
+                quote = (row.source_quote or '').strip()
+                if not quote or ' '.join(quote.split()).casefold() not in normalized_user_text:
+                    raise ValueError(f'{bill.merchant}: {row.label} needs an exact percentage source_quote.')
+                rates = [Decimal(match.group(1)) * 100 for match in re.finditer(
+                    r'(?<!\d)(\d+(?:\.\d{1,2})?)\s*%', quote
+                )]
+                if len(rates) != 1 or rates[0] != row.rate_bps:
+                    raise ValueError(
+                        f'{bill.merchant}: {row.label} rate must match the quoted percentage; '
+                        '2% is rate_bps=200. Do not ask the user to calculate it.'
+                    )
+            for charge in bill.charges:
+                quote = (charge.source_quote or '').strip()
+                if not quote or ' '.join(quote.split()).casefold() not in normalized_user_text:
+                    raise ValueError(
+                        f'{bill.merchant}: {charge.label} needs a short, exact source_quote from the user request.'
+                    )
+                amount_pattern = re.compile(
+                    r'(?<![\w,.])(?P<currency>₹\s*)?(?P<number>\d[\d,]*(?:\.\d{1,2})?)'
+                    r'(?:\s*(?P<scale>k|thousand|lakh|lac|crore|million))?'
+                    r'(?:\s*(?P<unit>rs\.?|inr|rupees?))?(?![\w,.]|\s*%)',
+                    re.IGNORECASE,
+                )
+                scales = {'k': 1000, 'thousand': 1000, 'lakh': 100000,
+                          'lac': 100000, 'crore': 10000000, 'million': 1000000}
+                parsed_amounts = [
+                    (Decimal(match.group('number').replace(',', ''))
+                     * scales.get((match.group('scale') or '').casefold(), 1),
+                     bool(match.group('currency') or match.group('scale') or match.group('unit')))
+                    for match in amount_pattern.finditer(quote)
+                ]
+                monetary_amounts = [amount for amount, marked in parsed_amounts if marked]
+                quoted_amounts = [int(amount * 100) for amount in (monetary_amounts or [
+                    amount for amount, _ in parsed_amounts
+                ])]
+                directly_supported = any(
+                    sum(group) == charge.amount_paise
+                    for count in range(1, min(len(quoted_amounts), 4) + 1)
+                    for group in combinations(quoted_amounts, count)
+                )
+                remainder_supported = any(
+                    total - sum(group) == charge.amount_paise
+                    for index, total in enumerate(quoted_amounts)
+                    for count in range(1, min(len(quoted_amounts) - 1, 3) + 1)
+                    for group in combinations(quoted_amounts[:index] + quoted_amounts[index + 1:], count)
+                )
+                quantity_values = [amount for amount, _ in parsed_amounts]
+                quantity_supported = (
+                    bool(re.search(r'\beach\b', quote, re.IGNORECASE))
+                    and len(quantity_values) in {2, 3}
+                    and charge.amount_paise == 100 * (
+                        quantity_values[0] * quantity_values[1]
+                        if len(quantity_values) == 2
+                        else quantity_values[0] * quantity_values[1] * quantity_values[2]
+                    )
+                )
+                if not (directly_supported or remainder_supported or quantity_supported):
+                    raise ValueError(
+                        f'{bill.merchant}: {charge.label} amount ₹{Decimal(charge.amount_paise) / 100:,.2f} '
+                        f'does not match its quoted source: {quote}'
+                    )
+
     def registry(self) -> dict[str, Any]:
-        return {
+        tools = {
             "list_split_contacts": self.list_split_contacts,
             "set_split_contact_preference": self.set_split_contact_preference,
             "create_split": self.create_split,
             "create_owed": self.create_owed,
         }
+        if self._complex_settlements is not None:
+            tools['create_settlement_draft'] = self.create_settlement_draft
+        return tools
+
+    async def create_settlement_draft(self, context: HandoffContext, args: dict[str, Any]) -> dict[str, Any]:
+        """Save only a preview; the user confirms and commits the wallet changes in the planner."""
+        if self._complex_settlements is None:
+            raise ValueError('Settlement planner is unavailable.')
+        data = SettlementInput.model_validate(args['data'])
+        self._normalize_percentage_charges(data, context)
+        self._validate_settlement_amount_evidence(data, context)
+        requested = [person for person in data.participants if person.casefold() != 'you']
+        self._validate_requested_people([ParticipantShare(name, 0) for name in requested], context)
+        draft = await self._complex_settlements.create_draft(
+            context.user_id, str(uuid.uuid4()), data,
+        )
+        return {'settlement_draft': {
+            'id': str(draft.id), 'title': data.title, 'total_paise': draft.preview_json['total_paise'],
+            'bill_count': len(data.bills),
+        }}
 
     async def create_owed(self, context: HandoffContext, args: dict[str, Any]) -> dict[str, Any]:
         """Track an explicit receivable without fabricating a transaction or expense split."""

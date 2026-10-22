@@ -5,6 +5,7 @@ import { Link } from 'react-router-dom';
 import { useListAccountsQuery } from '../../../features/accounts/accountsApi';
 import { useListCategoriesQuery } from '../../../features/categories/categoriesApi';
 import { useListSplitsQuery } from '../../../features/splits/splitsApi';
+import { useListSettlementPlansQuery } from '../../../features/splits/settlementPlansApi';
 import { useListTransactionsQuery } from '../../../features/transactions/transactionsApi';
 import type { Transaction, TransactionType } from '../../../features/transactions/transactionsApi';
 import { TRANSACTION_UI_TEXT } from '../../../constants';
@@ -110,6 +111,7 @@ export function TransactionList({ onTransactionSelect }: TransactionListProps) {
   const { data: accounts } = useListAccountsQuery();
   const { data: categories } = useListCategoriesQuery();
   const { data: splits } = useListSplitsQuery();
+  const { data: settlementPlans } = useListSettlementPlansQuery();
 
   const accountNameById = useMemo(() => {
     return new Map((accounts ?? []).map((account) => [account.id, account.name]));
@@ -122,6 +124,17 @@ export function TransactionList({ onTransactionSelect }: TransactionListProps) {
   const splitByTransactionId = useMemo(() => {
     return new Map((splits ?? []).map((split) => [split.transaction_id, split]));
   }, [splits]);
+
+  const settlementPlanByTransactionId = useMemo(() => {
+    const linked = new Map<string, NonNullable<typeof settlementPlans>[number]>();
+    for (const plan of settlementPlans ?? []) {
+      for (const id of plan.transaction_ids) linked.set(id, plan);
+      for (const transfer of plan.transfers) {
+        if (transfer.repayment_transaction_id) linked.set(transfer.repayment_transaction_id, plan);
+      }
+    }
+    return linked;
+  }, [settlementPlans]);
 
   const visibleTransactions = useMemo(() => {
     return (transactions ?? [])
@@ -163,6 +176,7 @@ export function TransactionList({ onTransactionSelect }: TransactionListProps) {
               const accountName = accountNameById.get(transaction.account_id) ?? 'Unknown account';
               const categoryName = transaction.category_id ? categoryNameById.get(transaction.category_id) : null;
               const split = splitByTransactionId.get(transaction.id);
+              const settlementPlan = settlementPlanByTransactionId.get(transaction.id);
 
               return (
                 <li key={transaction.id}>
@@ -199,6 +213,9 @@ export function TransactionList({ onTransactionSelect }: TransactionListProps) {
                         <p className='mt-1 truncate text-xs text-[var(--text-muted)]'>
                           {(categoryName ?? TYPE_LABEL[transaction.type]) + ' · ' + accountName}
                         </p>
+                        {settlementPlan && <p className='mt-1 truncate text-xs text-[var(--brand-primary)]'>
+                          Group settlement: {settlementPlan.title}
+                        </p>}
                       </div>
 
                       <div className='text-right'>
@@ -219,6 +236,10 @@ export function TransactionList({ onTransactionSelect }: TransactionListProps) {
                         className='inline-flex items-center rounded-full border border-[color:rgba(168,85,247,0.55)] bg-[color:rgba(168,85,247,0.16)] px-2.5 py-1 text-xs font-semibold text-[var(--brand-primary)] transition-colors hover:bg-[color:rgba(168,85,247,0.24)]'
                         onClick={(event) => event.stopPropagation()}
                         onKeyDown={(event) => event.stopPropagation()}>Go to split</Link>}
+                      {settlementPlan && <Link to={`/splits?planId=${settlementPlan.id}`}
+                        className='inline-flex max-w-full items-center rounded-full border border-[color:rgba(168,85,247,0.55)] bg-[color:rgba(168,85,247,0.16)] px-2.5 py-1 text-xs font-semibold text-[var(--brand-primary)] transition-colors hover:bg-[color:rgba(168,85,247,0.24)]'
+                        onClick={(event) => event.stopPropagation()}
+                        onKeyDown={(event) => event.stopPropagation()}>View group settlement</Link>}
                       <Link
                         to={`/chat?transaction_id=${transaction.id}`}
                         className='inline-flex items-center gap-1 rounded-full border border-[color:rgba(168,85,247,0.55)] bg-[color:rgba(168,85,247,0.16)] px-2.5 py-1 text-xs font-semibold text-[var(--brand-primary)] shadow-[0_6px_14px_rgba(168,85,247,0.2)] transition-colors hover:bg-[color:rgba(168,85,247,0.24)]'

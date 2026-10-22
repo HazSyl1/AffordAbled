@@ -3,6 +3,9 @@ from app.infrastructure.database.models.agent_correction import AgentCorrectionM
 from app.infrastructure.database.models.category import CategoryModel
 from app.infrastructure.database.models.chat_message import ChatMessageModel
 from app.infrastructure.database.models.chat_thread import ChatThreadModel
+from app.infrastructure.database.models.complex_settlement import (
+    SettlementDraftModel, SettlementPlanModel, SettlementPlanTransactionModel, SettlementPlanTransferModel,
+)
 from app.infrastructure.database.models.export_artifact import ExportArtifactModel
 from app.infrastructure.database.models.guardrail_log import GuardrailLogModel
 from app.infrastructure.database.models.memory import (
@@ -21,6 +24,10 @@ __all__ = [
     'CategoryModel',
     'ChatMessageModel',
     'ChatThreadModel',
+    'SettlementDraftModel',
+    'SettlementPlanModel',
+    'SettlementPlanTransactionModel',
+    'SettlementPlanTransferModel',
     'ExportArtifactModel',
     'GuardrailLogModel',
     'RefreshSessionModel',

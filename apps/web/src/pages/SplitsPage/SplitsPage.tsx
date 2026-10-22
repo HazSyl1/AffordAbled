@@ -12,13 +12,16 @@ import {
   useDeleteSplitMutation, useUpdateSplitMutation,
   type CreateSplitRequest, type Split,
 } from '../../features/splits/splitsApi';
+import { useListSettlementPlansQuery, useSettleSettlementPlanTransferMutation,
+  type SettlementPlan } from '../../features/splits/settlementPlansApi';
 import { useListTransactionsQuery } from '../../features/transactions/transactionsApi';
 import { formatPaiseAsInr } from '../../lib/money';
+import { ComplexSettlementPlanner } from './ComplexSettlementPlanner';
 
 type Person = { name: string; amount: string | null; isNew: boolean };
 const NEW_PERSON = '__new_person__';
 const newPerson = (): Person => ({ name: '', amount: null, isNew: false });
-const inputClass = 'w-full rounded-xl border border-[var(--bg-border)] bg-[var(--bg-elevated)] px-3 py-2 text-[var(--text-primary)]';
+const inputClass = 'min-w-0 w-full rounded-xl border border-[var(--bg-border)] bg-[var(--bg-elevated)] px-3 py-2 text-[var(--text-primary)]';
 
 function paise(value: string): number | null {
   return /^\d+(?:\.\d{1,2})?$/.test(value.trim()) ? Math.round(Number(value) * 100) : null;
@@ -37,6 +40,14 @@ function detail(error: unknown): string {
     }
   }
   return 'Could not complete the request. Please try again.';
+}
+
+function unpaidCount(split: Split): number {
+  return split.settlement_breakdown
+    ? split.settlement_breakdown.transfers.filter((transfer) =>
+      transfer.creditor.trim().toLowerCase() === 'you' && !transfer.repayment_transaction_id).length
+    : split.participants.filter((person) =>
+      person.settled_paise < person.share_paise && !person.repayment_transaction_id).length;
 }
 
 type EditPerson = { id?: string; name: string; amount: string; hasRepayment: boolean };
@@ -132,7 +143,7 @@ function EditSplitForm({ split, onCancel }: { split: Split; onCancel: () => void
       {invalidAmounts && <p className='mt-1 text-xs text-red-400'>Enter valid shares that add up to the total.</p>}
     </div>
     {error && <p role='alert' className='text-sm text-red-400'>{error}</p>}
-    <div className='flex gap-2'><Button type='submit' isLoading={saving}>Save split</Button>
+    <div className='grid grid-cols-1 gap-2 sm:grid-cols-2'><Button type='submit' isLoading={saving}>Save split</Button>
       <Button type='button' variant='secondary' onClick={onCancel}>Cancel</Button></div>
   </form>;
 }
@@ -142,7 +153,10 @@ export function SplitsPage() {
   const location = useLocation();
   const [searchParams] = useSearchParams();
   const focusedSplitId = searchParams.get('splitId');
+  const focusedPlanId = searchParams.get('planId');
   const { data: splits = [], isLoading } = useListSplitsQuery();
+  const { data: settlementPlans = [], isLoading: loadingSettlementPlans,
+    isError: settlementPlansError } = useListSettlementPlansQuery();
   const { data: transactions = [] } = useListTransactionsQuery();
   const { data: accounts = [] } = useListAccountsQuery();
   const { data: contacts = [] } = useListSplitContactsQuery();
@@ -150,6 +164,7 @@ export function SplitsPage() {
   const [createOwed, { isLoading: creatingOwed }] = useCreateOwedMutation();
   const [repay, { isLoading: repaying }] = useRepaySplitParticipantMutation();
   const [repaySettlementTransfer, { isLoading: repayingTransfer }] = useRepaySettlementTransferMutation();
+  const [settlePlanTransfer] = useSettleSettlementPlanTransferMutation();
   const [deleteSplit, { isLoading: deleting }] = useDeleteSplitMutation();
   const [open, setOpen] = useState(location.pathname.endsWith('/new'));
   const [transactionId, setTransactionId] = useState(searchParams.get('transactionId') ?? '');
@@ -162,8 +177,13 @@ export function SplitsPage() {
   const [error, setError] = useState('');
   const [showValidation, setShowValidation] = useState(false);
   const [repaymentAccounts, setRepaymentAccounts] = useState<Record<string, string>>({});
+  const [settlementAccounts, setSettlementAccounts] = useState<Record<string, string>>({});
+  const [settlingPlanTransferId, setSettlingPlanTransferId] = useState<string | null>(null);
+  const [settlementFeedback, setSettlementFeedback] = useState<Record<string, string>>({});
+  const [repayingAllSplitId, setRepayingAllSplitId] = useState<string | null>(null);
   const [editingSplitId, setEditingSplitId] = useState<string | null>(null);
   const [owedOpen, setOwedOpen] = useState(false);
+  const [complexOpen, setComplexOpen] = useState(Boolean(searchParams.get('draft')));
   const [owedName, setOwedName] = useState('');
   const [owedAmount, setOwedAmount] = useState('');
   const [owedTitle, setOwedTitle] = useState('');
@@ -172,6 +192,7 @@ export function SplitsPage() {
     .reduce((total, split) => total + split.outstanding_paise, 0);
   const standaloneOwedPaise = splits.filter((split) => split.kind === 'money_owed')
     .reduce((total, split) => total + split.outstanding_paise, 0);
+  const orderedSplits = [...splits].sort((a, b) => Number(b.outstanding_paise > 0) - Number(a.outstanding_paise > 0));
   const activeAccounts = accounts.filter((account) => account.is_active);
   const defaultAccountId = activeAccounts.find((account) => account.is_default)?.id ?? activeAccounts[0]?.id ?? '';
 
@@ -181,9 +202,19 @@ export function SplitsPage() {
     }
   }, [focusedSplitId, splits]);
 
+  useEffect(() => {
+    if (focusedPlanId && settlementPlans.some((plan) => plan.id === focusedPlanId)) {
+      document.getElementById(`group-settlement-${focusedPlanId}`)?.scrollIntoView({
+        behavior: 'smooth', block: 'center',
+      });
+    }
+  }, [focusedPlanId, settlementPlans]);
+
   const expenses = useMemo(() => transactions.filter((transaction) =>
     transaction.type === 'expense' && !transaction.deleted_at &&
-    !splits.some((split) => split.transaction_id === transaction.id)), [transactions, splits]);
+    !splits.some((split) => split.transaction_id === transaction.id) &&
+    !settlementPlans.some((plan) => plan.transaction_ids.includes(transaction.id))),
+  [transactions, splits, settlementPlans]);
   const expense = expenses.find((item) => item.id === transactionId);
   const expenseLabel = expense?.merchant || expense?.note || 'Expense';
   const recentExpenses = expenses.slice(0, 5);
@@ -191,9 +222,7 @@ export function SplitsPage() {
   const displayedExpenses = selectedOlderExpense
     ? [expense, ...recentExpenses.slice(0, 4)] : recentExpenses;
 
-  useEffect(() => {
-    if (expense && !titleManuallyEdited) setTitle(expenseLabel);
-  }, [expense, expenseLabel, titleManuallyEdited]);
+  const displayedTitle = !titleManuallyEdited && expense ? expenseLabel : title;
   const equalShare = expense ? Math.floor(expense.amount_paise / (people.length + 1)) : 0;
   const ownerEqualShare = expense ? equalShare + expense.amount_paise % (people.length + 1) : 0;
   const displayedOwnerAmount = ownerAmount ?? (expense ? (ownerEqualShare / 100).toFixed(2) : '');
@@ -245,7 +274,7 @@ export function SplitsPage() {
       setError('Custom shares, including yours, must add up to the expense exactly.'); return;
     }
     setReview({
-      transaction_id: expense.id, title: title.trim() || expense.merchant || 'Shared expense',
+      transaction_id: expense.id, title: displayedTitle.trim() || expense.merchant || 'Shared expense',
       amount_paise: expense.amount_paise, mode,
       owner_share_paise: mode === 'equal' ? ownerEqualShare : ownCustomShare ?? 0,
       participants: people.map((person, index) => ({
@@ -293,6 +322,63 @@ export function SplitsPage() {
     catch (failure) { setError(detail(failure)); }
   }
 
+  async function markAllRepaid(split: Split) {
+    const targets = split.settlement_breakdown
+      ? split.settlement_breakdown.transfers.filter((transfer) =>
+        transfer.creditor.trim().toLowerCase() === 'you' && !transfer.repayment_transaction_id)
+        .map((transfer) => ({ id: transfer.debtor, name: transfer.debtor,
+          accountId: repaymentAccounts[`${split.id}:${transfer.debtor}`] ?? defaultAccountId,
+          amountPaise: transfer.amount_paise }))
+      : split.participants.filter((person) => person.settled_paise < person.share_paise && !person.repayment_transaction_id)
+        .map((person) => ({ id: person.id, name: person.name,
+          accountId: repaymentAccounts[person.id] ?? defaultAccountId,
+          amountPaise: person.share_paise }));
+    if (targets.length === 0) return;
+    if (targets.some((target) => !activeAccounts.some((account) => account.id === target.accountId))) {
+      setError('Choose an active receiving account for every unpaid person.');
+      return;
+    }
+    const totalPaise = targets.reduce((total, target) => total + target.amountPaise, 0);
+    if (!window.confirm(`Mark all ${targets.length} repayments for “${split.title}” as received (${formatPaiseAsInr(totalPaise)})? This records one income transaction per person in the selected accounts.`)) return;
+    setError('');
+    setRepayingAllSplitId(split.id);
+    let completed = 0;
+    try {
+      for (const target of targets) {
+        if (split.settlement_breakdown) {
+          await repaySettlementTransfer({ splitId: split.id, debtor: target.id, accountId: target.accountId }).unwrap();
+        } else {
+          await repay({ splitId: split.id, participantId: target.id, accountId: target.accountId }).unwrap();
+        }
+        completed += 1;
+      }
+    } catch (failure) {
+      setError(`${completed} of ${targets.length} repayments were recorded. ${detail(failure)} The remaining people are still unpaid.`);
+    } finally {
+      setRepayingAllSplitId(null);
+    }
+  }
+
+  async function markPlanTransferSettled(planId: string, transfer: SettlementPlan['transfers'][number]) {
+    const ownerInvolved = transfer.creditor === 'You' || transfer.debtor === 'You';
+    const accountId = settlementAccounts[transfer.id] ?? defaultAccountId;
+    if (ownerInvolved && !activeAccounts.some((account) => account.id === accountId)) {
+      setSettlementFeedback((current) => ({ ...current, [transfer.id]: 'Choose the wallet account used for this repayment.' }));
+      return;
+    }
+    setSettlementFeedback((current) => ({ ...current, [transfer.id]: '' }));
+    setSettlingPlanTransferId(transfer.id);
+    try {
+      await settlePlanTransfer({ planId, transferId: transfer.id,
+        accountId: ownerInvolved ? accountId : undefined }).unwrap();
+      setSettlementFeedback((current) => ({ ...current, [transfer.id]: 'Repayment recorded.' }));
+    } catch (failure) {
+      setSettlementFeedback((current) => ({ ...current, [transfer.id]: detail(failure) }));
+    } finally {
+      setSettlingPlanTransferId(null);
+    }
+  }
+
   async function removeSplit(splitId: string) {
     if (!window.confirm('Remove this split? The original expense will stay in your transactions.')) return;
     setError('');
@@ -305,18 +391,111 @@ export function SplitsPage() {
       <h1 className='text-xl font-bold text-[var(--text-primary)]'>Splits</h1>
       <p className='text-sm text-[var(--text-muted)]'>Track expense shares and other money people owe you.</p>
     </header>
-    <div className='flex flex-col gap-3 rounded-2xl border border-[var(--bg-border)] bg-[var(--bg-card)] p-4 sm:flex-row sm:items-center sm:justify-between'>
+    <div className='min-w-0 space-y-4 rounded-2xl border border-[var(--bg-border)] bg-[var(--bg-card)] p-4'>
       <div className='min-w-0' aria-live='polite'>
-        <p className='text-xs text-[var(--text-muted)]'>Total outstanding from others</p>
-        <p className='text-2xl font-bold text-[var(--positive)]'>{isLoading ? '…' : formatPaiseAsInr(totalOwedPaise)}</p>
+        <p className='text-xs text-[var(--text-muted)]'>Outstanding from regular splits and IOUs</p>
+        <p className='break-words text-2xl font-bold text-[var(--positive)]'>{isLoading ? '…' : formatPaiseAsInr(totalOwedPaise)}</p>
         <p className='text-xs text-[var(--text-muted)]'>Expense shares {formatPaiseAsInr(expenseSplitOwedPaise)} · Other IOUs {formatPaiseAsInr(standaloneOwedPaise)}</p>
+        <p className='mt-1 text-xs text-[var(--text-muted)]'>Group settlement plans are listed separately below and are not included in this total.</p>
       </div>
-      <div className='flex w-full flex-col gap-2 sm:w-auto sm:flex-row'>
-        <Button className='w-full sm:w-auto sm:shrink-0' onClick={() => { setOpen(true); setReview(null); }}>Split an expense</Button>
-        <Button variant='secondary' className='w-full sm:w-auto sm:shrink-0' onClick={() => setOwedOpen((value) => !value)}>Record money owed</Button>
+      <div className='grid min-w-0 grid-cols-1 gap-2 min-[480px]:grid-cols-2 md:grid-cols-3'>
+        <Button className='min-w-0 whitespace-normal text-center text-sm' onClick={() => { setOpen(true); setReview(null); }}>Split an expense</Button>
+        <Button variant='secondary' className='min-w-0 whitespace-normal text-center text-sm' onClick={() => setOwedOpen((value) => !value)}>Record money owed</Button>
+        <Button variant='secondary' className='min-w-0 whitespace-normal text-center text-sm'
+          onClick={() => setComplexOpen((value) => !value)}>Plan group settlement</Button>
       </div>
     </div>
     {error && <p role='alert' className='rounded-xl bg-red-500/10 p-3 text-sm text-red-300'>{error}</p>}
+    <section className='space-y-3' aria-labelledby='group-settlements-heading'>
+      <div>
+        <h2 id='group-settlements-heading' className='font-semibold text-[var(--text-primary)]'>Group settlements</h2>
+        <p className='text-xs text-[var(--text-muted)]'>Confirmed plans stay here. Only payments you made or received appear in Transactions.</p>
+      </div>
+      {loadingSettlementPlans ? <p className='text-sm text-[var(--text-muted)]'>Loading group settlements…</p>
+        : settlementPlansError ? <p role='alert' className='text-sm text-red-400'>Could not load group settlements. Try refreshing this page.</p>
+          : settlementPlans.length === 0 ? <Card className='p-4 text-sm text-[var(--text-muted)]'>
+            No saved group settlements yet. Review a plan, then select “Save plan and wallet expenses” to add it here.
+          </Card> : settlementPlans.map((plan) => {
+            const incoming = plan.transfers.filter((transfer) => transfer.creditor === 'You');
+            const dueToYou = incoming.reduce((total, transfer) => total + transfer.amount_paise, 0);
+            const received = incoming.filter((transfer) => transfer.settled_at)
+              .reduce((total, transfer) => total + transfer.amount_paise, 0);
+            const remaining = dueToYou - received;
+            const status = dueToYou === 0 ? 'No repayments due to you'
+              : remaining === 0 ? 'Received in full'
+                : received > 0 ? 'Partially received' : 'Awaiting repayments';
+            return <Card key={plan.id} id={`group-settlement-${plan.id}`}
+              className={`min-w-0 scroll-mt-6 space-y-3 p-4 ${focusedPlanId === plan.id ? 'ring-2 ring-[var(--brand-primary)]' : ''}`}>
+              <div className='flex min-w-0 flex-col gap-1 sm:flex-row sm:items-start sm:justify-between'>
+                <h3 className='min-w-0 break-words font-semibold text-[var(--text-primary)]'>{plan.title}</h3>
+                <span className='text-xs font-semibold text-[var(--brand-primary)]'>{status}</span>
+              </div>
+              <div className='grid grid-cols-2 gap-2 text-sm sm:grid-cols-4'>
+                <div className='min-w-0 rounded-lg bg-[var(--bg-elevated)] p-2'><p className='text-xs text-[var(--text-muted)]'>Total plan</p>
+                  <p className='break-words font-semibold text-[var(--text-primary)]'>{formatPaiseAsInr(plan.total_paise)}</p></div>
+                <div className='min-w-0 rounded-lg bg-[var(--bg-elevated)] p-2'><p className='text-xs text-[var(--text-muted)]'>Due to you</p>
+                  <p className='break-words font-semibold text-[var(--text-primary)]'>{formatPaiseAsInr(dueToYou)}</p></div>
+                <div className='min-w-0 rounded-lg bg-[var(--bg-elevated)] p-2'><p className='text-xs text-[var(--text-muted)]'>Received</p>
+                  <p className='break-words font-semibold text-[var(--positive)]'>{formatPaiseAsInr(received)}</p></div>
+                <div className='min-w-0 rounded-lg bg-[var(--bg-elevated)] p-2'><p className='text-xs text-[var(--text-muted)]'>Left to receive</p>
+                  <p className='break-words font-semibold text-[var(--text-primary)]'>{formatPaiseAsInr(remaining)}</p></div>
+              </div>
+              <p className='text-xs text-[var(--text-muted)]'>Total plan includes all bills. Repayment amounts include only transfers payable to you.</p>
+              <details className='rounded-lg border border-[var(--bg-border)] p-3'>
+                <summary className='cursor-pointer text-sm font-semibold text-[var(--brand-primary)]'>Repayments</summary>
+                <div className='mt-3 space-y-3'>
+                  {plan.transfers.length === 0 ? <p className='text-xs text-[var(--text-muted)]'>No repayments are needed.</p> : <>
+                    {[...plan.transfers].sort((a, b) => Number(Boolean(a.settled_at)) - Number(Boolean(b.settled_at)))
+                      .map((transfer) => <div key={transfer.id} className='flex min-w-0 flex-col gap-2 border-t border-[var(--bg-border)] pt-2 text-xs sm:flex-row sm:items-center sm:justify-between'>
+                        <span className='min-w-0 break-words text-[var(--text-primary)]'>{transfer.debtor} pays {transfer.creditor} · {formatPaiseAsInr(transfer.amount_paise)}</span>
+                        <div className='flex flex-col items-start gap-1 sm:items-end'>
+                          {transfer.settled_at ? <span className='text-[var(--positive)]'>Repaid</span> : <>
+                            {(transfer.creditor === 'You' || transfer.debtor === 'You') &&
+                              <label className='space-y-1 text-xs text-[var(--text-muted)]'>
+                                {transfer.creditor === 'You' ? 'Received in' : 'Paid from'}
+                                <select aria-label={`Account for repayment from ${transfer.debtor} to ${transfer.creditor}`}
+                                  className='block w-full max-w-40 rounded-lg border border-[var(--bg-border)] bg-[var(--bg-elevated)] p-1 text-xs text-[var(--text-primary)]'
+                                  value={settlementAccounts[transfer.id] ?? defaultAccountId}
+                                  onChange={(event) => setSettlementAccounts((current) => ({
+                                    ...current, [transfer.id]: event.target.value,
+                                  }))}>
+                                  {activeAccounts.length === 0 && <option value=''>Choose account</option>}
+                                  {activeAccounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}
+                                </select>
+                              </label>}
+                            <button type='button' disabled={settlingPlanTransferId !== null ||
+                              ((transfer.creditor === 'You' || transfer.debtor === 'You') &&
+                                !(settlementAccounts[transfer.id] ?? defaultAccountId))}
+                              className='rounded-lg bg-[var(--brand-primary)] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[var(--brand-hover)] disabled:opacity-50'
+                              onClick={() => void markPlanTransferSettled(plan.id, transfer)}>
+                              {settlingPlanTransferId === transfer.id ? 'Recording…' : 'Mark repaid'}
+                            </button>
+                          </>}
+                          {settlementFeedback[transfer.id] && <p
+                            role={settlementFeedback[transfer.id] === 'Repayment recorded.' ? 'status' : 'alert'}
+                            className={`max-w-64 text-xs ${settlementFeedback[transfer.id] === 'Repayment recorded.'
+                              ? 'text-[var(--positive)]' : 'text-red-400'}`}>
+                            {settlementFeedback[transfer.id]}
+                          </p>}
+                        </div>
+                      </div>)}
+                  </>}
+                </div>
+              </details>
+              {plan.transaction_ids.length > 0 && <div className='flex flex-wrap gap-2'>
+                {plan.transaction_ids.map((id, index) => {
+                  const transaction = transactions.find((item) => item.id === id);
+                  return <button key={id} type='button'
+                    className='max-w-full rounded-lg border border-[var(--bg-border)] px-3 py-2 text-left text-xs text-[var(--brand-primary)]'
+                    onClick={() => navigate(`/transactions?transactionId=${id}`)}>
+                    View {transaction?.merchant || `wallet expense ${index + 1}`}
+                  </button>;
+                })}
+              </div>}
+            </Card>;
+          })}
+    </section>
+    {complexOpen && <ComplexSettlementPlanner />}
     {owedOpen && <Card className='space-y-3 p-5'>
       <div><h2 className='font-semibold text-[var(--text-primary)]'>Record money someone owes you</h2>
         <p className='text-xs text-[var(--text-muted)]'>For a loan, tickets, or another amount that is not tied to a recorded purchase.</p></div>
@@ -336,7 +515,7 @@ export function SplitsPage() {
           <input className={inputClass} maxLength={255} value={owedTitle} placeholder='Tickets I paid for'
             onChange={(event) => setOwedTitle(event.target.value)} />
         </label>
-        <div className='flex gap-2 sm:col-span-2'><Button type='submit' isLoading={creatingOwed}>Save amount owed</Button>
+        <div className='grid grid-cols-1 gap-2 sm:col-span-2 sm:grid-cols-2'><Button type='submit' isLoading={creatingOwed}>Save amount owed</Button>
           <Button type='button' variant='secondary' onClick={() => setOwedOpen(false)}>Cancel</Button></div>
       </form>
     </Card>}
@@ -363,7 +542,7 @@ export function SplitsPage() {
         {expenses.length > 0 && <p className='text-xs text-[var(--text-muted)]'>{selectedOlderExpense ? 'Showing the selected expense and up to 4 recent expenses.' : 'Showing up to 5 recent expenses.'} To see more, <button type='button' className='text-[var(--brand-primary)] hover:underline' onClick={() => navigate('/transactions')}>go to Transactions</button> and select an expense to split.</p>}
         {expenses.length === 0 && <p className='text-sm text-[var(--text-muted)]'>There are no unshared expenses to split. You can still use “Record money owed” above for an IOU without a transaction.</p>}
         <label className='block space-y-1 text-sm text-[var(--text-secondary)]'>Title
-          <input className={inputClass} maxLength={255} value={title} onChange={(event) => { setTitle(event.target.value); setTitleManuallyEdited(true); setReview(null); }} placeholder='Dinner with friends' />
+          <input className={inputClass} maxLength={255} value={displayedTitle} onChange={(event) => { setTitle(event.target.value); setTitleManuallyEdited(true); setReview(null); }} placeholder='Dinner with friends' />
         </label>
         <div className='flex gap-4 text-sm text-[var(--text-primary)]'>
           <label><input type='radio' checked={mode === 'equal'} onChange={() => { setMode('equal'); setReview(null); setError(''); }} /> Equal</label>
@@ -429,7 +608,7 @@ export function SplitsPage() {
             {allocationError && <p className='mt-1 text-xs text-red-400'>Enter valid shares that add up to the total.</p>}
           </div>}
         </div>
-        <div className='flex gap-2'><Button type='submit' disabled={!expense}>Review expense split</Button>
+        <div className='grid grid-cols-1 gap-2 sm:grid-cols-2'><Button type='submit' disabled={!expense}>Review expense split</Button>
           <Button type='button' variant='secondary' onClick={() => { setOpen(false); setReview(null); navigate('/splits'); }}>Cancel</Button></div>
       </form>
       {review && <div className='space-y-2 rounded-xl border border-[var(--bg-border)] p-4 text-sm text-[var(--text-primary)]'>
@@ -441,21 +620,27 @@ export function SplitsPage() {
     </Card>}
     <section className='space-y-3'><h2 className='font-semibold text-[var(--text-primary)]'>Your split and IOU tracker</h2>
       {isLoading ? <p className='text-sm text-[var(--text-muted)]'>Loading splits…</p> : splits.length === 0 ?
-        <Card className='p-5 text-sm text-[var(--text-muted)]'>No splits yet.</Card> : splits.map((split) =>
+        <Card className='p-5 text-sm text-[var(--text-muted)]'>No splits yet.</Card> : orderedSplits.map((split) =>
           <Card key={split.id} id={`split-${split.id}`}
             className={`scroll-mt-6 space-y-3 p-5 ${focusedSplitId === split.id ? 'ring-2 ring-[var(--brand-primary)]' : ''}`}>
-            <div className='flex justify-between gap-3'><div><h3 className='font-semibold text-[var(--text-primary)]'>{split.title}</h3>
+            <div className='flex min-w-0 flex-col gap-3 sm:flex-row sm:justify-between'><div className='min-w-0'><h3 className='break-words font-semibold text-[var(--text-primary)]'>{split.title}</h3>
               <span className='mb-1 inline-flex rounded-full bg-[var(--brand-subtle)] px-2 py-0.5 text-[10px] font-semibold text-[var(--brand-primary)]'>
                 {split.kind === 'money_owed' ? 'Money owed to you' : 'Expense split'}
               </span>
               <p className='text-xs text-[var(--text-muted)]'>Total {formatPaiseAsInr(split.total_paise)}{split.kind === 'expense_split' ? ` · Your share ${formatPaiseAsInr(split.owner_share_paise)}` : ''}</p></div>
-              <div className='text-right'><span className='text-sm font-semibold text-[var(--text-primary)]'>{formatPaiseAsInr(split.outstanding_paise)} {split.settlement_breakdown ? 'due to you' : 'due'}</span>
-                <div className='flex flex-wrap justify-end gap-3'>
+              <div className='min-w-0 text-left sm:text-right'><span className='break-words text-sm font-semibold text-[var(--text-primary)]'>{formatPaiseAsInr(split.outstanding_paise)} {split.settlement_breakdown ? 'due to you' : 'due'}</span>
+                <div className='flex flex-wrap gap-2 sm:justify-end'>
                   {split.transaction_id && <button type='button' className='rounded-lg border border-[var(--bg-border)] px-3 py-1.5 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:border-[var(--brand-primary)] hover:bg-[var(--brand-subtle)] hover:text-[var(--brand-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)] focus-visible:ring-offset-2'
                     onClick={() => navigate(`/transactions?transactionId=${split.transaction_id}`)}>View transaction</button>}
                   {split.kind === 'expense_split' && <button type='button' className='rounded-lg border border-[var(--brand-primary)]/30 bg-[var(--brand-subtle)] px-3 py-1.5 text-xs font-semibold text-[var(--brand-primary)] transition-colors hover:border-[var(--brand-primary)] hover:bg-[var(--brand-primary)] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)] focus-visible:ring-offset-2'
                     onClick={() => setEditingSplitId(editingSplitId === split.id ? null : split.id)}>
                     {editingSplitId === split.id ? 'Close edit' : 'Edit split'}
+                  </button>}
+                  {unpaidCount(split) > 1 && <button type='button'
+                    className='max-w-full rounded-lg border border-[var(--brand-primary)]/30 bg-[var(--brand-subtle)] px-3 py-1.5 text-center text-xs font-semibold whitespace-normal text-[var(--brand-primary)] disabled:opacity-50'
+                    disabled={repayingAllSplitId !== null || repaying || repayingTransfer || activeAccounts.length === 0}
+                    onClick={() => void markAllRepaid(split)}>
+                    {repayingAllSplitId === split.id ? 'Recording repayments…' : 'Mark all as repaid'}
                   </button>}
                   <button type='button' className='text-xs text-[var(--text-muted)]' disabled={deleting}
                     onClick={() => removeSplit(split.id)}>Remove split</button>
@@ -493,9 +678,11 @@ export function SplitsPage() {
             {split.settlement_breakdown ? (split.settlement_breakdown.transfers.filter((transfer) =>
               transfer.creditor.trim().toLocaleLowerCase() === 'you').length > 0 ?
               split.settlement_breakdown.transfers.filter((transfer) =>
-                transfer.creditor.trim().toLocaleLowerCase() === 'you').map((transfer, index) =>
-                <div key={`${transfer.debtor}-${index}`} className='flex items-center justify-between gap-3 border-t border-[var(--bg-border)] pt-2 text-sm'>
-                  <span className='text-[var(--text-primary)]'>{transfer.debtor} · {formatPaiseAsInr(transfer.amount_paise)} {transfer.repayment_transaction_id ? 'repaid' : 'due to you'}</span>
+                transfer.creditor.trim().toLocaleLowerCase() === 'you')
+                .sort((a, b) => Number(Boolean(a.repayment_transaction_id)) - Number(Boolean(b.repayment_transaction_id)))
+                .map((transfer, index) =>
+                <div key={`${transfer.debtor}-${index}`} className='flex min-w-0 flex-col gap-3 border-t border-[var(--bg-border)] pt-2 text-sm sm:flex-row sm:items-center sm:justify-between'>
+                  <span className='min-w-0 break-words text-[var(--text-primary)]'>{transfer.debtor} · {formatPaiseAsInr(transfer.amount_paise)} {transfer.repayment_transaction_id ? 'repaid' : 'due to you'}</span>
                   {transfer.repayment_transaction_id ? <div className='flex flex-col items-end gap-1'>
                     <span className='text-xs text-green-400'>Repaid</span>
                     <button type='button' className='text-xs text-[var(--brand-primary)]'
@@ -512,13 +699,16 @@ export function SplitsPage() {
                         {activeAccounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}
                       </select>
                     </label>
-                    <button type='button' disabled={repayingTransfer || !defaultAccountId}
+                    <button type='button' disabled={repayingTransfer || repayingAllSplitId !== null ||
+                      !(repaymentAccounts[`${split.id}:${transfer.debtor}`] ?? defaultAccountId)}
                       className='rounded-lg bg-[var(--brand-primary)] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[var(--brand-hover)] disabled:opacity-50'
                       onClick={() => markSettlementTransferRepaid(split.id, transfer.debtor)}>Mark repaid</button>
                   </div>}
                 </div>) : <p className='border-t border-[var(--bg-border)] pt-2 text-xs text-[var(--text-muted)]'>No settlement amount is due to you.</p>) :
-            split.participants.map((person) => <div key={person.id} className='flex items-center justify-between gap-3 border-t border-[var(--bg-border)] pt-2 text-sm'>
-              <span className='text-[var(--text-primary)]'>{person.name} · {formatPaiseAsInr(person.share_paise)}</span>
+            [...split.participants].sort((a, b) =>
+              Number(a.settled_paise >= a.share_paise) - Number(b.settled_paise >= b.share_paise))
+              .map((person) => <div key={person.id} className='flex min-w-0 flex-col gap-3 border-t border-[var(--bg-border)] pt-2 text-sm sm:flex-row sm:items-center sm:justify-between'>
+              <span className='min-w-0 break-words text-[var(--text-primary)]'>{person.name} · {formatPaiseAsInr(person.share_paise)}</span>
               {!split.settlement_breakdown && (person.settled_paise === person.share_paise ? <div className='flex flex-col items-end gap-1'>
                 <span className='text-green-400'>Repaid</span>
                 {person.repayment_transaction_id && <button type='button' className='text-xs text-[var(--brand-primary)]'
@@ -534,7 +724,8 @@ export function SplitsPage() {
                       {activeAccounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}
                     </select>
                   </label>
-                  <button type='button' disabled={repaying || !defaultAccountId}
+                  <button type='button' disabled={repaying || repayingAllSplitId !== null ||
+                    !(repaymentAccounts[person.id] ?? defaultAccountId)}
                     className='rounded-lg bg-[var(--brand-primary)] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[var(--brand-hover)] disabled:opacity-50'
                     onClick={() => markRepaid(split.id, person.id)}>Mark repaid</button>
                 </div>)}

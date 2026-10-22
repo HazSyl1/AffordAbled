@@ -21,7 +21,9 @@ from app.infrastructure.ai.agents.supervisor_graph import (
     _category_reply_memory_signal,
     _explicit_action_clauses,
     _is_account_creation_reply,
+    _is_complex_settlement_request,
     _is_receipt_upload_request,
+    _matches_observed_action,
     _obvious_specialist,
     _pending_itemized_split_followup,
     _pending_receipt_split_invitation,
@@ -29,7 +31,48 @@ from app.infrastructure.ai.agents.supervisor_graph import (
     _reconcile_task_queue,
     _remaining_after_observations,
     _required_tools,
+    _split_task_for_request,
 )
+
+
+def test_complex_group_bill_routes_to_review_before_transaction() -> None:
+    request = ('Sarthak paid 17000 for a meal shared by six people. A paid a cafe bill. '
+               'Apply a 10% coupon and split the 2.7% card fee among A, C, D and E.')
+    assert _is_complex_settlement_request(request)
+    assert _obvious_specialist(request) == 'split'
+    assert _required_tools(request, 'split') == {'create_settlement_draft'}
+    assert not _is_complex_settlement_request('spent 90 on food')
+
+
+def test_single_bill_quantity_and_debts_stays_on_transaction_split_flow() -> None:
+    request = (
+        'Spent 927383 rs on A, B, C, D, E, F, G and myself. A, B and C got 7 vodka cranberries '
+        'each, which were 7000rs each. Rest of the bill is divided equally. A owes C 17000, '
+        'B contributed 29000, and C owes B 20000.'
+    )
+
+    assert not _is_complex_settlement_request(request)
+    split_task = _split_task_for_request(request)
+    assert split_task is not None
+    assert request in split_task
+    assert _required_tools(split_task, 'split') == {'create_split'}
+
+
+def test_most_spending_question_routes_to_analytics() -> None:
+    request = 'what did I spend the most on this week'
+    assert _obvious_specialist(request) == 'analytics'
+    assert _matches_observed_action(request, {
+        'tool': 'get_spending_summary', 'data': {'total_spent_paise': 1000},
+    })
+
+    transaction_request = 'which transaction I spent most on'
+    assert _obvious_specialist(transaction_request) == 'analytics'
+    assert _matches_observed_action(transaction_request, {
+        'tool': 'get_transactions', 'data': {'transactions': [{'amount_paise': 1000}]},
+    })
+    assert not _matches_observed_action(transaction_request, {
+        'tool': 'get_spending_summary', 'data': {'total_spent_paise': 1000},
+    })
 
 
 @pytest.mark.parametrize("reply", ["Medicines", "Use Health", "put it under Food"])

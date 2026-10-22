@@ -12,6 +12,9 @@ from app.application.services.split_service import ParticipantEditShare, Partici
 from app.infrastructure.database.models import (
     AccountModel,
     CategoryModel,
+    SettlementPlanModel,
+    SettlementPlanTransactionModel,
+    SettlementPlanTransferModel,
     SplitContactModel,
     SplitModel,
     SplitParticipantModel,
@@ -34,6 +37,22 @@ class SqlAlchemySplitRepository:
         )
         if split_id is not None:
             return True
+        plan_link = await self.session.scalar(
+            select(SettlementPlanTransactionModel.transaction_id).join(SettlementPlanModel).where(
+                SettlementPlanModel.user_id == user_id,
+                SettlementPlanTransactionModel.transaction_id == transaction_id,
+            )
+        )
+        if plan_link is not None:
+            return True
+        plan_repayment = await self.session.scalar(
+            select(SettlementPlanTransferModel.id).join(SettlementPlanModel).where(
+                SettlementPlanModel.user_id == user_id,
+                SettlementPlanTransferModel.repayment_transaction_id == transaction_id,
+            )
+        )
+        if plan_repayment is not None:
+            return True
         repayment_id = await self.session.scalar(
             select(SplitParticipantModel.id).join(SplitModel).where(
                 SplitModel.user_id == user_id,
@@ -47,6 +66,14 @@ class SqlAlchemySplitRepository:
         owner_share_paise: int, participants: list[ParticipantShare], item_breakdown: list[dict] | None = None,
         settlement_breakdown: dict | None = None,
     ) -> SplitModel:
+        existing_plan = await self.session.scalar(
+            select(SettlementPlanTransactionModel.transaction_id).join(SettlementPlanModel).where(
+                SettlementPlanModel.user_id == user_id,
+                SettlementPlanTransactionModel.transaction_id == transaction_id,
+            )
+        )
+        if existing_plan is not None:
+            raise ValueError('This expense already belongs to a group settlement plan.')
         transaction = await self.session.scalar(
             select(TransactionModel).where(
                 TransactionModel.id == transaction_id,
