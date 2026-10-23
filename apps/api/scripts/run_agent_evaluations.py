@@ -1,0 +1,128 @@
+"""Run all AffordAbled DeepEval checks and print one actionable summary."""
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import subprocess
+import sys
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+
+API_ROOT = Path(__file__).resolve().parents[1]
+
+
+@dataclass
+class CheckResult:
+    name: str
+    duration_seconds: float
+    passed: int = 0
+    failed: int = 0
+    skipped: int = 0
+    cases: list[tuple[str, str]] = field(default_factory=list)
+    diagnostics: str = ""
+    exit_code: int = 0
+
+    @property
+    def ok(self) -> bool:
+        return self.exit_code == 0 and self.failed == 0 and self.passed > 0
+
+
+def _run_pytest(name: str, selection: str, *, live: bool) -> CheckResult:
+    environment = os.environ.copy()
+    if live:
+        environment["RUN_DEEPEVAL_LIVE"] = "1"
+    command = [
+        sys.executable, "-m", "pytest", "-v", "-p", "no:cacheprovider",
+        "tests/test_deepeval_agent_regressions.py", "-k", selection, "--tb=short",
+    ]
+    started = time.monotonic()
+    process = subprocess.run(
+        command, cwd=API_ROOT, env=environment, capture_output=True,
+        text=True, encoding="utf-8", errors="replace", check=False,
+    )
+    result = CheckResult(name=name, duration_seconds=time.monotonic() - started, exit_code=process.returncode)
+    result.diagnostics = "\n".join(part for part in (process.stdout.strip(), process.stderr.strip()) if part)
+    for line in process.stdout.splitlines():
+        match = re.match(r"^tests[/\\].*?::(\S+)\s+(PASSED|FAILED|SKIPPED|ERROR)\b", line)
+        if match is None:
+            continue
+        case_name, status = match.groups()
+        result.cases.append(("PASS" if status == "PASSED" else "SKIP" if status == "SKIPPED" else "FAIL", case_name))
+        if status == "PASSED":
+            result.passed += 1
+        elif status == "SKIPPED":
+            result.skipped += 1
+        else:
+            result.failed += 1
+    if (process.returncode or not result.cases) and not result.failed:
+        result.failed = 1  # Collection or setup failed before pytest wrote a testcase.
+    return result
+
+
+def _run_guardrails() -> CheckResult:
+    started = time.monotonic()
+    process = subprocess.run(
+        [sys.executable, "scripts/run_deepeval_guardrail_eval.py"],
+        cwd=API_ROOT, capture_output=True, text=True, encoding="utf-8",
+        errors="replace", check=False,
+    )
+    result = CheckResult(
+        name="Guardrail decisions", duration_seconds=time.monotonic() - started,
+        exit_code=process.returncode,
+    )
+    result.diagnostics = "\n".join(part for part in (process.stdout.strip(), process.stderr.strip()) if part)
+    for line in process.stdout.splitlines():
+        match = re.match(r"^(PASS|FAIL) ([a-z_]+)(?::|$)", line)
+        if match:
+            status, name = match.groups()
+            result.cases.append((status, name))
+            if status == "PASS":
+                result.passed += 1
+            else:
+                result.failed += 1
+    if (process.returncode or not result.cases) and not result.failed:
+        result.failed = 1
+    return result
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Run AffordAbled DeepEval checks with one summary")
+    parser.add_argument("--live", action="store_true", help="Also call the Azure model using an isolated test database")
+    args = parser.parse_args()
+
+    results = [
+        _run_pytest("Agent state and split arithmetic", "not live_salary", live=False),
+        _run_guardrails(),
+    ]
+    if args.live:
+        results.append(_run_pytest("Live Azure salary workflow", "live_salary", live=True))
+
+    print("\nAffordAbled DeepEval summary")
+    print("=" * 28)
+    for result in results:
+        status = "PASS" if result.ok else "FAIL"
+        print(
+            f"{status}  {result.name}: {result.passed} passed, {result.failed} failed, "
+            f"{result.skipped} skipped ({result.duration_seconds:.1f}s)"
+        )
+        for case_status, case_name in result.cases:
+            print(f"  {case_status}  {case_name}")
+        if not result.ok:
+            print("  Details:")
+            for line in result.diagnostics.splitlines():
+                print(f"    {line}")
+    if not args.live:
+        print("Live Azure workflow: not run (add --live to include it)")
+    passed = sum(result.passed for result in results)
+    failed = sum(result.failed for result in results)
+    skipped = sum(result.skipped for result in results)
+    duration = sum(result.duration_seconds for result in results)
+    print(f"Total: {passed} passed, {failed} failed, {skipped} skipped in {duration:.1f}s")
+    return 0 if all(result.ok for result in results) else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

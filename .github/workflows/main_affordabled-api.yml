@@ -33,8 +33,7 @@ jobs:
         working-directory: apps/api
         run: |
           source antenv/bin/activate
-          python -m pytest -q tests/test_deepeval_agent_regressions.py
-          python scripts/run_deepeval_guardrail_eval.py
+          python scripts/run_agent_evaluations.py
 
       - name: Stage API package
         run: |
