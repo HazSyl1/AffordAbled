@@ -1,0 +1,58 @@
+[
+  {
+    "name": "salary_write_requires_tool_evidence",
+    "kind": "task_completion",
+    "result": {"status": "success", "summary": "Salary recorded", "tool_observations": []},
+    "expected": false
+  },
+  {
+    "name": "salary_write_accepts_transaction_id",
+    "kind": "task_completion",
+    "result": {
+      "status": "success",
+      "tool_observations": [{"tool": "create_transaction", "ok": true, "data": {"transaction": {"id": "2d69a172-a990-445b-81e4-a1fd3f9437a8"}}}]
+    },
+    "expected": true
+  },
+  {
+    "name": "failed_write_does_not_complete",
+    "kind": "task_completion",
+    "result": {
+      "status": "success",
+      "tool_observations": [{"tool": "create_transaction", "ok": false, "data": {"transaction": {"id": "2d69a172-a990-445b-81e4-a1fd3f9437a8"}}}]
+    },
+    "expected": false
+  },
+  {
+    "name": "followup_uses_verified_transaction_id",
+    "kind": "followup_transaction",
+    "reply": "Create split for them",
+    "source_request": "1608 on dinner at Masato with A, B and C",
+    "events": [{"tool": "create_transaction", "ok": true, "request": "1608 on dinner at Masato with A, B and C", "data": {"transaction": {"id": "ed05fb65-1cad-4b0f-a6f7-3c6b8e3ee491", "amount_paise": 160800, "merchant": "Masato"}}}],
+    "expected": "ed05fb65-1cad-4b0f-a6f7-3c6b8e3ee491"
+  },
+  {
+    "name": "failed_transaction_is_not_a_reference",
+    "kind": "followup_transaction",
+    "reply": "Split this",
+    "source_request": "Spent 99 at Cafe",
+    "events": [{"tool": "create_transaction", "ok": false, "request": "Spent 99 at Cafe", "data": {"transaction": {"id": "ed05fb65-1cad-4b0f-a6f7-3c6b8e3ee491", "amount_paise": 9900}}}],
+    "expected": null
+  },
+  {
+    "name": "multiple_transactions_require_selection",
+    "kind": "followup_transaction",
+    "reply": "Split these",
+    "source_request": "Spent 20 at Cafe and 50 at Market",
+    "events": [{"tool": "create_transaction_batch", "ok": true, "request": "Spent 20 at Cafe and 50 at Market", "data": {"transactions": [{"id": "ed05fb65-1cad-4b0f-a6f7-3c6b8e3ee491", "amount_paise": 2000}, {"id": "a03d74d5-b128-4c77-9bd9-9810c4462f83", "amount_paise": 5000}]}}],
+    "expected_error": "Please choose which one to split"
+  },
+  {
+    "name": "quantity_split_reconciles_in_paise",
+    "kind": "quantity_split",
+    "total_paise": 92738300,
+    "participants": ["A", "B", "C", "D", "E", "F", "G"],
+    "allocations": [{"people": ["A", "B", "C"], "quantity_per_person": 7, "unit_price_paise": 700000}],
+    "expected": {"owner_share_paise": 9754788, "remainder_paise": 78038300, "shares_paise": {"A": 14654788, "B": 14654788, "C": 14654788, "D": 9754787, "E": 9754787, "F": 9754787, "G": 9754787}}
+  }
+]

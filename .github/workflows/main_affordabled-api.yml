@@ -29,6 +29,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Check agent regression evaluations
+        working-directory: apps/api
+        run: |
+          source antenv/bin/activate
+          python -m pytest -q tests/test_deepeval_agent_regressions.py
+          python scripts/run_deepeval_guardrail_eval.py
+
       - name: Stage API package
         run: |
           mkdir -p deploy/api

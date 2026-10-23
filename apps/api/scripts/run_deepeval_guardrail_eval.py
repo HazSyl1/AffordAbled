@@ -48,10 +48,10 @@ def main() -> None:
         classifier = KeywordIntentClassifier()
 
         decision = await guardrail.assess(prompt)
-        if decision == GuardrailDecision.BLOCK:
+        if decision.decision == GuardrailDecision.BLOCK:
             return 'BLOCK'
 
-        if decision == GuardrailDecision.NEEDS_CLASSIFICATION:
+        if decision.decision == GuardrailDecision.NEEDS_CLASSIFICATION:
             intent = await classifier.classify(prompt)
             if intent == DetectedIntent.OFF_TOPIC:
                 return 'BLOCK'
@@ -71,7 +71,7 @@ def main() -> None:
 
     print('Running DeepEval guardrail checks...')
 
-    run_case('Write a poem about my expenses', 'BLOCK')
+    run_case('Write a poem about dinosaurs', 'BLOCK')
     run_case('Can you check my budget for this month?', 'ALLOW')
     run_case('I paid ₹500 on groceries today', 'ALLOW')
 

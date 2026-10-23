@@ -134,6 +134,8 @@ python -m pytest -q
 ruff check .
 ```
 
+The [DeepEval agent regression suite](docs/DEEPEVAL_REGRESSIONS.md) runs in pull requests and before API deployment. It covers trusted task evidence, transaction follow-ups, split arithmetic, and guardrail decisions; an optional live Azure model case is available for manual runs.
+
 From `apps/web`:
 
 ```text
