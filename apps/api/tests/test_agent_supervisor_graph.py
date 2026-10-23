@@ -12,7 +12,13 @@ from langchain_core.runnables import RunnableLambda
 from langgraph.checkpoint.memory import InMemorySaver
 
 from app.domain.ports import GuardrailAssessment, GuardrailDecision
-from app.infrastructure.ai.agents.contracts import HandoffContext, SpecialistDecision, SupervisorDecision, ToolAction
+from app.infrastructure.ai.agents.contracts import (
+    HandoffContext,
+    SpecialistDecision,
+    SupervisorDecision,
+    TaskContract,
+    ToolAction,
+)
 from app.infrastructure.ai.agents.runtime import SpecialistRuntime
 from app.infrastructure.ai.agents.supervisor_graph import (
     AgenticSupervisorGraph,
@@ -32,6 +38,8 @@ from app.infrastructure.ai.agents.supervisor_graph import (
     _remaining_after_observations,
     _required_tools,
     _split_task_for_request,
+    _sync_task_contracts,
+    _verify_task_contract,
 )
 
 
@@ -58,6 +66,75 @@ def test_single_bill_quantity_and_debts_stays_on_transaction_split_flow() -> Non
     assert _required_tools(split_task, 'split') == {'create_split'}
 
 
+def test_legacy_string_queue_is_normalized_to_a_verifiable_task_contract() -> None:
+    task = "Record salary ₹60,000."
+
+    contracts = _sync_task_contracts([task], None, original_request="Got salary ₹60,000.")
+    contract = TaskContract.model_validate(contracts[0])
+
+    assert contract.id
+    assert contract.original_text == task
+    assert contract.summary == task
+    assert contract.intent == "create_transaction"
+    assert contract.specialist == "transaction"
+    assert set(contract.required_tools) == {"create_transaction", "create_transaction_batch"}
+    assert "create_transaction:transaction.id" in contract.required_evidence
+    assert contract.completion_mode == "any"
+    assert contract.status == "queued"
+
+
+def test_task_verifier_rejects_wrong_task_id_and_requires_all_analytics_reads() -> None:
+    request = "Can I afford ₹900 sushi if I need ₹1,000 each day for the rest of the month?"
+    contract = TaskContract.model_validate(
+        _sync_task_contracts([request], None, original_request=request)[0]
+    )
+    balance_observation = {
+        "task_id": contract.id,
+        "tool": "get_account_balances",
+        "ok": True,
+        "data": {"accounts": []},
+    }
+
+    assert set(contract.required_tools) == {"get_account_balances", "get_current_datetime"}
+    assert not _verify_task_contract(
+        contract,
+        {"task_id": contract.id, "status": "success", "tool_observations": [balance_observation]},
+    )
+    assert not _verify_task_contract(
+        contract,
+        {
+            "task_id": "another-task",
+            "status": "success",
+            "tool_observations": [
+                balance_observation,
+                {
+                    "task_id": contract.id,
+                    "tool": "get_current_datetime",
+                    "ok": True,
+                    "data": {"current_datetime": "2026-10-23T19:41:00+05:30"},
+                },
+            ],
+        },
+    )
+
+
+def test_queue_detour_keeps_original_transaction_task_id() -> None:
+    transaction_task = "Spent ₹99 on Food"
+    original = _sync_task_contracts(
+        [transaction_task], None, original_request=transaction_task
+    )
+    original_id = original[0]["id"]
+
+    updated = _sync_task_contracts(
+        ["Create account: Axis with ₹6,000", transaction_task],
+        original,
+        original_request=transaction_task,
+    )
+
+    assert updated[0]["id"] != original_id
+    assert updated[0]["specialist"] == "account"
+    assert updated[1]["id"] == original_id
+    assert updated[1]["summary"] == transaction_task
 def test_most_spending_question_routes_to_analytics() -> None:
     request = 'what did I spend the most on this week'
     assert _obvious_specialist(request) == 'analytics'
@@ -130,6 +207,42 @@ async def test_plain_text_category_followup_preserves_memory_signal_without_grap
 
     assert capturing_graph.captured_input is not None
     assert capturing_graph.captured_input["memory_review_signal"] == {"signal_type": "category_mapping"}
+
+
+@pytest.mark.asyncio
+async def test_next_turn_recovers_verified_transaction_reference_from_legacy_checkpoint() -> None:
+    graph = _graph()
+    transaction_id = str(uuid.uuid4())
+    source_request = '1608 on dinner at masato with Sudhansu Sujal and Rujul'
+
+    class Snapshot:
+        values = {
+            'conversation_history': [{'role': 'user', 'content': source_request}],
+            'tool_event_history': [{
+                'tool': 'create_transaction', 'ok': True, 'request': source_request,
+                'data': {'transaction': {'id': transaction_id, 'amount_paise': 160800, 'merchant': 'Masato'}},
+            }],
+        }
+        interrupts: list[Any] = []
+
+    class CapturingGraph:
+        captured_input: dict[str, Any] | None = None
+
+        async def aget_state(self, _config: dict[str, Any]) -> Snapshot:
+            return Snapshot()
+
+        async def ainvoke(self, input_value: dict[str, Any], *, config: dict[str, Any]) -> dict[str, Any]:
+            self.captured_input = input_value
+            return {}
+
+    capturing_graph = CapturingGraph()
+    graph.graph = capturing_graph  # type: ignore[assignment]
+    await graph.invoke(user_id=uuid.uuid4(), thread_id='masato', message='Create split for this')
+
+    assert capturing_graph.captured_input is not None
+    references = capturing_graph.captured_input['verified_transaction_references']
+    assert [reference['id'] for reference in references] == [transaction_id]
+    assert references[0]['source_request'] == source_request
 
 
 @pytest.mark.asyncio
@@ -975,7 +1088,13 @@ async def test_verified_terminal_tool_observation_skips_final_supervisor_call() 
             "observed_actions": [
                 {
                     "tool": "create_transaction",
-                    "data": {"transaction": {"amount_paise": 9900, "merchant": "pcm"}},
+                        "data": {
+                            "transaction": {
+                                "id": str(uuid.uuid4()),
+                                "amount_paise": 9900,
+                                "merchant": "pcm",
+                            }
+                        },
                 }
             ]
         },
@@ -994,6 +1113,101 @@ async def test_verified_terminal_tool_observation_skips_final_supervisor_call() 
     assert update["tasks_completed"] is True
     assert update["task_queue"] == []
     assert update["final_response"] == result["summary"]
+    assert supervisor.calls == []
+
+
+@pytest.mark.asyncio
+async def test_verified_affordability_answer_is_not_replaced_by_supervisor_fallback() -> None:
+    graph = _graph()
+    supervisor = ScriptedSupervisor([])
+    graph._supervisor = supervisor  # type: ignore[assignment]
+    task = "Can I afford 900rps sushi considering I’ll need 1k each day for the rest of the month"
+    summary = (
+        "Today is October 23. Reserving ₹1,000 for each of the 8 days after today and spending ₹900 "
+        "leaves ₹4,489 from the verified ₹13,389 balance."
+    )
+    result = {
+        "specialist": "analytics",
+        "status": "success",
+        "summary": summary,
+        "data": {
+                "observed_actions": [
+                    {
+                        "tool": "get_current_datetime",
+                        "data": {"current_datetime": "2026-10-23T19:41:00+05:30"},
+                    },
+                    {"tool": "get_account_balances", "data": {"accounts": []}},
+                ]
+        },
+    }
+
+    update = await graph._supervise(
+        {
+            "messages": [HumanMessage(content=task)],
+            "user_id": str(uuid.uuid4()),
+            "timezone": "Asia/Kolkata",
+            "current_datetime": "2026-10-23T19:41:00+05:30",
+            "task_request": task,
+            "task_queue": [task],
+            "results": [result],
+        }
+    )
+
+    assert update["tasks_completed"] is True
+    assert update["task_queue"] == []
+    assert update["final_response"] == summary
+    contract = TaskContract.model_validate(update["task_contracts"][0])
+    assert contract.status == "completed"
+    assert contract.result_summary == summary
+    assert contract.intent == "analytics_query"
+    assert supervisor.calls == []
+
+
+@pytest.mark.asyncio
+async def test_verified_salary_with_grouped_amount_and_period_is_not_replaced_by_supervisor_fallback() -> None:
+    graph = _graph()
+    supervisor = ScriptedSupervisor([])
+    graph._supervisor = supervisor  # type: ignore[assignment]
+    task = "Record salary ₹60,000."
+    summary = 'The salary transaction of ₹60,000 was recorded under "Salary" in "Axis".'
+    result = {
+        "specialist": "transaction",
+        "status": "success",
+        "summary": summary,
+        "data": {
+            "observed_actions": [
+                {
+                    "tool": "create_transaction",
+                    "data": {
+                        "transaction": {
+                            "id": str(uuid.uuid4()),
+                            "amount_paise": 6_000_000,
+                            "type": "income",
+                            "merchant": None,
+                        }
+                    },
+                }
+            ]
+        },
+    }
+
+    update = await graph._supervise(
+        {
+            "messages": [HumanMessage(content="Got salary ₹60,000.")],
+            "user_id": str(uuid.uuid4()),
+            "task_request": "Got salary ₹60,000.",
+            "task_queue": [task],
+            "results": [result],
+        }
+    )
+
+    assert update["tasks_completed"] is True
+    assert update["task_queue"] == []
+    assert update["final_response"] == summary
+    contract = TaskContract.model_validate(update["task_contracts"][0])
+    assert contract.status == "completed"
+    assert contract.result_summary == summary
+    assert contract.intent == "create_transaction"
     assert supervisor.calls == []
 
 

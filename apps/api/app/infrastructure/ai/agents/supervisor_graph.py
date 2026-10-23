@@ -5,7 +5,9 @@ import re
 import uuid
 from collections import Counter
 from collections.abc import Mapping
+from datetime import datetime
 from typing import Annotated, Any, Literal, TypedDict
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langgraph.graph import END, START, StateGraph
@@ -24,7 +26,7 @@ from app.infrastructure.ai.agents.account import AccountToolset
 from app.infrastructure.ai.agents.analytics import AnalyticsToolset
 from app.infrastructure.ai.agents.brains import StructuredSupervisorBrain
 from app.infrastructure.ai.agents.category import CategoryToolset
-from app.infrastructure.ai.agents.contracts import HandoffContext, SupervisorDecision
+from app.infrastructure.ai.agents.contracts import HandoffContext, SupervisorDecision, TaskContract
 from app.infrastructure.ai.agents.export import ExportToolset
 from app.infrastructure.ai.agents.extraction import TransactionExtractionAgent
 from app.infrastructure.ai.agents.prompts import (
@@ -37,7 +39,7 @@ from app.infrastructure.ai.agents.prompts import (
     SUPERVISOR_PROMPT,
     TRANSACTION_PROMPT,
 )
-from app.infrastructure.ai.agents.runtime import ToolBoundSpecialistRuntime
+from app.infrastructure.ai.agents.runtime import ToolBoundSpecialistRuntime, merge_verified_transaction_references
 from app.infrastructure.ai.agents.split import SplitToolset
 from app.infrastructure.ai.agents.transaction import TransactionToolset
 from app.infrastructure.ai.tools.transaction_query_tools import TransactionQueryTools
@@ -47,6 +49,56 @@ from app.infrastructure.database.repositories.sqlalchemy_complex_settlement_repo
 from app.infrastructure.database.repositories.sqlalchemy_memory_repository import SqlAlchemyMemoryRepository
 
 _MAX_REROUTES = 3
+_ANALYTICS_READ_TOOLS = {
+    "get_current_datetime",
+    "get_account_balances",
+    "get_transactions",
+    "get_spending_summary",
+    "get_spending_by_account",
+    "get_spending_comparison",
+    "get_split_summary",
+}
+_TASK_NAMESPACE = uuid.UUID("8866db9e-f379-44de-bd26-b1f154ee0bad")
+_TOOL_EVIDENCE_PATHS: dict[str, tuple[str, ...]] = {
+    "create_transaction": ("transaction.id",),
+    "create_transaction_batch": ("transactions.*.id",),
+    "update_transaction": ("transaction.id",),
+    "delete_transaction": ("deleted_transaction_id", "transaction.id"),
+    "restore_transaction": ("restored_transaction_id", "transaction.id"),
+    "create_category": ("category.id",),
+    "update_category": ("category.id",),
+    "delete_category": ("deleted_category_id", "category.id"),
+    "create_account": ("account.id",),
+    "update_account": ("account.id",),
+    "rename_account": ("account.id",),
+    "activate_account": ("account.id",),
+    "deactivate_account": ("account.id",),
+    "set_default_account": ("account.id",),
+    "create_split": ("split.id",),
+    "create_owed": ("receivable.id",),
+    "create_settlement_draft": ("settlement_draft.id",),
+    "set_split_contact_preference": ("contact.id", "contact.name"),
+    "create_transaction_report": ("export_id",),
+    "get_current_datetime": ("current_datetime", "current_date"),
+    "get_account_balances": ("accounts",),
+    "get_transactions": ("transactions",),
+    "get_spending_summary": ("total_spent_paise", "top_categories"),
+    "get_spending_by_account": ("accounts", "total_spent_paise"),
+    "get_spending_comparison": ("current", "comparison", "delta_paise"),
+    "get_split_summary": ("splits", "total_outstanding_paise"),
+    "list_categories": ("categories",),
+    "list_accounts": ("accounts",),
+    "list_transactions": ("transactions",),
+}
+
+
+def _current_datetime(timezone_name: str) -> str:
+    """Capture one trusted local clock value for the whole graph turn."""
+    try:
+        timezone = ZoneInfo(timezone_name or "UTC")
+    except ZoneInfoNotFoundError:
+        timezone = ZoneInfo("UTC")
+    return datetime.now(timezone).isoformat()
 
 
 def _is_complex_settlement_request(request: str) -> bool:
@@ -256,6 +308,7 @@ def _matches_observed_action(task: str, action: dict[str, Any]) -> bool:
         return _mentions(task, "restore") and _mentions(task, str(data.get("restored_transaction_id") or ""))
     if tool in {"create_transaction", "update_transaction", "delete_transaction"}:
         transaction = data.get("transaction") or {}
+        normalized_numeric_task = normalized_task.replace(",", "")
         amount_paise = transaction.get("amount_paise")
         amount_variants = set()
         if isinstance(amount_paise, int):
@@ -292,9 +345,10 @@ def _matches_observed_action(task: str, action: dict[str, Any]) -> bool:
             and transaction_type != "transfer"
         ):
             return False
-        has_amount = bool(re.search(r"(?<!\w)\d+(?:\.\d{1,2})?(?!\w)", task))
+        has_amount = bool(re.search(r"(?<!\w)\d+(?:\.\d{1,2})?(?!\w)", normalized_numeric_task))
         amount_matches = any(
-            re.search(rf"(?<![\d.]){re.escape(value)}(?![\d.])", normalized_task) for value in amount_variants
+            re.search(rf"(?<![\d.]){re.escape(value)}(?!\d)(?!\.\d)", normalized_numeric_task)
+            for value in amount_variants
         )
         id_matches = _mentions(task, str(transaction.get("id") or ""))
         merchant_matches = bool(merchant and _mentions(task, merchant))
@@ -324,7 +378,12 @@ def _matches_observed_action(task: str, action: dict[str, Any]) -> bool:
             and _mentions(task, str(receivable.get('person') or ''))
         )
     if tool == "get_account_balances":
-        return any(_mentions(task, word) for word in ("balance", "balances"))
+        return any(_mentions(task, word) for word in ("balance", "balances", "afford", "budget", "enough"))
+    if tool == "get_current_datetime":
+        return bool(re.search(
+            r"\b(?:today|tonight|tomorrow|rest of (?:the )?month|days? left|end of (?:the )?month)\b",
+            normalized_task,
+        ))
     if tool == "get_transactions":
         return any(
             _mentions(task, word)
@@ -424,7 +483,87 @@ def _verified_queue_is_complete(
         available_categories=available_categories,
         verify_categories=result.get("specialist") == "category",
     )
+    if remaining and _has_verified_active_task_evidence(task_queue[0], result):
+        active_task = task_queue[0]
+        if active_task in remaining:
+            remaining.remove(active_task)
     return not remaining
+
+
+def _has_verified_analytics_read(result: dict[str, Any]) -> bool:
+    """A successful analytics answer is grounded when at least one read tool succeeded."""
+    if result.get("specialist") != "analytics" or result.get("status") != "success":
+        return False
+    observed_actions = (result.get("data") or {}).get("observed_actions") or []
+    return any(action.get("tool") in _ANALYTICS_READ_TOOLS for action in observed_actions)
+
+
+def _action_has_entity_evidence(action: dict[str, Any]) -> bool:
+    """Require a persisted entity identifier for mutations, not an LLM success claim."""
+    tool = str(action.get("tool") or "")
+    data = action.get("data") or {}
+    entity_fields = {
+        "create_transaction": "transaction",
+        "update_transaction": "transaction",
+        "create_category": "category",
+        "update_category": "category",
+        "create_account": "account",
+        "update_account": "account",
+        "rename_account": "account",
+        "activate_account": "account",
+        "deactivate_account": "account",
+        "set_default_account": "account",
+        "create_split": "split",
+        "create_owed": "receivable",
+    }
+    if tool in entity_fields:
+        entity = data.get(entity_fields[tool]) or {}
+        return isinstance(entity, Mapping) and bool(entity.get("id"))
+    if tool == "delete_transaction":
+        return bool(data.get("deleted_transaction_id") or (data.get("transaction") or {}).get("id"))
+    if tool == "restore_transaction":
+        return bool(data.get("restored_transaction_id") or (data.get("transaction") or {}).get("id"))
+    if tool == "delete_category":
+        return bool(data.get("deleted_category_id") or (data.get("category") or {}).get("id"))
+    if tool == "create_settlement_draft":
+        return bool((data.get("settlement_draft") or {}).get("id"))
+    if tool == "create_transaction_report":
+        return bool(data.get("export_id"))
+    return False
+
+
+def _has_verified_active_task_evidence(task: str, result: dict[str, Any]) -> bool:
+    """Verify the active task from its specialist contract and successful structured output."""
+    if result.get("status") != "success":
+        return False
+    if _has_verified_analytics_read(result):
+        return True
+    specialist = str(result.get("specialist") or "")
+    required_tools = _required_tools(task, specialist)
+    if not required_tools:
+        return False
+    observed_actions = (result.get("data") or {}).get("observed_actions") or []
+    return any(
+        action.get("tool") in required_tools and _action_has_entity_evidence(action)
+        for action in observed_actions
+    )
+
+
+def _consume_verified_active_task(
+    task_queue: list[str],
+    remaining_tasks: list[str],
+    satisfied_tasks: list[str],
+    result: dict[str, Any],
+) -> tuple[list[str], list[str]]:
+    """Consume only the active task; one result cannot satisfy later queued tasks."""
+    if not task_queue or not remaining_tasks or not _has_verified_active_task_evidence(task_queue[0], result):
+        return remaining_tasks, satisfied_tasks
+    active_task = task_queue[0]
+    if active_task not in remaining_tasks:
+        return remaining_tasks, satisfied_tasks
+    updated_remaining = list(remaining_tasks)
+    updated_remaining.remove(active_task)
+    return updated_remaining, [*satisfied_tasks, active_task]
 
 
 def _required_tools(task: str, specialist: str | None) -> set[str] | None:
@@ -432,6 +571,8 @@ def _required_tools(task: str, specialist: str | None) -> set[str] | None:
         return any(_mentions(task, word) for word in words)
 
     if specialist == "category":
+        if says("list", "show", "view", "which", "what"):
+            return {"list_categories"}
         if says("create", "add", "new"):
             return {"create_category"}
         if says("rename", "update", "change"):
@@ -439,6 +580,8 @@ def _required_tools(task: str, specialist: str | None) -> set[str] | None:
         if says("delete", "remove"):
             return {"delete_category"}
     if specialist == "account":
+        if says("list", "show", "view", "which", "what"):
+            return {"list_accounts"}
         if says("create", "add", "open", "new"):
             return {"create_account"}
         if says("default"):
@@ -488,7 +631,277 @@ def _required_tools(task: str, specialist: str | None) -> set[str] | None:
             return {'set_split_contact_preference'}
     if specialist == "export":
         return {"create_transaction_report"}
+    if specialist == "analytics":
+        required: set[str] = set()
+        if re.search(
+            r"\b(?:today|tonight|tomorrow|rest of (?:the )?month|days? left|end of (?:the )?month)\b",
+            task,
+            flags=re.IGNORECASE,
+        ):
+            required.add("get_current_datetime")
+        if says("afford", "budget", "enough", "balance", "balances"):
+            required.add("get_account_balances")
+        if says("compare", "comparison", "versus", "vs"):
+            required.add("get_spending_comparison")
+        elif says("owe", "owed", "remaining", "outstanding", "unpaid", "split", "splits"):
+            required.add("get_split_summary")
+        elif "account" in task.casefold() and says("spending", "spent", "breakdown"):
+            required.add("get_spending_by_account")
+        elif says(
+            "transaction",
+            "transactions",
+            "history",
+            "largest",
+            "highest",
+            "before",
+            "earlier",
+            "prior",
+            "previous",
+        ):
+            required.add("get_transactions")
+        elif says("spending", "spend", "spent", "most", "total", "much"):
+            required.add("get_spending_summary")
+        return required or None
     return None
+
+
+def _task_intent(task: str, specialist: str | None, required_tools: set[str]) -> str:
+    """Create a stable intent label without asking the LLM to judge completion."""
+    canonical_mutations = (
+        "create_transaction",
+        "update_transaction",
+        "delete_transaction",
+        "restore_transaction",
+        "create_category",
+        "update_category",
+        "delete_category",
+        "create_account",
+        "update_account",
+        "create_split",
+        "create_owed",
+        "create_settlement_draft",
+        "create_transaction_report",
+    )
+    canonical = next((tool for tool in canonical_mutations if tool in required_tools), None)
+    if canonical:
+        return canonical
+    if required_tools:
+        preferred = sorted(required_tools)[0]
+        if len(required_tools) == 1:
+            return preferred
+    if specialist == "analytics":
+        return "analytics_query"
+    if specialist == "formatting":
+        return "format_response"
+    return f"{specialist or 'general'}_task"
+
+
+def _task_completion_mode(required_tools: set[str]) -> Literal["all", "any"]:
+    """Mutation aliases are alternatives; independent analytics reads are cumulative."""
+    mutation_aliases = [tool for tool in required_tools if tool not in _ANALYTICS_READ_TOOLS]
+    return "any" if len(required_tools) > 1 and mutation_aliases else "all"
+
+
+def _new_task_contract(task: str, original_request: str, index: int) -> TaskContract:
+    specialist = _obvious_specialist(task) or _obvious_specialist(original_request) or "formatting"
+    required_tools = _required_tools(task, specialist) or set()
+    task_id = str(uuid.uuid5(_TASK_NAMESPACE, f"{original_request}\x1f{index}\x1f{task}"))
+    evidence = [
+        f"{tool}:{path}"
+        for tool in sorted(required_tools)
+        for path in _TOOL_EVIDENCE_PATHS.get(tool, ())
+    ]
+    return TaskContract(
+        id=task_id,
+        original_text=task,
+        summary=task,
+        intent=_task_intent(task, specialist, required_tools),
+        specialist=specialist,
+        required_tools=sorted(required_tools),
+        required_evidence=evidence,
+        completion_mode=_task_completion_mode(required_tools),
+    )
+
+
+def _sync_task_contracts(
+    task_queue: list[str],
+    existing: list[dict[str, Any]] | None,
+    *,
+    original_request: str,
+) -> list[dict[str, Any]]:
+    """Normalize legacy string queues into durable contracts while retaining completed work."""
+    parsed: list[TaskContract] = []
+    for raw in existing or []:
+        try:
+            parsed.append(TaskContract.model_validate(raw))
+        except (TypeError, ValueError):
+            continue
+    completed = [contract for contract in parsed if contract.status == "completed"]
+    available = [contract for contract in parsed if contract.status != "completed"]
+    active: list[TaskContract] = []
+    used_ids: set[str] = set()
+    for index, task in enumerate(task_queue):
+        contract = next(
+            (item for item in available if item.id not in used_ids and item.summary == task),
+            None,
+        )
+        if contract is None:
+            specialist = _obvious_specialist(task) or _obvious_specialist(original_request) or "formatting"
+            compatible = [
+                item
+                for item in available
+                if item.id not in used_ids and item.specialist == specialist
+            ]
+            if len(compatible) == 1:
+                contract = compatible[0]
+                contract.summary = task
+        if contract is None:
+            contract = _new_task_contract(task, original_request, index)
+        used_ids.add(contract.id)
+        active.append(contract)
+    return [*[item.model_dump() for item in completed], *[item.model_dump() for item in active]]
+
+
+def _active_task_contract(
+    task_queue: list[str], task_contracts: list[dict[str, Any]] | None
+) -> TaskContract | None:
+    if not task_queue:
+        return None
+    candidates: list[TaskContract] = []
+    for raw in task_contracts or []:
+        try:
+            contract = TaskContract.model_validate(raw)
+        except (TypeError, ValueError):
+            continue
+        if contract.status != "completed":
+            candidates.append(contract)
+    return next((item for item in candidates if item.summary == task_queue[0]), candidates[0] if candidates else None)
+
+
+def _contracts_with_status(
+    task_contracts: list[dict[str, Any]],
+    task_id: str | None,
+    status: Literal["queued", "running", "waiting_for_user", "completed", "failed"],
+    *,
+    result_summary: str | None = None,
+) -> list[dict[str, Any]]:
+    updated: list[dict[str, Any]] = []
+    for raw in task_contracts:
+        contract = TaskContract.model_validate(raw)
+        if task_id and contract.id == task_id:
+            contract.status = status
+            if result_summary is not None:
+                contract.result_summary = result_summary
+        updated.append(contract.model_dump())
+    return updated
+
+
+def _align_active_task_contract(
+    task_contracts: list[dict[str, Any]],
+    task_queue: list[str],
+    specialist: str | None,
+) -> list[dict[str, Any]]:
+    """Bind a planned task to the specialist selected by deterministic or LLM routing."""
+    active = _active_task_contract(task_queue, task_contracts)
+    if active is None or specialist is None:
+        return task_contracts
+    required_tools = _required_tools(task_queue[0], specialist) or set()
+    active.specialist = specialist  # type: ignore[assignment]
+    active.required_tools = sorted(required_tools)
+    active.required_evidence = [
+        f"{tool}:{path}"
+        for tool in sorted(required_tools)
+        for path in _TOOL_EVIDENCE_PATHS.get(tool, ())
+    ]
+    active.completion_mode = _task_completion_mode(required_tools)
+    active.intent = _task_intent(task_queue[0], specialist, required_tools)
+    return [active.model_dump() if raw.get("id") == active.id else raw for raw in task_contracts]
+
+
+def _path_exists(data: Any, path: str) -> bool:
+    """Check structured evidence by key presence; empty read results remain valid evidence."""
+    parts = path.split(".")
+    current = data
+    for index, part in enumerate(parts):
+        if part == "*":
+            if not isinstance(current, list) or not current:
+                return False
+            remainder = ".".join(parts[index + 1 :])
+            return all(_path_exists(item, remainder) for item in current) if remainder else True
+        if not isinstance(current, Mapping) or part not in current:
+            return False
+        current = current[part]
+    return current is not None
+
+
+def _result_observations(result: dict[str, Any]) -> list[dict[str, Any]]:
+    observations = [item for item in result.get("tool_observations", []) if item.get("ok")]
+    if observations:
+        return observations
+    return [
+        {**item, "ok": True}
+        for item in ((result.get("data") or {}).get("observed_actions") or [])
+    ]
+
+
+def _observation_has_contract_evidence(observation: dict[str, Any], tool: str) -> bool:
+    data = observation.get("data") or {}
+    paths = _TOOL_EVIDENCE_PATHS.get(tool, ())
+    if not paths:
+        return True
+    return any(_path_exists(data, path) for path in paths)
+
+
+def _verify_task_contract(contract: TaskContract | None, result: dict[str, Any]) -> bool:
+    """Verify completion from task-bound tool facts, never specialist prose."""
+    if contract is None or result.get("status") != "success":
+        return False
+    result_task_id = result.get("task_id")
+    if result_task_id and result_task_id != contract.id:
+        return False
+    if not contract.required_tools:
+        return False
+    matched_tools: set[str] = set()
+    for observation in _result_observations(result):
+        observation_task_id = observation.get("task_id")
+        if observation_task_id and observation_task_id != contract.id:
+            continue
+        tool = str(observation.get("tool") or "")
+        if tool in contract.required_tools and _observation_has_contract_evidence(observation, tool):
+            matched_tools.add(tool)
+    if contract.completion_mode == "all":
+        return set(contract.required_tools).issubset(matched_tools)
+    return bool(set(contract.required_tools) & matched_tools)
+
+
+def _verify_shared_analytics_tasks(
+    task_queue: list[str], task_contracts: list[dict[str, Any]], result: dict[str, Any],
+) -> list[TaskContract]:
+    """A single analytics run can answer several queued reads when each tool returned evidence."""
+    if len(task_queue) < 2 or result.get("specialist") != "analytics" or result.get("status") != "success":
+        return []
+    contracts = [
+        next((TaskContract.model_validate(raw) for raw in task_contracts if raw.get("summary") == task), None)
+        for task in task_queue
+    ]
+    if any(contract is None or not contract.required_tools for contract in contracts):
+        return []
+    typed_contracts = [contract for contract in contracts if contract is not None]
+    if result.get("task_id") not in (None, typed_contracts[0].id):
+        return []
+    observations = _result_observations(result)
+    for contract in typed_contracts:
+        if not set(contract.required_tools).issubset(_ANALYTICS_READ_TOOLS):
+            return []
+        if not all(
+            any(
+                observation.get("tool") == tool and _observation_has_contract_evidence(observation, tool)
+                for observation in observations
+            )
+            for tool in contract.required_tools
+        ):
+            return []
+    return typed_contracts
 
 
 def _obvious_specialist(task: str) -> str | None:
@@ -518,7 +931,7 @@ def _obvious_specialist(task: str) -> str | None:
         return 'split'
     if re.search(r'\b\w+\s+(?:is|eats)\s+(?:vegetarian|vegan|omnivore|veg|non-?veg|meat)\b', normalized):
         return 'split'
-    if any(_mentions(task, word) for word in ("balance", "balances")):
+    if any(_mentions(task, word) for word in ("balance", "balances", "afford", "budget", "enough")):
         return "analytics"
     if re.search(r"\bcategor(?:y|ies)\b", normalized) and any(
         _mentions(task, word)
@@ -622,6 +1035,13 @@ def _category_creation_satisfied(
     quoted_names = re.findall(r'["“]([^"”]+)["”]', original_request)
     names = [name.strip() for name in quoted_names if _mentions(task, name.strip())]
     if not names:
+        numbered = re.search(
+            r"\b(?:create|add)\s+\d+\s+categor(?:y|ies)\s*:\s*(.+?)\s*$",
+            task, flags=re.IGNORECASE,
+        )
+        if numbered:
+            names = [part.strip().strip('"') for part in re.split(r"\s+and\s+|,", numbered.group(1))]
+    if not names:
         match = re.search(
             r"\b(?:create|add)\s+(?:(?:a|an|the|new)\s+)*(?:(?:expense|income)\s+)?"
             r"categor(?:y|ies)\s+(.+?)\s*$",
@@ -680,6 +1100,50 @@ def _category_creation_satisfied(
         )
         for name in names
     )
+
+
+def _category_completion_summary(
+    request: str, events: list[dict[str, Any]], available_categories: list[dict[str, Any]],
+) -> str | None:
+    """Describe categories verified in the database and created in this request."""
+    matching_events = [
+        event for event in events
+        if event.get("tool") == "create_category" and event.get("ok") is True
+        and event.get("request") == request
+    ]
+    created_by_name = {
+        str((event.get("data") or {}).get("category", {}).get("name") or "").casefold():
+        bool((event.get("data") or {}).get("created"))
+        for event in matching_events
+    }
+    names = [name.strip() for name in re.findall(r'["“]([^"”]+)["”]', request)]
+    if not names:
+        names = [
+            str((event.get("data") or {}).get("category", {}).get("name") or "")
+            for event in matching_events
+        ]
+    names = list(dict.fromkeys(name for name in names if name))
+    if not names or not all(
+        any(str(category.get("name") or "").casefold() == name.casefold() for category in available_categories)
+        for name in names
+    ):
+        return None
+    descriptions: list[str] = []
+    for name in names:
+        category = next(
+            item for item in available_categories
+            if str(item.get("name") or "").casefold() == name.casefold()
+        )
+        if created_by_name.get(name.casefold()):
+            descriptions.append(f"Created {name} as an {category['type']} category.")
+        else:
+            descriptions.append(f"{name} already exists.")
+    if len(descriptions) == 2 and descriptions[0].endswith("already exists."):
+        second = descriptions[1]
+        if second.startswith("Created "):
+            second = second.replace("Created ", "", 1).replace(" as an ", " was created as an ", 1)
+        return descriptions[0][:-1] + " and " + second
+    return "\n".join(descriptions)
 
 
 def _is_category_clarification(message: str) -> bool:
@@ -894,10 +1358,13 @@ class AgentGraphState(TypedDict, total=False):
     conversation_history: Annotated[list[dict[str, str]], _append_conversation_history]
     user_id: str
     timezone: str
+    current_datetime: str
     task_request: str
     task_queue: list[str]
+    task_contracts: list[dict[str, Any]]
     completed_tasks: list[str]
     created_transaction_ids: list[str]
+    verified_transaction_references: list[dict[str, Any]]
     pending_split_transaction_id: str | None
     pending_account_creation: bool
     tasks_completed: bool
@@ -1060,6 +1527,7 @@ class AgenticSupervisorGraph:
         self, *, user_id: uuid.UUID, thread_id: str, message: str, timezone: str = "UTC"
     ) -> dict[str, Any]:
         config = {"configurable": {"thread_id": f"{user_id}:{thread_id}"}}
+        current_datetime = _current_datetime(timezone)
         snapshot = await self.graph.aget_state(config)
         prior_state = snapshot.values or {}
         conversation_history = prior_state.get("conversation_history") or []
@@ -1087,6 +1555,10 @@ class AgenticSupervisorGraph:
             resume_update: dict[str, Any] = {
                 "messages": [HumanMessage(content=message)],
                 "conversation_history": updated_history[-100:],
+                "current_datetime": current_datetime,
+                "verified_transaction_references": merge_verified_transaction_references(
+                    prior_state.get("verified_transaction_references"), prior_state.get("tool_event_history"),
+                ),
             }
             if isinstance(interrupt_payload, dict) and interrupt_payload.get("memory_signal"):
                 signal_type = str(interrupt_payload.get("memory_signal"))
@@ -1109,7 +1581,13 @@ class AgenticSupervisorGraph:
                 if category_signal:
                     resume_update["memory_review_signal"] = category_signal
             if is_new_category_for_pending_transaction:
-                resume_update["task_queue"] = [message, *pending_queue]
+                resumed_queue = [message, *pending_queue]
+                resume_update["task_queue"] = resumed_queue
+                resume_update["task_contracts"] = _sync_task_contracts(
+                    resumed_queue,
+                    prior_state.get("task_contracts"),
+                    original_request=prior_task_request,
+                )
             account_setup_answer = bool(
                 isinstance(interrupt_payload, dict)
                 and interrupt_payload.get("agent") == "transaction"
@@ -1118,10 +1596,16 @@ class AgenticSupervisorGraph:
             )
             if account_setup_answer:
                 transaction_task = (prior_state.get("task_queue") or [prior_task_request])[0]
-                resume_update["task_queue"] = [
+                resumed_queue = [
                     f"Create account: {message}",
                     str(transaction_task or prior_task_request),
                 ]
+                resume_update["task_queue"] = resumed_queue
+                resume_update["task_contracts"] = _sync_task_contracts(
+                    resumed_queue,
+                    prior_state.get("task_contracts"),
+                    original_request=prior_task_request,
+                )
                 resume_update["pending_account_creation"] = True
             return await self.graph.ainvoke(
                 Command(resume=message, update=resume_update),
@@ -1157,6 +1641,12 @@ class AgenticSupervisorGraph:
             if (resume_pending_transaction or pending_itemized_split or pending_receipt_split)
             else []
         )
+        active_task_request = (
+            prior_task_request
+            if (resume_pending_transaction or pending_itemized_split or pending_receipt_split)
+            else message
+        )
+        initial_queue = task_queue or (["elaborate on the prior verified answer"] if contextual_followup else [])
         return await self.graph.ainvoke(
             {
                 "messages": [HumanMessage(content=message)],
@@ -1168,20 +1658,27 @@ class AgenticSupervisorGraph:
                 ][-100:],
                 "user_id": str(user_id),
                 "timezone": timezone,
+                "current_datetime": current_datetime,
                 # This is the task the active specialist must complete. It
                 # survives an interrupt; the newest message is only its
                 # clarification answer, not a replacement task.
-                "task_request": (
-                    prior_task_request
+                "task_request": active_task_request,
+                "task_queue": initial_queue,
+                "task_contracts": _sync_task_contracts(
+                    initial_queue,
+                    prior_state.get("task_contracts")
                     if (resume_pending_transaction or pending_itemized_split or pending_receipt_split)
-                    else message
+                    else [],
+                    original_request=active_task_request,
                 ),
-                "task_queue": task_queue or (["elaborate on the prior verified answer"] if contextual_followup else []),
                 "completed_tasks": list(prior_state.get("completed_tasks") or []) if resume_pending_transaction else [],
                 "created_transaction_ids": (
                     list(prior_state.get("created_transaction_ids") or [])
                     if resume_pending_transaction
                     else [str(receipt_transaction_id)] if pending_receipt_split and receipt_transaction_id else []
+                ),
+                "verified_transaction_references": merge_verified_transaction_references(
+                    prior_state.get("verified_transaction_references"), tool_event_history,
                 ),
                 "pending_split_transaction_id": (
                     pending_split_transaction_id
@@ -1302,19 +1799,31 @@ class AgenticSupervisorGraph:
             ]
         history = (state.get("conversation_history") or [])[-20:]
         task_queue = state.get("task_queue") or []
+        task_request = str(state.get("task_request") or state["messages"][-1].content)
+        task_contracts = _sync_task_contracts(
+            task_queue,
+            state.get("task_contracts"),
+            original_request=task_request,
+        )
+        active_contract = _active_task_contract(task_queue, task_contracts)
         context = HandoffContext(
             user_id=uuid.UUID(state["user_id"]),
             request=task_queue[0] if task_queue else state.get("task_request") or str(state["messages"][-1].content),
             history=history,
             timezone=state.get("timezone", "UTC"),
+            current_datetime=state.get("current_datetime"),
             constraints={
+                "task_id": active_contract.id if active_contract else None,
                 "latest_user_reply": str(state["messages"][-1].content),
                 "completed_tasks": state.get("completed_tasks", []),
                 "remaining_tasks": task_queue,
+                "task_contracts": task_contracts,
+                "active_task_contract": active_contract.model_dump() if active_contract else None,
                 "available_categories": available_categories,
                 "available_accounts": available_accounts,
                 "available_split_contacts": available_split_contacts,
                 "created_transaction_ids": state.get("created_transaction_ids", []),
+                "verified_transaction_references": state.get("verified_transaction_references", []),
                 "pending_split_transaction_id": state.get('pending_split_transaction_id'),
                 "last_transaction_window": state.get("last_transaction_window"),
                 "original_request": state.get("task_request"),
@@ -1325,8 +1834,6 @@ class AgenticSupervisorGraph:
             },
         )
         results = state.get("results", [])
-        task_request = str(state.get("task_request") or state["messages"][-1].content)
-        latest_reply = str(state["messages"][-1].content)
         fast_route = None
         if (
             not results
@@ -1337,16 +1844,12 @@ class AgenticSupervisorGraph:
             fast_route = _fast_route_specialist(task_request)
 
         latest_result = (results or [{}])[-1]
+        shared_analytics_contracts = _verify_shared_analytics_tasks(task_queue, task_contracts, latest_result)
         verified_terminal = (
             bool(results)
             and not state.get("contextual_followup")
-            and _verified_queue_is_complete(
-                task_queue,
-                latest_result,
-                original_request=task_request,
-                latest_reply=latest_reply,
-                available_categories=available_categories,
-            )
+            and (len(task_queue) == 1 or bool(shared_analytics_contracts))
+            and _verify_task_contract(active_contract, latest_result)
         )
         if fast_route is not None:
             # Clear, single-domain requests do not need an LLM merely to repeat
@@ -1389,6 +1892,12 @@ class AgenticSupervisorGraph:
             )
             if not task_queue:
                 task_queue = [state.get("task_request") or str(state["messages"][-1].content)]
+        task_contracts = _sync_task_contracts(
+            task_queue,
+            task_contracts,
+            original_request=task_request,
+        )
+        active_contract = _active_task_contract(task_queue, task_contracts)
         receipt_upload = _is_receipt_upload_request(str(state.get("task_request") or ""))
         if receipt_upload and not state.get("results"):
             decision = SupervisorDecision(
@@ -1424,6 +1933,11 @@ class AgenticSupervisorGraph:
                     specialist=specialist,
                     handoff={**decision.handoff, "original_request": state.get("task_request", "")},
                 )
+        if decision.action == "route":
+            task_contracts = _align_active_task_contract(
+                task_contracts, task_queue, decision.specialist
+            )
+            active_contract = _active_task_contract(task_queue, task_contracts)
         latest_result = (state.get("results") or [{}])[-1]
         if (
             task_queue
@@ -1435,6 +1949,7 @@ class AgenticSupervisorGraph:
                 "results": [],
                 "next_specialist": "supervisor",
                 "task_queue": task_queue,
+                "task_contracts": task_contracts,
                 "awaiting_user_input": False,
             }
         if latest_result.get("status") == "needs_input":
@@ -1442,6 +1957,9 @@ class AgenticSupervisorGraph:
                 "final_response": latest_result.get("summary") or "I need one more detail to continue.",
                 "next_specialist": None,
                 "task_queue": task_queue,
+                "task_contracts": _contracts_with_status(
+                    task_contracts, active_contract.id if active_contract else None, "waiting_for_user"
+                ),
                 "tasks_completed": False,
                 "awaiting_user_input": True,
             }
@@ -1452,6 +1970,9 @@ class AgenticSupervisorGraph:
                 'final_response': latest_result.get('summary') or 'The split was not saved. Tell me what to change.',
                 'next_specialist': None,
                 'task_queue': task_queue,
+                'task_contracts': _contracts_with_status(
+                    task_contracts, active_contract.id if active_contract else None, "waiting_for_user"
+                ),
                 'tasks_completed': False,
                 'awaiting_user_input': True,
             }
@@ -1471,16 +1992,44 @@ class AgenticSupervisorGraph:
                         f"[[settlement:{draft['id']}]]"
                     ),
                     'next_specialist': None, 'task_queue': [], 'tasks_completed': False,
+                    'task_contracts': _contracts_with_status(
+                        task_contracts,
+                        active_contract.id if active_contract else None,
+                        "completed",
+                        result_summary=latest_result.get("summary"),
+                    ),
                     'awaiting_user_input': False, 'show_completion_popup': False,
                 }
-            remaining_tasks, satisfied_tasks = _reconcile_task_queue(
-                task_queue,
-                observed_actions,
-                original_request=state.get("task_request", ""),
-                latest_reply=str(state["messages"][-1].content),
-                available_categories=available_categories,
-                verify_categories=latest_result.get("specialist") == "category",
-            )
+            verified_active = _verify_task_contract(active_contract, latest_result)
+            if active_contract is not None and latest_result.get("specialist") == "category":
+                category_satisfied = _category_creation_satisfied(
+                    task_queue[0],
+                    state.get("task_request", ""),
+                    str(state["messages"][-1].content),
+                    available_categories,
+                )
+                # A successful create_category call can belong to another category
+                # in the same user request. The active task is complete only when
+                # every category it names exists in the user's data.
+                verified_active = category_satisfied and (
+                    verified_active or active_contract.intent == "create_category"
+                )
+            remaining_tasks = task_queue[1:] if verified_active else list(task_queue)
+            satisfied_tasks = task_queue[:1] if verified_active else []
+            if verified_active and shared_analytics_contracts:
+                remaining_tasks, satisfied_tasks = [], list(task_queue)
+            if verified_active:
+                task_contracts = _contracts_with_status(
+                    task_contracts,
+                    active_contract.id if active_contract else None,
+                    "completed",
+                    result_summary=latest_result.get("summary"),
+                )
+                for shared_contract in shared_analytics_contracts[1:]:
+                    task_contracts = _contracts_with_status(
+                        task_contracts, shared_contract.id, "completed",
+                        result_summary=latest_result.get("summary"),
+                    )
             if latest_result.get("specialist") == "transaction" and remaining_tasks:
                 created = (latest_result.get("data") or {}).get("created_transactions") or []
                 if not created:
@@ -1518,8 +2067,20 @@ class AgenticSupervisorGraph:
             ):
                 satisfied_tasks = [remaining_tasks[0]]
                 remaining_tasks = remaining_tasks[1:]
+                task_contracts = _contracts_with_status(
+                    task_contracts,
+                    active_contract.id if active_contract else None,
+                    "completed",
+                    result_summary=latest_result.get("summary"),
+                )
             if state.get("contextual_followup") and latest_result.get("status") == "success":
                 remaining_tasks, satisfied_tasks = [], list(task_queue)
+                task_contracts = _contracts_with_status(
+                    task_contracts,
+                    active_contract.id if active_contract else None,
+                    "completed",
+                    result_summary=latest_result.get("summary"),
+                )
             if (
                 latest_result.get("specialist") == "formatting"
                 and latest_result.get("status") == "success"
@@ -1527,6 +2088,12 @@ class AgenticSupervisorGraph:
                 and _obvious_specialist(task_queue[0]) is None
             ):
                 remaining_tasks, satisfied_tasks = task_queue[1:], task_queue[:1]
+                task_contracts = _contracts_with_status(
+                    task_contracts,
+                    active_contract.id if active_contract else None,
+                    "completed",
+                    result_summary=latest_result.get("summary"),
+                )
             if satisfied_tasks:
                 category_create_satisfied = latest_result.get("specialist") == "category" and any(
                     _category_creation_satisfied(
@@ -1547,6 +2114,10 @@ class AgenticSupervisorGraph:
                     if not remaining_tasks or len(satisfied_tasks) == 1
                     else "Completed: " + "; ".join(satisfied_tasks)
                 )
+                if latest_result.get("specialist") == "category" and not remaining_tasks:
+                    summary = _category_completion_summary(
+                        task_request, state.get("tool_event_history") or [], available_categories,
+                    ) or summary
                 receipt_request = str(state.get("task_request") or "").casefold()
                 receipt_transaction_created = bool(
                     latest_result.get("specialist") == "transaction"
@@ -1591,6 +2162,7 @@ class AgenticSupervisorGraph:
                         "final_response": "\n".join(completed_tasks),
                         "next_specialist": None,
                         "task_queue": [],
+                        "task_contracts": task_contracts,
                         "completed_tasks": completed_tasks,
                         "created_transaction_ids": created_transaction_ids,
                         "tasks_completed": True,
@@ -1599,6 +2171,11 @@ class AgenticSupervisorGraph:
                     }
                 return {
                     "task_queue": remaining_tasks,
+                    "task_contracts": _sync_task_contracts(
+                        remaining_tasks,
+                        task_contracts,
+                        original_request=task_request,
+                    ),
                     "completed_tasks": completed_tasks,
                     "created_transaction_ids": created_transaction_ids,
                     "show_completion_popup": show_completion_popup,
@@ -1657,17 +2234,29 @@ class AgenticSupervisorGraph:
                     "final_response": "I could not verify that the requested task was completed.",
                     "next_specialist": None,
                     "task_queue": task_queue,
+                    "task_contracts": task_contracts,
                     "tasks_completed": False,
                 }
             remaining_tasks = [task for task in task_queue if task not in satisfied_tasks]
             completed_tasks = list(state.get("completed_tasks", []))
             if latest_result.get("specialist") == "category" and satisfied_tasks:
-                completed_tasks.append(decision.response or latest_result.get("summary", "Completed."))
+                completed_tasks.append(
+                    _category_completion_summary(
+                        task_request, state.get("tool_event_history") or [], available_categories,
+                    ) or decision.response or latest_result.get("summary", "Completed.")
+                )
+                task_contracts = _contracts_with_status(
+                    task_contracts,
+                    active_contract.id if active_contract else None,
+                    "completed",
+                    result_summary=latest_result.get("summary"),
+                )
             if not remaining_tasks:
                 return {
                     "final_response": "\n".join(completed_tasks),
                     "next_specialist": None,
                     "task_queue": [],
+                    "task_contracts": task_contracts,
                     "completed_tasks": completed_tasks,
                     "tasks_completed": True,
                     "awaiting_user_input": False,
@@ -1678,10 +2267,14 @@ class AgenticSupervisorGraph:
                     "final_response": "I could not verify that every requested category exists.",
                     "next_specialist": None,
                     "task_queue": remaining_tasks,
+                    "task_contracts": task_contracts,
                     "tasks_completed": False,
                 }
             return {
                 "task_queue": remaining_tasks,
+                "task_contracts": _sync_task_contracts(
+                    remaining_tasks, task_contracts, original_request=task_request
+                ),
                 "completed_tasks": completed_tasks,
                 "show_completion_popup": bool(state.get("show_completion_popup") or satisfied_tasks),
                 "results": [],
@@ -1697,6 +2290,7 @@ class AgenticSupervisorGraph:
                 ),
                 "next_specialist": None,
                 "task_queue": task_queue,
+                "task_contracts": task_contracts,
                 "tasks_completed": False,
             }
         if state.get("reroutes", 0) >= _MAX_REROUTES:
@@ -1704,15 +2298,23 @@ class AgenticSupervisorGraph:
                 "final_response": latest_result.get("summary", "I could not complete that request."),
                 "next_specialist": None,
                 "task_queue": task_queue,
+                "task_contracts": task_contracts,
             }
         if decision.action == "refuse" or decision.specialist is None:
             return {
                 "final_response": decision.response or "I cannot help with that request.",
                 "next_specialist": None,
                 "task_queue": task_queue,
+                "task_contracts": task_contracts,
             }
+        routed_contracts = _contracts_with_status(
+            task_contracts,
+            active_contract.id if active_contract else None,
+            "running",
+        )
         return {
             "task_queue": task_queue,
+            "task_contracts": routed_contracts,
             "available_categories": available_categories,
             "available_accounts": available_accounts,
             "available_split_contacts": available_split_contacts,
@@ -1725,6 +2327,7 @@ class AgenticSupervisorGraph:
                 {
                     **state,
                     "task_queue": task_queue,
+                    "task_contracts": routed_contracts,
                     "available_categories": available_categories,
                     "available_accounts": available_accounts,
                     "available_split_contacts": available_split_contacts,
@@ -1748,12 +2351,18 @@ class AgenticSupervisorGraph:
             {key: value for key, value in handoff.items() if key == 'transaction_id'}
             if name == 'split' else handoff
         )
+        active_contract = _active_task_contract(
+            state.get("task_queue") or [], state.get("task_contracts")
+        )
         context = HandoffContext(
             user_id=uuid.UUID(state["user_id"]),
             request=(state.get("task_queue") or [state.get("task_request") or str(state["messages"][-1].content)])[0],
             history=(state.get("conversation_history") or [])[-20:],
             timezone=state.get("timezone", "UTC"),
+            current_datetime=state.get("current_datetime"),
             constraints={
+                "task_id": active_contract.id if active_contract else None,
+                "task_contract": active_contract.model_dump() if active_contract else None,
                 "specialist_results": state.get("results", []),
                 "prior_specialist_results": state.get("prior_results", []),
                 "recent_tool_observations": state.get("tool_event_history", [])[-12:],
@@ -1770,6 +2379,7 @@ class AgenticSupervisorGraph:
                 # conversation for background memory analysis.
                 "memory_review_signal": state.get("memory_review_signal"),
                 "created_transaction_ids": state.get("created_transaction_ids", []),
+                "verified_transaction_references": state.get("verified_transaction_references", []),
                 "pending_split_transaction_id": state.get('pending_split_transaction_id'),
                 "last_transaction_window": state.get("last_transaction_window"),
                 "original_request": state.get("task_request"),

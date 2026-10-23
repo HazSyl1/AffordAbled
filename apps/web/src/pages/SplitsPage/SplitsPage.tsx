@@ -399,12 +399,42 @@ export function SplitsPage() {
         <p className='mt-1 text-xs text-[var(--text-muted)]'>Group settlement plans are listed separately below and are not included in this total.</p>
       </div>
       <div className='grid min-w-0 grid-cols-1 gap-2 min-[480px]:grid-cols-2 md:grid-cols-3'>
-        <Button className='min-w-0 whitespace-normal text-center text-sm' onClick={() => { setOpen(true); setReview(null); }}>Split an expense</Button>
-        <Button variant='secondary' className='min-w-0 whitespace-normal text-center text-sm' onClick={() => setOwedOpen((value) => !value)}>Record money owed</Button>
+        <Button className='min-w-0 whitespace-normal text-center text-sm' onClick={() => {
+          setOpen(true); setOwedOpen(false); setComplexOpen(false); setReview(null);
+        }}>Split an expense</Button>
+        <Button variant='secondary' className='min-w-0 whitespace-normal text-center text-sm' onClick={() => {
+          setOwedOpen((value) => !value); setOpen(false); setComplexOpen(false); setReview(null);
+        }}>Record money owed</Button>
         <Button variant='secondary' className='min-w-0 whitespace-normal text-center text-sm'
-          onClick={() => setComplexOpen((value) => !value)}>Plan group settlement</Button>
+          onClick={() => {
+            setComplexOpen((value) => !value); setOpen(false); setOwedOpen(false); setReview(null);
+          }}>Plan group settlement</Button>
       </div>
     </div>
+    {complexOpen && <ComplexSettlementPlanner />}
+    {owedOpen && <Card className='space-y-3 p-5'>
+      <div><h2 className='font-semibold text-[var(--text-primary)]'>Record money someone owes you</h2>
+        <p className='text-xs text-[var(--text-muted)]'>For a loan, tickets, or another amount that is not tied to a recorded purchase.</p></div>
+      <form onSubmit={saveOwed} className='grid gap-3 sm:grid-cols-2'>
+        <label className='space-y-1 text-sm text-[var(--text-secondary)]'>Person
+          {contacts.length > 0 && <ThemedSelect id='owed-person' value={contacts.includes(owedName) ? owedName : ''}
+            placeholder='Choose a saved person' options={contacts.map((name) => ({ value: name, label: name }))}
+            onChange={setOwedName} />}
+          <input className={inputClass} maxLength={100} value={owedName} placeholder='Name (e.g. Isha)'
+            onChange={(event) => setOwedName(event.target.value)} />
+        </label>
+        <label className='space-y-1 text-sm text-[var(--text-secondary)]'>Amount (₹)
+          <input className={inputClass} inputMode='decimal' value={owedAmount} placeholder='500.00'
+            onChange={(event) => setOwedAmount(event.target.value)} />
+        </label>
+        <label className='space-y-1 text-sm text-[var(--text-secondary)] sm:col-span-2'>Reason
+          <input className={inputClass} maxLength={255} value={owedTitle} placeholder='Tickets I paid for'
+            onChange={(event) => setOwedTitle(event.target.value)} />
+        </label>
+        <div className='grid grid-cols-1 gap-2 sm:col-span-2 sm:grid-cols-2'><Button type='submit' isLoading={creatingOwed}>Save amount owed</Button>
+          <Button type='button' variant='secondary' onClick={() => setOwedOpen(false)}>Cancel</Button></div>
+      </form>
+    </Card>}
     {error && <p role='alert' className='rounded-xl bg-red-500/10 p-3 text-sm text-red-300'>{error}</p>}
     <section className='space-y-3' aria-labelledby='group-settlements-heading'>
       <div>
@@ -495,30 +525,6 @@ export function SplitsPage() {
             </Card>;
           })}
     </section>
-    {complexOpen && <ComplexSettlementPlanner />}
-    {owedOpen && <Card className='space-y-3 p-5'>
-      <div><h2 className='font-semibold text-[var(--text-primary)]'>Record money someone owes you</h2>
-        <p className='text-xs text-[var(--text-muted)]'>For a loan, tickets, or another amount that is not tied to a recorded purchase.</p></div>
-      <form onSubmit={saveOwed} className='grid gap-3 sm:grid-cols-2'>
-        <label className='space-y-1 text-sm text-[var(--text-secondary)]'>Person
-          {contacts.length > 0 && <ThemedSelect id='owed-person' value={contacts.includes(owedName) ? owedName : ''}
-            placeholder='Choose a saved person' options={contacts.map((name) => ({ value: name, label: name }))}
-            onChange={setOwedName} />}
-          <input className={inputClass} maxLength={100} value={owedName} placeholder='Name (e.g. Isha)'
-            onChange={(event) => setOwedName(event.target.value)} />
-        </label>
-        <label className='space-y-1 text-sm text-[var(--text-secondary)]'>Amount (₹)
-          <input className={inputClass} inputMode='decimal' value={owedAmount} placeholder='500.00'
-            onChange={(event) => setOwedAmount(event.target.value)} />
-        </label>
-        <label className='space-y-1 text-sm text-[var(--text-secondary)] sm:col-span-2'>Reason
-          <input className={inputClass} maxLength={255} value={owedTitle} placeholder='Tickets I paid for'
-            onChange={(event) => setOwedTitle(event.target.value)} />
-        </label>
-        <div className='grid grid-cols-1 gap-2 sm:col-span-2 sm:grid-cols-2'><Button type='submit' isLoading={creatingOwed}>Save amount owed</Button>
-          <Button type='button' variant='secondary' onClick={() => setOwedOpen(false)}>Cancel</Button></div>
-      </form>
-    </Card>}
     {open && <Card className='space-y-4 p-5'>
       <h2 className='font-semibold text-[var(--text-primary)]'>
         {expense ? `Create a split for ${expenseLabel}` : 'Share a recorded expense'}

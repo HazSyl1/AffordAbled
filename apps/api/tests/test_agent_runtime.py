@@ -17,7 +17,7 @@ from pydantic import ValidationError
 
 from app.infrastructure.ai.agents.analytics import AnalyticsToolset
 from app.infrastructure.ai.agents.brains import scoped_specialist_decision_schema
-from app.infrastructure.ai.agents.contracts import HandoffContext, SpecialistDecision, ToolAction
+from app.infrastructure.ai.agents.contracts import HandoffContext, SpecialistDecision, TaskContract, ToolAction
 from app.infrastructure.ai.agents.runtime import (
     _TOOL_DESCRIPTIONS,
     _TOOL_SCHEMAS,
@@ -25,6 +25,7 @@ from app.infrastructure.ai.agents.runtime import (
     ToolBoundSpecialistRuntime,
     _persistent_tool_context,
     _tool_error_message,
+    merge_verified_transaction_references,
 )
 from app.infrastructure.ai.tools.transaction_query_tools import TransactionQueryTools
 
@@ -37,6 +38,29 @@ class ScriptedBrain:
         return self._decisions.pop(0)
 
 
+def test_verified_transaction_reference_survives_in_tool_context() -> None:
+    transaction_id = str(uuid.uuid4())
+    source_request = '1608 on dinner at masato with Sudhansu Sujal and Rujul'
+    refs = merge_verified_transaction_references([], [
+        {'tool': 'create_transaction', 'ok': False, 'request': source_request,
+         'data': {'transaction': {'id': str(uuid.uuid4()), 'amount_paise': 160800}}},
+        {'tool': 'create_transaction', 'ok': True, 'request': source_request,
+         'data': {'transaction': {'id': transaction_id, 'amount_paise': 160800, 'merchant': 'Masato'}}},
+    ])
+
+    assert len(refs) == 1
+    assert refs[0]['id'] == transaction_id
+    assert refs[0]['source_request'] == source_request
+    context = _persistent_tool_context({
+        'user_id': str(uuid.uuid4()), 'messages': [HumanMessage(content='Create split for this')],
+        'task_request': 'Create split for this', 'task_queue': ['Create split for this'],
+        'conversation_history': [{'role': 'user', 'content': source_request},
+                                 {'role': 'user', 'content': 'Create split for this'}],
+        'verified_transaction_references': refs,
+    })
+    assert context.constraints['verified_transaction_references'] == refs
+
+
 def test_every_registered_specialist_tool_has_a_schema_and_description() -> None:
     registered_tools = {
         'list_accounts', 'create_account', 'update_account', 'set_default_account', 'delete_account',
@@ -45,7 +69,7 @@ def test_every_registered_specialist_tool_has_a_schema_and_description() -> None
         'update_transaction', 'delete_transaction', 'restore_transaction', 'create_transaction_batch',
         'list_split_contacts', 'set_split_contact_preference', 'create_split', 'create_owed',
         'create_settlement_draft', 'get_split_summary', 'get_account_balances', 'get_transactions',
-        'get_spending_summary', 'get_spending_by_account', 'get_spending_comparison',
+        'get_current_datetime', 'get_spending_summary', 'get_spending_by_account', 'get_spending_comparison',
         'create_transaction_report',
     }
 
@@ -105,6 +129,29 @@ async def test_split_summary_limit_keeps_totals_for_all_matching_rows() -> None:
     assert result['matching_split_count'] == 2
     assert result['truncated_split_count'] == 1
     assert [item['title'] for item in result['splits']] == ['Large']
+
+
+@pytest.mark.asyncio
+async def test_current_datetime_tool_uses_trusted_handoff_clock_and_timezone() -> None:
+    tools = AnalyticsToolset(None)  # type: ignore[arg-type]
+    context = HandoffContext(
+        user_id=uuid.uuid4(),
+        request="Can I afford sushi for the rest of the month?",
+        timezone="Asia/Kolkata",
+        current_datetime="2026-10-23T19:41:00+05:30",
+    )
+
+    result = await tools.get_current_datetime(context, {})
+
+    assert result == {
+        "current_datetime": "2026-10-23T19:41:00+05:30",
+        "current_date": "2026-10-23",
+        "day_of_week": "Friday",
+        "timezone": "Asia/Kolkata",
+        "days_remaining_after_today": 8,
+        "days_remaining_including_today": 9,
+        "month_end_date": "2026-10-31",
+    }
 
 
 def test_tool_error_diagnostics_stay_within_observation_limit() -> None:
@@ -218,6 +265,83 @@ async def test_zero_argument_tool_runs_through_tool_node_with_injected_state() -
 
     assert len(calls) == 1
     assert calls[0][0].history == [{"role": "user", "content": "List split contacts"}]
+
+
+@pytest.mark.asyncio
+async def test_affordability_request_prefetches_clock_and_balance() -> None:
+    class SharedState(TypedDict, total=False):
+        specialist_messages: Annotated[list[BaseMessage], add_messages]
+        specialist_steps: int
+        user_id: str
+        timezone: str
+        current_datetime: str
+        task_request: str
+        task_queue: list[str]
+        task_contracts: list[dict[str, Any]]
+        conversation_history: list[dict[str, str]]
+        results: list[dict[str, Any]]
+        tool_event_history: list[dict[str, Any]]
+
+    calls: list[tuple[str, HandoffContext]] = []
+
+    async def current_time(context: HandoffContext, _arguments: dict[str, Any]) -> dict[str, Any]:
+        calls.append(("get_current_datetime", context))
+        return {"current_date": "2026-10-23", "days_remaining_after_today": 8}
+
+    async def balances(context: HandoffContext, _arguments: dict[str, Any]) -> dict[str, Any]:
+        calls.append(("get_account_balances", context))
+        return {"accounts": [{"name": "Axis", "balance_paise": 1_338_900}]}
+
+    class FinalAnswerModel:
+        def bind_tools(self, _tools: list[Any], **_kwargs: Any) -> RunnableLambda:
+            return RunnableLambda(lambda _messages: AIMessage(content="You can afford it with ₹4,489 remaining."))
+
+    runtime = ToolBoundSpecialistRuntime(
+        name="analytics",
+        llm=FinalAnswerModel(),
+        system_prompt="",
+        tools={"get_current_datetime": current_time, "get_account_balances": balances},
+    )
+    graph = runtime.build_persistent_subgraph(SharedState)
+    request = "Can I afford 900rps sushi if I need 1k each day for the rest of the month?"
+    contract = TaskContract(
+        id="affordability-task",
+        original_text=request,
+        summary=request,
+        intent="analytics_query",
+        specialist="analytics",
+        required_tools=["get_current_datetime", "get_account_balances"],
+        required_evidence=[
+            "get_current_datetime:current_date",
+            "get_account_balances:accounts",
+        ],
+    )
+
+    result = await graph.ainvoke(
+        {
+            "specialist_messages": [HumanMessage(content=request)],
+            "user_id": str(uuid.uuid4()),
+            "timezone": "Asia/Kolkata",
+            "current_datetime": "2026-10-23T19:41:00+05:30",
+            "task_request": request,
+            "task_queue": [request],
+            "task_contracts": [contract.model_dump()],
+            "conversation_history": [{"role": "user", "content": request}],
+            "results": [],
+            "tool_event_history": [],
+        }
+    )
+
+    assert {name for name, _context in calls} == {"get_current_datetime", "get_account_balances"}
+    assert all(context.current_datetime == "2026-10-23T19:41:00+05:30" for _name, context in calls)
+    assert all(context.constraints["task_id"] == contract.id for _name, context in calls)
+    assert result["results"][-1]["status"] == "success"
+    assert result["results"][-1]["task_id"] == contract.id
+    assert all(
+        observation["task_id"] == contract.id
+        for observation in result["results"][-1]["tool_observations"]
+    )
+    assert result["results"][-1]["summary"] == "You can afford it with ₹4,489 remaining."
 
 
 @pytest.mark.asyncio

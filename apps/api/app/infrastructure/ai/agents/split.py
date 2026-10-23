@@ -20,7 +20,7 @@ from app.application.services.settlement_split import (
 )
 from app.application.services.split_service import ParticipantShare, SplitService, is_owner_participant_label
 from app.application.services.transaction_service import TransactionService
-from app.infrastructure.ai.agents.contracts import HandoffContext
+from app.infrastructure.ai.agents.contracts import HandoffContext, VerifiedTransactionReference
 
 
 class SplitToolset:
@@ -31,6 +31,67 @@ class SplitToolset:
         self._splits = split_service
         self._transactions = transaction_service
         self._complex_settlements = complex_settlement_service
+
+    @staticmethod
+    def _trusted_followup_transaction_id(context: HandoffContext) -> str | None:
+        """Resolve a reference such as 'split this' from successful transaction tool evidence."""
+        latest_reply = str(context.constraints.get('latest_user_reply') or context.request).strip()
+        explicit_ids = re.findall(
+            r'\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b',
+            latest_reply, re.I,
+        )
+        if len(set(explicit_ids)) > 1:
+            raise ValueError('Please choose one expense transaction ID to split.')
+        if explicit_ids:
+            return str(uuid.UUID(explicit_ids[0]))
+        created_ids = context.constraints.get('created_transaction_ids') or []
+        if created_ids:
+            distinct_ids = list(dict.fromkeys(str(value) for value in created_ids if value))
+            if len(distinct_ids) > 1:
+                raise ValueError('Several expenses were recorded. Please choose which one to split.')
+            if distinct_ids:
+                return distinct_ids[0]
+        references: list[VerifiedTransactionReference] = []
+        for raw in context.constraints.get('verified_transaction_references') or []:
+            try:
+                references.append(VerifiedTransactionReference.model_validate(raw))
+            except (TypeError, ValueError):
+                continue
+        pending_id = context.constraints.get('pending_split_transaction_id')
+        if pending_id and any(str(reference.id) == str(pending_id) for reference in references):
+            return str(pending_id)
+        if not re.search(r'\b(?:this|that|these|those|them|it)\b', latest_reply, re.I):
+            return None
+        prior_user_messages = [
+            str(message.get('content') or '')
+            for message in context.history
+            if isinstance(message, dict) and message.get('role') == 'user'
+        ]
+        if prior_user_messages and prior_user_messages[-1] == latest_reply:
+            prior_user_messages.pop()
+        for message in reversed(prior_user_messages):
+            matching = [reference for reference in references if reference.source_request == message]
+            if len(matching) > 1:
+                raise ValueError('Several expenses were recorded. Please choose which one to split.')
+            if matching:
+                return str(matching[0].id)
+        for result in reversed(context.constraints.get('prior_specialist_results') or []):
+            if not isinstance(result, dict) or result.get('specialist') != 'transaction':
+                continue
+            if result.get('status') not in (None, 'success'):
+                continue
+            transactions = (result.get('data') or {}).get('created_transactions') or []
+            if len(transactions) == 1 and isinstance(transactions[0], dict) and transactions[0].get('id'):
+                return str(transactions[0]['id'])
+        for event in reversed(context.constraints.get('recent_tool_observations') or []):
+            if not isinstance(event, dict) or event.get('tool') != 'create_transaction' or event.get('ok') is not True:
+                continue
+            if event.get('request') not in prior_user_messages:
+                continue
+            transaction = (event.get('data') or {}).get('transaction') or {}
+            if transaction.get('id'):
+                return str(transaction['id'])
+        return None
 
     @staticmethod
     def _validate_requested_people(people: list[ParticipantShare], context: HandoffContext) -> None:
@@ -345,7 +406,18 @@ class SplitToolset:
             )
         if args.get('quantity_allocations') is not None and args.get('items') is not None:
             raise ValueError('Use quantity_allocations or itemized rows, not both.')
-        transaction_id = args.get("transaction_id")
+        trusted_transaction_id = self._trusted_followup_transaction_id(context)
+        latest_reply = str(context.constraints.get('latest_user_reply') or context.request)
+        if (trusted_transaction_id is None
+                and re.search(r'\b(?:this|that|these|those|them|it)\b', latest_reply, re.I)
+                and not re.search(
+                    r'\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b',
+                    latest_reply, re.I,
+                )):
+            raise ValueError(
+                'I cannot identify the saved expense from this chat. Select it in Splits or provide its ID.'
+            )
+        transaction_id = trusted_transaction_id or args.get("transaction_id")
         if not transaction_id:
             created = context.constraints.get("created_transaction_ids") or []
             transaction_id = created[-1] if created else None

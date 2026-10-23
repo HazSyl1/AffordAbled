@@ -25,11 +25,73 @@ from app.infrastructure.ai.agents.contracts import (
     SpecialistDecision,
     SpecialistResult,
     ToolObservation,
+    VerifiedTransactionReference,
 )
 
 logger = logging.getLogger(__name__)
 
 ToolHandler = Callable[[HandoffContext, dict[str, Any]], Awaitable[dict[str, Any]]]
+
+
+def merge_verified_transaction_references(
+    existing: list[dict[str, Any]] | None, events: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Keep a bounded, validated record of transactions returned by successful tools."""
+    references: dict[str, dict[str, Any]] = {}
+    for raw in existing or []:
+        try:
+            reference = VerifiedTransactionReference.model_validate(raw)
+        except (TypeError, ValueError):
+            continue
+        references[str(reference.id)] = reference.model_dump(mode='json')
+    for event in events or []:
+        if not isinstance(event, dict) or event.get('ok') is not True:
+            continue
+        if event.get('tool') not in {'create_transaction', 'create_transaction_batch'}:
+            continue
+        data = event.get('data') or {}
+        if not isinstance(data, dict):
+            continue
+        transactions = (
+            [data['transaction']]
+            if isinstance(data.get('transaction'), dict)
+            else data.get('transactions') or []
+        )
+        if not isinstance(transactions, list):
+            continue
+        for transaction in transactions:
+            if not isinstance(transaction, dict):
+                continue
+            try:
+                reference = VerifiedTransactionReference.model_validate({
+                    'id': transaction.get('id'),
+                    'source_request': event.get('request') or event.get('task'),
+                    'amount_paise': transaction.get('amount_paise'),
+                    'merchant': transaction.get('merchant'),
+                    'task_id': event.get('task_id'),
+                })
+            except (TypeError, ValueError):
+                continue
+            key = str(reference.id)
+            references.pop(key, None)
+            references[key] = reference.model_dump(mode='json')
+    return list(references.values())[-12:]
+
+
+def _active_task_identity(state: dict[str, Any]) -> tuple[str | None, dict[str, Any] | None]:
+    """Return the active durable task ID and contract, including legacy queue fallbacks."""
+    queue = state.get("task_queue") or []
+    active_text = str(queue[0]) if queue else str(state.get("task_request") or "")
+    contracts = [item for item in state.get("task_contracts", []) if isinstance(item, dict)]
+    active = next(
+        (
+            item
+            for item in contracts
+            if item.get("status") != "completed" and str(item.get("summary") or "") == active_text
+        ),
+        next((item for item in contracts if item.get("status") != "completed"), None),
+    )
+    return (str(active.get("id")) if active and active.get("id") else None, active)
 
 
 def _is_single_bill_quantity_split(request: str) -> bool:
@@ -50,16 +112,21 @@ def _tool_error_message(exc: Exception) -> str:
 
 def _persistent_tool_context(state: dict[str, Any]) -> HandoffContext:
     """Build trusted handler context, preserving the conversation needed for follow-ups."""
+    task_id, task_contract = _active_task_identity(state)
     return HandoffContext(
         user_id=state["user_id"],
         request=(state.get("task_queue") or [state["task_request"]])[0],
         history=(state.get("conversation_history") or [])[-20:],
         timezone=state.get("timezone", "UTC"),
+        current_datetime=state.get("current_datetime"),
         constraints={
+            "task_id": task_id,
+            "task_contract": task_contract,
             "latest_user_reply": str(state["messages"][-1].content) if state.get("messages") else "",
             "last_transaction_window": state.get("last_transaction_window"),
             "original_request": state.get("task_request"),
             "created_transaction_ids": state.get("created_transaction_ids", []),
+            "verified_transaction_references": state.get("verified_transaction_references", []),
             "prior_specialist_results": state.get("prior_results", []),
             "supervisor_handoff": state.get("handoff", {}),
             "pending_split_transaction_id": state.get("pending_split_transaction_id"),
@@ -414,6 +481,7 @@ _TOOL_SCHEMAS: dict[str, type[BaseModel]] = {
     "list_split_contacts": EmptyArgumentsToolInput,
     "extract_transaction": EmptyArgumentsToolInput,
     "delete_account": EmptyArgumentsToolInput,
+    "get_current_datetime": EmptyArgumentsToolInput,
     "get_account_balances": GetAccountBalancesToolInput,
     "create_account": CreateAccountToolInput,
     "update_account": UpdateAccountToolInput,
@@ -450,6 +518,10 @@ _TOOL_DESCRIPTIONS = {
     "deactivate_account": "Deactivate one existing user-owned account. Use only when the user explicitly requests it.",
     "set_default_account": "Set one existing user-owned account as the default for future transaction choices.",
     "delete_account": "Account deletion capability; use only if supported and report verified limitations.",
+    "get_current_datetime": (
+        "Read the trusted current date and time in the user's timezone, including the number of days left in the "
+        "month. Use it for today, rest-of-month, deadline, and affordability calculations; never assume a date."
+    ),
     "list_categories": "Read category IDs before choosing a transaction category or verifying a request.",
     "create_category": "Create an idempotent user-owned category with name and type: expense or income.",
     "update_category": "Update a user-owned category by category_id when its name or type should change.",
@@ -841,6 +913,7 @@ class ToolBoundSpecialistRuntime:
                 "create_settlement_draft",
                 "set_split_contact_preference",
                 "get_account_balances",
+                "get_current_datetime",
                 "get_transactions",
                 "get_spending_summary",
                 "get_spending_by_account",
@@ -919,21 +992,33 @@ class ToolBoundSpecialistRuntime:
                     ],
                     "specialist_steps": steps,
                 }
-            if self.name == "analytics" and "get_split_summary" in self.tools and steps == 0:
+            if self.name == "analytics" and steps == 0:
                 request = str(state.get("task_queue", [state.get("task_request", "")])[0]).casefold()
-                if re.search(r"\b(?:owe|owed|remaining|outstanding|unpaid|splits?)\b", request):
+                tool_calls: list[dict[str, Any]] = []
+                if "get_split_summary" in self.tools and re.search(
+                    r"\b(?:owe|owed|remaining|outstanding|unpaid|splits?)\b", request
+                ):
+                    tool_calls.append(
+                        {"name": "get_split_summary", "args": {"arguments": {}}, "id": "split-summary-intent"}
+                    )
+                needs_clock = bool(re.search(
+                    r"\b(?:today|tonight|tomorrow|rest of (?:the )?month|days? left|end of (?:the )?month)\b",
+                    request,
+                ))
+                if needs_clock and "get_current_datetime" in self.tools:
+                    tool_calls.append(
+                        {"name": "get_current_datetime", "args": {"arguments": {}}, "id": "current-time-intent"}
+                    )
+                if needs_clock and "get_account_balances" in self.tools and re.search(
+                    r"\b(?:afford|budget|enough|spend|buy|purchase)\b", request
+                ):
+                    tool_calls.append(
+                        {"name": "get_account_balances", "args": {"arguments": {}}, "id": "balance-intent"}
+                    )
+                if tool_calls:
                     return {
                         "specialist_messages": [
-                            AIMessage(
-                                content="",
-                                tool_calls=[
-                                    {
-                                        "name": "get_split_summary",
-                                        "args": {"arguments": {}},
-                                        "id": "split-summary-intent",
-                                    }
-                                ],
-                            )
+                            AIMessage(content="", tool_calls=tool_calls)
                         ],
                         "specialist_steps": steps + 1,
                     }
@@ -949,12 +1034,28 @@ class ToolBoundSpecialistRuntime:
 
         async def finish(state: dict[str, Any]) -> dict[str, Any]:
             result = self._result_from_messages(state.get("specialist_messages", []))
+            task_id, _task_contract = _active_task_identity(state)
+            result.task_id = task_id
+            result.actions_taken = [
+                {**action, "task_id": task_id}
+                for action in result.actions_taken
+            ]
+            result.tool_observations = [
+                {**observation, "task_id": task_id}
+                for observation in result.tool_observations
+            ]
+            if isinstance(result.data.get("observed_actions"), list):
+                result.data["observed_actions"] = [
+                    {**action, "task_id": task_id}
+                    for action in result.data["observed_actions"]
+                ]
             updates: dict[str, Any] = {"results": [*state.get("results", []), result.model_dump()]}
             active_task = (state.get("task_queue") or [state.get("task_request", "")])[0]
             prior_events = state.get("tool_event_history") or []
             new_events = [
                 {
                     **observation,
+                    "task_id": task_id,
                     "specialist": self.name,
                     "task": active_task,
                     "request": state.get("task_request", ""),
@@ -964,6 +1065,9 @@ class ToolBoundSpecialistRuntime:
             ]
             if new_events:
                 updates["tool_event_history"] = [*prior_events, *new_events][-100:]
+                updates["verified_transaction_references"] = merge_verified_transaction_references(
+                    state.get("verified_transaction_references"), new_events,
+                )
             if self.name == "analytics" and result.data.get("transaction_query_window"):
                 updates["last_transaction_window"] = result.data["transaction_query_window"]
             return updates

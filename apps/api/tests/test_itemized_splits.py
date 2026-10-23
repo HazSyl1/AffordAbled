@@ -14,7 +14,7 @@ from langgraph.types import Command
 from app.application.services.image_service import ImageService
 from app.application.services.itemized_split import ItemAllocation, calculate_itemized_split
 from app.application.services.quantity_split import QuantityAllocation, calculate_quantity_split
-from app.application.services.split_service import ParticipantShare
+from app.application.services.split_service import ParticipantShare, SplitService
 from app.infrastructure.ai.agents.contracts import HandoffContext
 from app.infrastructure.ai.agents.runtime import ToolBoundSpecialistRuntime
 from app.infrastructure.ai.agents.split import SplitToolset
@@ -27,6 +27,95 @@ from app.infrastructure.ai.agents.supervisor_graph import (
     _with_verified_split_total,
 )
 from tests.helpers import auth_headers, register_and_get_token
+
+
+@pytest.mark.asyncio
+async def test_split_this_uses_verified_transaction_id_instead_of_model_copied_id() -> None:
+    recorded_id = uuid.UUID('ed05fb65-1cad-4b0f-a6f7-3c6b8e3ee491')
+    copied_id = uuid.UUID('ed05fb65-1cad-4b8f-a6f7-3c6b8e3ee491')
+    selected_ids: list[uuid.UUID] = []
+
+    class FakeTransactions:
+        async def get_transaction(self, _user_id: uuid.UUID, transaction_id: uuid.UUID):
+            selected_ids.append(transaction_id)
+            if transaction_id != recorded_id:
+                raise ValueError('Transaction was not found.')
+            return SimpleNamespace(id=recorded_id, type=SimpleNamespace(value='expense'),
+                                   amount_paise=160800, merchant='Masato', note=None)
+
+    class FakeStore:
+        async def create(self, _user_id, transaction_id, title, owner_share_paise, participants, _items):
+            return SimpleNamespace(id=uuid.uuid4(), transaction_id=transaction_id, title=title,
+                                   owner_share_paise=owner_share_paise, participants=participants)
+
+    original_request = '1608 on dinner at masato with Sudhansu Sujal and Rujul'
+    context = HandoffContext(
+        user_id=uuid.uuid4(), request='Create split for this',
+        history=[{'role': 'user', 'content': original_request},
+                 {'role': 'user', 'content': 'Create split for this'}],
+        constraints={
+            'latest_user_reply': 'Create split for this',
+            'verified_transaction_references': [{
+                'id': str(recorded_id), 'source_request': original_request,
+                'amount_paise': 160800, 'merchant': 'Masato',
+            }],
+        },
+    )
+    toolset = SplitToolset(SplitService(FakeStore()), FakeTransactions())
+    result = await toolset.create_split(context, {
+        'mode': 'equal', 'transaction_id': str(copied_id),
+        'participants': [{'name': name, 'share_paise': 0} for name in ('Sudhansu', 'Sujal', 'Rujul')],
+    })
+
+    assert selected_ids == [recorded_id]
+    assert result['split']['transaction_id'] == str(recorded_id)
+    assert result['split']['owner_share_paise'] == 40200
+    assert [person['share_paise'] for person in result['split']['participants']] == [40200] * 3
+    explicit = context.model_copy(update={
+        'constraints': {**context.constraints, 'latest_user_reply': f'Create split for {copied_id}'},
+    })
+    assert toolset._trusted_followup_transaction_id(explicit) == str(copied_id)
+    with pytest.raises(ValueError, match='Transaction was not found'):
+        await toolset.create_split(explicit, {
+            'mode': 'equal', 'transaction_id': str(recorded_id),
+            'participants': ['Sudhansu', 'Sujal', 'Rujul'],
+        })
+    assert selected_ids[-1] == copied_id
+    ambiguous = context.model_copy(update={
+        'constraints': {**context.constraints, 'latest_user_reply': f'Split {recorded_id} and {copied_id}'},
+    })
+    with pytest.raises(ValueError, match='choose one expense transaction ID'):
+        toolset._trusted_followup_transaction_id(ambiguous)
+    several_created = context.model_copy(update={
+        'constraints': {'created_transaction_ids': [str(recorded_id), str(copied_id)]},
+    })
+    with pytest.raises(ValueError, match='Several expenses were recorded'):
+        toolset._trusted_followup_transaction_id(several_created)
+    several_references = context.model_copy(update={
+        'constraints': {
+            **context.constraints,
+            'verified_transaction_references': [
+                *context.constraints['verified_transaction_references'],
+                {'id': str(copied_id), 'source_request': original_request, 'amount_paise': 160800},
+            ],
+        },
+    })
+    with pytest.raises(ValueError, match='Several expenses were recorded'):
+        toolset._trusted_followup_transaction_id(several_references)
+    same_turn = context.model_copy(update={
+        'constraints': {'latest_user_reply': original_request, 'created_transaction_ids': [str(recorded_id)]},
+    })
+    assert toolset._trusted_followup_transaction_id(same_turn) == str(recorded_id)
+
+    without_evidence = context.model_copy(update={
+        'constraints': {'latest_user_reply': 'Create split for this'},
+    })
+    with pytest.raises(ValueError, match='cannot identify the saved expense'):
+        await toolset.create_split(without_evidence, {
+            'mode': 'equal', 'transaction_id': str(copied_id),
+            'participants': ['Sudhansu', 'Sujal', 'Rujul'],
+        })
+    assert selected_ids == [recorded_id, copied_id]
 
 
 def test_itemized_calculation_uses_exact_paise_and_flags_dietary_conflicts() -> None:

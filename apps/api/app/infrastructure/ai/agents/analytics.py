@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import re
 import uuid
+from calendar import monthrange
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.application.services.split_service import SplitService
 from app.domain.entities import CategoryType, TransactionType
@@ -18,12 +20,44 @@ class AnalyticsToolset:
 
     def registry(self) -> dict[str, Any]:
         return {
+            "get_current_datetime": self.get_current_datetime,
             "get_account_balances": self.get_account_balances,
             "get_transactions": self.get_transactions,
             "get_spending_summary": self.get_spending_summary,
             "get_spending_by_account": self.get_spending_by_account,
             "get_spending_comparison": self.get_spending_comparison,
             "get_split_summary": self.get_split_summary,
+        }
+
+    async def get_current_datetime(self, context: HandoffContext, _args: dict[str, Any]) -> dict[str, Any]:
+        """Return a deterministic, timezone-aware clock for date-sensitive reasoning."""
+        timezone_name = context.timezone or "UTC"
+        try:
+            timezone = ZoneInfo(timezone_name)
+        except ZoneInfoNotFoundError:
+            timezone_name = "UTC"
+            timezone = ZoneInfo("UTC")
+        try:
+            current = (
+                datetime.fromisoformat(context.current_datetime)
+                if context.current_datetime
+                else datetime.now(timezone)
+            )
+        except ValueError:
+            current = datetime.now(timezone)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone)
+        else:
+            current = current.astimezone(timezone)
+        last_day = monthrange(current.year, current.month)[1]
+        return {
+            "current_datetime": current.isoformat(),
+            "current_date": current.date().isoformat(),
+            "day_of_week": current.strftime("%A"),
+            "timezone": timezone_name,
+            "days_remaining_after_today": last_day - current.day,
+            "days_remaining_including_today": last_day - current.day + 1,
+            "month_end_date": current.date().replace(day=last_day).isoformat(),
         }
 
     async def get_split_summary(self, context: HandoffContext, args: dict[str, Any]) -> dict[str, Any]:

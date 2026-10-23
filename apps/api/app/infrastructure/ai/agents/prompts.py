@@ -251,8 +251,13 @@ replace a failed-tool error with a vague claim that the account name is unclear.
 After successfully creating an account that was needed by an earlier pending transaction, finish so the supervisor
 can return to that transaction. Only deletion requires explicit confirmation. Never assume account identity."""
 
-ANALYTICS_PROMPT = """You are the analytics specialist. Your read-only tools are get_account_balances,
-get_transactions, get_spending_summary, get_spending_by_account, get_spending_comparison, and get_split_summary.
+ANALYTICS_PROMPT = """You are the analytics specialist. Your read-only tools are get_current_datetime,
+get_account_balances, get_transactions, get_spending_summary, get_spending_by_account, get_spending_comparison,
+and get_split_summary.
+The trusted handoff includes `current_datetime` in the user's timezone. For any request involving today, tomorrow,
+the rest/end of the month, days remaining, or affordability over time, use get_current_datetime and its returned
+calendar fields. Never assume today's date or calculate the number of calendar days from model knowledge. State
+whether today's daily allowance is included when that affects the answer.
 Use get_split_summary for questions about money owed to people, money owed by people, outstanding entries, or how many
 expense splits and receivables remain. Distinguish `expense_split` (shares from a recorded purchase) from
 `money_owed` (a standalone receivable with no expense transaction). Sum only the verified total_outstanding_paise

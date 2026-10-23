@@ -286,8 +286,9 @@ async def test_analytics_completion_keeps_chat_open_without_popup(client: AsyncC
         assert response.json()["show_completion_popup"] is False
         assert response.json()["message"] == long_reply
         assert llm.steps == 2
-        assert "Show my account balances" in llm.supervisor_prompts[1]
-        assert "show my recent transactions" in llm.supervisor_prompts[1]
+        assert "Show my account balances" in llm.supervisor_prompts[0]
+        assert "show my recent transactions" in llm.supervisor_prompts[0]
+        assert len(llm.supervisor_prompts) == 1
     finally:
         app.dependency_overrides.pop(get_semantic_guardrail, None)
         app.dependency_overrides.pop(get_transaction_extraction_llm, None)
@@ -349,8 +350,8 @@ async def test_chat_consumes_two_account_tasks_from_one_specialist_result(client
         )
         assert response.status_code == 200, response.text
         assert response.json()["tasks_completed"] is True
-        assert "Axis" in llm.supervisor_prompts[1]
-        assert "HDFC" in llm.supervisor_prompts[1]
+        assert llm.steps == 2
+        assert llm.supervisor_prompts == []  # Deterministic route and verified tool results skip the supervisor.
         accounts = await client.get("/api/v1/accounts", headers=auth_headers(token))
         assert {item["name"] for item in accounts.json()} == {"Axis", "HDFC"}
     finally:
@@ -417,7 +418,7 @@ async def test_category_queue_completes_when_only_missing_category_needs_a_tool(
         assert response.json()["tasks_completed"] is True
         assert response.json()["message"] == "Food already exists and Drinks was created as an expense category."
         assert llm.steps == 1
-        assert len(llm.supervisor_prompts) == 2
+        assert llm.supervisor_prompts == []  # The requested categories were verified from saved rows.
         categories = await client.get("/api/v1/categories", headers=headers)
         assert {(item["name"], item["type"]) for item in categories.json()} == DEFAULT_CATEGORIES | {
             ("Food", "expense"),
@@ -566,8 +567,7 @@ async def test_chat_sets_success_flag_after_verified_transaction_even_if_another
         assert response.status_code == 200, response.text
         assert response.json()["transaction_logged"] is True
         assert response.json()["tasks_completed"] is True
-        assert "Axis" in llm.supervisor_prompts[0]
-        assert "Pan" in llm.supervisor_prompts[0]
+        assert llm.supervisor_prompts == []  # The direct transaction route skips the supervisor model.
         assert "Axis" in llm.transaction_prompts[0]
         assert "Pan" in llm.transaction_prompts[0]
         transaction_id = response.json()["created_transaction_id"]
