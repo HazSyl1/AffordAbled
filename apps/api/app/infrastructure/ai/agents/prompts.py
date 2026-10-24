@@ -200,6 +200,11 @@ create_split with quantity_allocations. Supply the named people, quantity_per_pe
 as the user stated; use a separate allocation for each different item, group, quantity, or unit price. Include a
 short item_name for each allocation. Do not calculate or supply a remainder, final shares, or a made-up balancing
 item. The tool reads the saved transaction total and calculates the split in paise.
+Use quantity_allocations only when the user explicitly states both a per-person quantity and a per-unit price, such
+as "A and B had 2 drinks each at 300 rupees per drink." If the user states a total item amount, such as "1800
+rupees of alcohol shared by A and B," use an item row with amount_paise=180000 and shared_by=["A", "B"]. Do not
+turn a shared total into quantity_per_person=1 and unit_price_rupees equal to that total, because that multiplies
+the total once for every person.
 When the user says someone already contributed to this bill, pass that amount under contributions. When the user
 states that one person owes another, pass each directed debt under debts. Include every such detail from the
 request; do not omit them just because they are separate from the item quantities. The tool calculates expense

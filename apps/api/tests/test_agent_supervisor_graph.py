@@ -37,6 +37,7 @@ from app.infrastructure.ai.agents.supervisor_graph import (
     _reconcile_task_queue,
     _remaining_after_observations,
     _required_tools,
+    _same_turn_transaction_split_summary,
     _split_task_for_request,
     _sync_task_contracts,
     _verify_task_contract,
@@ -115,6 +116,81 @@ def test_task_verifier_rejects_wrong_task_id_and_requires_all_analytics_reads() 
                 },
             ],
         },
+    )
+
+
+def test_task_verifier_accepts_partial_result_after_required_tool_recovers() -> None:
+    task = "Create an equal split for the recorded dinner expense"
+    contract = TaskContract.model_validate(
+        _sync_task_contracts([task], None, original_request=task)[0]
+    )
+    failed_observation = {
+        "task_id": contract.id,
+        "tool": "create_split",
+        "ok": False,
+        "data": {},
+        "error": "invalid initial arguments",
+    }
+    successful_observation = {
+        "task_id": contract.id,
+        "tool": "create_split",
+        "ok": True,
+        "data": {"split": {"id": str(uuid.uuid4())}},
+    }
+
+    assert _verify_task_contract(
+        contract,
+        {
+            "task_id": contract.id,
+            "status": "partial",
+            "tool_observations": [failed_observation, successful_observation],
+        },
+    )
+    assert not _verify_task_contract(
+        contract,
+        {
+            "task_id": contract.id,
+            "status": "partial",
+            "tool_observations": [failed_observation],
+        },
+    )
+
+
+def test_recovered_custom_split_summary_uses_saved_shares_instead_of_model_math() -> None:
+    transaction_id = str(uuid.uuid4())
+    result = {
+        "specialist": "split",
+        "status": "partial",
+        "summary": "Incorrect model arithmetic.",
+        "data": {
+            "split": {
+                "id": str(uuid.uuid4()),
+                "transaction_id": transaction_id,
+                "title": "Turkish House",
+                "owner_share_paise": 15000,
+                "total_paise": 240000,
+                "participants": [
+                    {"name": "Sujal", "share_paise": 75000},
+                    {"name": "Sudhansu", "share_paise": 75000},
+                    {"name": "Rujul", "share_paise": 75000},
+                ],
+            }
+        },
+    }
+
+    summary = _same_turn_transaction_split_summary(
+        {
+            "created_transaction_ids": [transaction_id],
+            "verified_transaction_references": [
+                {"id": transaction_id, "merchant": "Turkish House"}
+            ],
+        },
+        result,
+    )
+
+    assert summary == (
+        "Recorded ₹2,400.00 for Turkish House and added the split with Sujal, Sudhansu, Rujul. "
+        "Saved shares: You ₹150.00, Sujal ₹750.00, Sudhansu ₹750.00, Rujul ₹750.00."
     )
 
 
@@ -1046,15 +1122,7 @@ async def test_account_mention_with_transaction_query_keeps_supervisor_planning(
 @pytest.mark.asyncio
 async def test_transaction_that_also_requests_a_split_keeps_supervisor_planning() -> None:
     graph = _graph()
-    supervisor = ScriptedSupervisor(
-        [
-            SupervisorDecision(
-                action="route",
-                specialist="transaction",
-                tasks=["Record the dinner expense", "Create a split for it with Isha"],
-            )
-        ]
-    )
+    supervisor = ScriptedSupervisor([])
     graph._supervisor = supervisor  # type: ignore[assignment]
     request = "Spent 1500 on dinner with Isha"
 
@@ -1068,10 +1136,16 @@ async def test_transaction_that_also_requests_a_split_keeps_supervisor_planning(
         }
     )
 
-    assert len(supervisor.calls) == 1
+    assert supervisor.calls == []
     assert update["next_specialist"] == "transaction"
-    assert update["task_queue"][0] == request
-    assert any("split" in task.casefold() for task in update["task_queue"])
+    assert update["task_queue"] == [request, _split_task_for_request(request)]
+    contracts = [TaskContract.model_validate(item) for item in update["task_contracts"]]
+    assert len(contracts) == 2
+    assert contracts[0].id != contracts[1].id
+    assert contracts[0].specialist == "transaction"
+    assert set(contracts[0].required_tools) == {"create_transaction", "create_transaction_batch"}
+    assert contracts[1].specialist == "split"
+    assert contracts[1].required_tools == ["create_split"]
 
 
 @pytest.mark.asyncio
@@ -1092,7 +1166,7 @@ async def test_verified_transaction_advances_to_distinct_split_contract_before_r
     transaction_id = str(uuid.uuid4())
     split_id = str(uuid.uuid4())
     transaction_summary = "Recorded the ₹1,608 Masato dinner expense."
-    split_summary = "Split ₹1,608 equally; each person owes ₹402."
+    split_summary = "The model incorrectly summarized the recovered split."
 
     transaction_result = {
         "specialist": "transaction",
@@ -1146,7 +1220,7 @@ async def test_verified_transaction_advances_to_distinct_split_contract_before_r
     split_result = {
         "specialist": "split",
         "task_id": split_contract.id,
-        "status": "success",
+        "status": "partial",
         "summary": split_summary,
         "data": {
             "observed_actions": [
@@ -1173,10 +1247,18 @@ async def test_verified_transaction_advances_to_distinct_split_contract_before_r
             {
                 "task_id": split_contract.id,
                 "tool": "create_split",
+                "ok": False,
+                "data": {},
+                "error": "invalid initial arguments",
+            },
+            {
+                "task_id": split_contract.id,
+                "tool": "create_split",
                 "ok": True,
                 "data": {"split": {"id": split_id, "transaction_id": transaction_id}},
             }
         ],
+        "errors": ["invalid initial arguments"],
     }
     completed = await graph._supervise(
         {

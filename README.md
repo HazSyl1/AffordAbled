@@ -134,7 +134,7 @@ python -m pytest -q
 ruff check .
 ```
 
-Run the agent evaluation gate with `python scripts/run_agent_evaluations.py` from `apps/api`. It prints a final summary across DeepEval goldens, guardrails, chat and thread flow, splits, spending queries, memory, and voice. The [evaluation guide](docs/DEEPEVAL_REGRESSIONS.md) explains coverage and commands. Add `--live` to include four Azure model workflows; add `--verbose` to list every passing case.
+Run the agent evaluation gate with `python scripts/run_agent_evaluations.py` from `apps/api`, or use `apps/api/scripts/run_deepeval.ps1` on Windows. It prints a final summary across DeepEval goldens, guardrails, chat and thread flow, splits, spending queries, memory, and voice. The [evaluation guide](docs/DEEPEVAL_REGRESSIONS.md) explains every criterion and command. Add `--live` to include six Azure end-to-end workflows, `--live-only` to run only those paid-model cases, and `--verbose` to list every passing case.
 
 From `apps/web`:
 
