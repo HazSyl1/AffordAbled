@@ -178,6 +178,44 @@ def _with_verified_split_total(task: str, transaction: Mapping[str, Any]) -> str
     return f"{task_without_total} {verified_total}"
 
 
+def _same_turn_transaction_split_summary(
+    state: Mapping[str, Any], latest_result: Mapping[str, Any],
+) -> str | None:
+    """Describe a transaction and its completed split as one grounded outcome."""
+    if latest_result.get("specialist") != "split" or latest_result.get("status") != "success":
+        return None
+    split = (latest_result.get("data") or {}).get("split") or {}
+    transaction_id = str(split.get("transaction_id") or "")
+    created_transaction_ids = {str(item) for item in state.get("created_transaction_ids", [])}
+    if not transaction_id or transaction_id not in created_transaction_ids or not split.get("id"):
+        return None
+
+    total_paise = int(split.get("total_paise") or 0)
+    owner_share_paise = int(split.get("owner_share_paise") or 0)
+    participants = [item for item in split.get("participants") or [] if isinstance(item, Mapping)]
+    participant_names = [str(item.get("name") or "").strip() for item in participants]
+    participant_names = [name for name in participant_names if name]
+    transaction_reference = next(
+        (
+            item for item in state.get("verified_transaction_references", [])
+            if str(item.get("id") or "") == transaction_id
+        ),
+        {},
+    )
+    merchant = str(transaction_reference.get("merchant") or split.get("title") or "").strip()
+
+    amount = f"₹{total_paise / 100:,.2f}" if total_paise else "the expense"
+    location = f" for {merchant}" if merchant else ""
+    people = ", ".join(participant_names)
+    participant_phrase = f" with {people}" if people else ""
+    response = f"Recorded {amount}{location} and added the split{participant_phrase}."
+    shares = [int(item.get("share_paise") or 0) for item in participants]
+    if owner_share_paise > 0 and shares and all(share == owner_share_paise for share in shares):
+        response = f"Recorded {amount}{location} and added an equal split{participant_phrase}."
+        response += f" Your share and each participant's share is ₹{owner_share_paise / 100:,.2f}."
+    return response
+
+
 def _canonicalize_split_task_queue(task_queue: list[str], original_request: str) -> list[str]:
     """Keep one split task tied to the full request, not lossy or duplicate LLM paraphrases."""
     split_task = _split_task_for_request(original_request)
@@ -1845,10 +1883,9 @@ class AgenticSupervisorGraph:
 
         latest_result = (results or [{}])[-1]
         shared_analytics_contracts = _verify_shared_analytics_tasks(task_queue, task_contracts, latest_result)
-        verified_terminal = (
+        verified_progress = (
             bool(results)
             and not state.get("contextual_followup")
-            and (len(task_queue) == 1 or bool(shared_analytics_contracts))
             and _verify_task_contract(active_contract, latest_result)
         )
         if fast_route is not None:
@@ -1860,10 +1897,12 @@ class AgenticSupervisorGraph:
                 specialist=fast_route,
                 handoff={"queued_task": task_request, "deterministic_route": True},
             )
-        elif verified_terminal:
+        elif verified_progress:
             # The specialist summary and successful observations are already
-            # authoritative. The normal completion block below will assemble
-            # the final response and UI metadata without another LLM roundtrip.
+            # authoritative. Consume the active contract before asking the LLM
+            # to route another queued task. Otherwise a route to a different
+            # specialist can rewrite the still-active contract and attach the
+            # next tool evidence to the previous task ID.
             decision = SupervisorDecision(action="finish")
         else:
             decision = await self._supervisor.decide(context, results)
@@ -2158,8 +2197,12 @@ class AgenticSupervisorGraph:
                     ],
                 ]
                 if not remaining_tasks:
+                    final_response = (
+                        _same_turn_transaction_split_summary(state, latest_result)
+                        or "\n".join(completed_tasks)
+                    )
                     return {
-                        "final_response": "\n".join(completed_tasks),
+                        "final_response": final_response,
                         "next_specialist": None,
                         "task_queue": [],
                         "task_contracts": task_contracts,

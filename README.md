@@ -134,7 +134,7 @@ python -m pytest -q
 ruff check .
 ```
 
-Run all fast agent evaluations with `python scripts/run_agent_evaluations.py` from `apps/api`. The [DeepEval agent regression suite](docs/DEEPEVAL_REGRESSIONS.md) runs in pull requests and before API deployment. Add `--live` to include the Azure model case.
+Run the agent evaluation gate with `python scripts/run_agent_evaluations.py` from `apps/api`. It prints a final summary across DeepEval goldens, guardrails, chat and thread flow, splits, spending queries, memory, and voice. The [evaluation guide](docs/DEEPEVAL_REGRESSIONS.md) explains coverage and commands. Add `--live` to include four Azure model workflows; add `--verbose` to list every passing case.
 
 From `apps/web`:
 

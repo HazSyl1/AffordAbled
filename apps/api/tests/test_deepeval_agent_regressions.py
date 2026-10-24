@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -19,12 +20,21 @@ from deepeval.test_case import LLMTestCase
 from fastapi import FastAPI
 from httpx import AsyncClient
 
+from app.application.services.image_service import ImageService
+from app.application.services.itemized_split import ItemAllocation, calculate_itemized_split
+from app.application.services.memory_service import candidates_for_event
 from app.application.services.quantity_split import QuantityAllocation, calculate_quantity_split
+from app.application.services.settlement_split import (
+    SettlementDebt,
+    SplitContribution,
+    calculate_settlement_split,
+)
 from app.core.config import get_settings
 from app.infrastructure.ai.agents.contracts import HandoffContext, TaskContract
 from app.infrastructure.ai.agents.runtime import merge_verified_transaction_references
 from app.infrastructure.ai.agents.split import SplitToolset
 from app.infrastructure.ai.agents.supervisor_graph import _verify_task_contract
+from app.infrastructure.ai.tools.transaction_query_tools import TransactionQueryTools
 from tests.helpers import auth_headers, register_and_get_token
 
 GOLDENS = json.loads((Path(__file__).parent / "goldens" / "agent_regressions.json").read_text(encoding="utf-8"))
@@ -90,6 +100,48 @@ def _evaluate(case: dict[str, Any]) -> Any:
             "shares_paise": shares,
             "remainder_paise": remainder,
         }
+    if case["kind"] == "settlement_split":
+        calculation = calculate_settlement_split(
+            case["total_paise"],
+            case["participants"],
+            [QuantityAllocation(**item) for item in case["allocations"]],
+            [SplitContribution(**item) for item in case.get("contributions", [])],
+            [SettlementDebt(**item) for item in case.get("debts", [])],
+        )
+        return {
+            "owner_share_paise": calculation.owner_share_paise,
+            "participant_shares": calculation.participant_shares,
+            "priced_items_paise": calculation.priced_items_paise,
+            "remainder_paise": calculation.remainder_paise,
+            "transfers": [
+                {"debtor": item.debtor, "creditor": item.creditor, "amount_paise": item.amount_paise}
+                for item in calculation.transfers
+            ],
+        }
+    if case["kind"] == "itemized_split":
+        calculation = calculate_itemized_split(
+            case["total_paise"], case["participants"],
+            [ItemAllocation(**item) for item in case["items"]],
+        )
+        return {
+            "owner_share_paise": calculation.owner_share_paise,
+            "participant_shares": calculation.participant_shares,
+        }
+    if case["kind"] == "memory_candidate":
+        return [
+            {"scope": item.scope, "subject_key": item.subject_key,
+             "memory_type": item.memory_type, "value_json": item.value_json}
+            for item in candidates_for_event(
+                action=case["action"], before=case["before"], after=case["after"],
+            )
+        ]
+    if case["kind"] == "date_window":
+        start, end = TransactionQueryTools.resolve_date_window(
+            case["message"], now_utc=datetime.fromisoformat(case["now_utc"]),
+            timezone_name=case.get("timezone", "UTC"),
+            date_period=case.get("date_period"),
+        )
+        return {"start": start.isoformat(), "end": end.isoformat()}
     raise AssertionError(f"Unknown golden kind: {case['kind']}")
 
 
@@ -150,3 +202,128 @@ async def test_live_salary_chat_records_one_verified_transaction(client: AsyncCl
         name="live_salary_creates_one_verified_transaction",
     )
     assert_test(test_case=case, metrics=[ExactJsonMetric()], run_async=False)
+
+
+def _require_live_model() -> None:
+    settings = get_settings()
+    if not (settings.azure_openai_endpoint and settings.azure_openai_api_key and
+            (settings.azure_openai_extraction_deployment or settings.azure_openai_deployment)):
+        pytest.fail("RUN_DEEPEVAL_LIVE=1 requires Azure OpenAI endpoint, key, and deployment")
+
+
+async def _live_wallet(client: AsyncClient, email: str) -> tuple[dict[str, str], str]:
+    _require_live_model()
+    token = await register_and_get_token(client, email)
+    headers = auth_headers(token)
+    account = await client.post(
+        "/api/v1/accounts",
+        json={"name": "Axis", "type": "bank", "balance_paise": 10_000_000, "currency": "INR"},
+        headers=headers,
+    )
+    assert account.status_code == 201, account.text
+    return headers, account.json()["id"]
+
+
+def _assert_live_result(name: str, actual: dict[str, Any], expected: dict[str, Any]) -> None:
+    assert_test(
+        test_case=LLMTestCase(
+            input=name, actual_output=json.dumps(actual, sort_keys=True),
+            expected_output=json.dumps(expected, sort_keys=True), name=name,
+        ),
+        metrics=[ExactJsonMetric()], run_async=False,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.getenv("RUN_DEEPEVAL_LIVE") != "1", reason="Requires an explicitly enabled Azure model run")
+async def test_live_followup_split_links_one_expense_without_recreating_it(client: AsyncClient) -> None:
+    headers, _account_id = await _live_wallet(client, "deepeval-live-split@example.com")
+    first = await client.post("/api/v1/chat", json={
+        "message": "Spent 1608 rupees for dinner at Masato from Axis with Sudhansu, Sujal, and Rujul. "
+                   "Record only the expense for now; do not split it yet.",
+    }, headers=headers)
+    assert first.status_code == 200, first.text
+    before = await client.get("/api/v1/transactions", headers=headers)
+    assert before.status_code == 200, before.text
+    expenses = [item for item in before.json() if item["type"] == "expense"]
+    if len(expenses) != 1:
+        _assert_live_result("live_followup_split", {"initial_expense_count": len(expenses)},
+                            {"initial_expense_count": 1})
+    second = await client.post("/api/v1/chat", json={
+        "thread_id": first.json()["thread_id"], "message": "Create an equal split for them, including me.",
+    }, headers=headers)
+    transactions = await client.get("/api/v1/transactions", headers=headers)
+    splits = await client.get("/api/v1/splits", headers=headers)
+    matching = [item for item in splits.json() if str(item["transaction_id"]) == expenses[0]["id"]] \
+        if splits.status_code == 200 else []
+    actual = {
+        "second_chat_ok": second.status_code == 200,
+        "expense_count": len([item for item in transactions.json() if item["type"] == "expense"])
+        if transactions.status_code == 200 else -1,
+        "matching_split_count": len(matching),
+        "owner_share_paise": matching[0]["owner_share_paise"] if matching else None,
+        "participant_shares": {item["name"].casefold(): item["share_paise"] for item in matching[0]["participants"]}
+        if matching else {},
+    }
+    _assert_live_result("live_followup_split", actual, {
+        "second_chat_ok": True, "expense_count": 1, "matching_split_count": 1,
+        "owner_share_paise": 40200,
+        "participant_shares": {"sudhansu": 40200, "sujal": 40200, "rujul": 40200},
+    })
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.getenv("RUN_DEEPEVAL_LIVE") != "1", reason="Requires an explicitly enabled Azure model run")
+async def test_live_receipt_records_one_grand_total_and_no_split(client: AsyncClient) -> None:
+    headers, _account_id = await _live_wallet(client, "deepeval-live-receipt@example.com")
+
+    class ReceiptOcr:
+        async def analyze(self, _image: bytes, *, content_type: str) -> str:
+            assert content_type == "image/png"
+            return (
+                "Brickhaus Tansabrews\nClassic Mac N Cheese 399.00\nSpaghetti Bolognese 489.00\n"
+                "Very Berry 1249.00\nHefeweizen 1249.00\nPeri Peri Fries 349.00\n"
+                "Subtotal 3735.00\nTaxes and round-off 312.00\nGrand Total INR 4047.00"
+            )
+
+    analysis = await ImageService(ReceiptOcr()).analyze_image(
+        b"image", content_type="image/png", filename="bill.png",
+    )
+    response = await client.post("/api/v1/chat", json={"message": analysis.prompt}, headers=headers)
+    transactions = await client.get("/api/v1/transactions", headers=headers)
+    splits = await client.get("/api/v1/splits", headers=headers)
+    expenses = [item for item in transactions.json() if item["type"] == "expense"] \
+        if transactions.status_code == 200 else []
+    _assert_live_result("live_receipt_one_grand_total", {
+        "chat_ok": response.status_code == 200,
+        "expense_amounts_paise": sorted(item["amount_paise"] for item in expenses),
+        "split_count": len(splits.json()) if splits.status_code == 200 else -1,
+    }, {"chat_ok": True, "expense_amounts_paise": [404700], "split_count": 0})
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.getenv("RUN_DEEPEVAL_LIVE") != "1", reason="Requires an explicitly enabled Azure model run")
+async def test_live_largest_transaction_query_reads_data_without_writing(client: AsyncClient) -> None:
+    headers, account_id = await _live_wallet(client, "deepeval-live-query@example.com")
+    categories = await client.get("/api/v1/categories", headers=headers)
+    assert categories.status_code == 200, categories.text
+    food_id = next(item["id"] for item in categories.json() if item["name"] == "Food")
+    for merchant, amount in (("Cafe", 50_000), ("Masato", 90_000)):
+        created = await client.post("/api/v1/transactions", json={
+            "account_id": account_id, "type": "expense", "amount_paise": amount,
+            "occurred_at": datetime.now(UTC).isoformat(), "category_id": food_id,
+            "merchant": merchant,
+        }, headers=headers)
+        assert created.status_code == 201, created.text
+    response = await client.post("/api/v1/chat", json={
+        "message": "Which transaction did I spend the most on this week?",
+        "timezone": "Asia/Kolkata",
+    }, headers=headers)
+    transactions = await client.get("/api/v1/transactions", headers=headers)
+    message = response.json().get("message", "") if response.status_code == 200 else ""
+    _assert_live_result("live_largest_transaction_query", {
+        "chat_ok": response.status_code == 200,
+        "names_masato": "masato" in message.casefold(),
+        "mentions_nine_hundred": "900" in message.replace(",", ""),
+        "transaction_count": len(transactions.json()) if transactions.status_code == 200 else -1,
+    }, {"chat_ok": True, "names_masato": True, "mentions_nine_hundred": True, "transaction_count": 2})

@@ -1,19 +1,31 @@
 # Agent regression evaluations
 
-The DeepEval suite protects the LangGraph boundaries that previously caused incorrect chat outcomes. Golden cases in `apps/api/tests/goldens/agent_regressions.json` cover completion only after successful tool evidence, verified transaction IDs in split follow-ups, ambiguity when several transactions were created, and exact paise reconciliation for quantity splits. The guardrail script checks a small set of finance and off-topic decisions. These checks use real application functions and deterministic DeepEval metrics; they do not call an LLM or a database.
-
-Run every fast check from `apps/api` with one command. The runner prints each case, a suite summary, and an overall pass/fail count; it exits nonzero if a suite fails:
+Run the evaluation gate from `apps/api` after changing chat, LangGraph, finance tools, memory, or split logic:
 
 ```powershell
 python scripts/run_agent_evaluations.py
 ```
 
-The same command runs on API pull requests and before the API deployment job stages an artifact. A failing check stops that deployment job. Add a golden when fixing a new agent regression, then run the focused test and existing related API tests.
+The command runs deterministic DeepEval goldens, guardrail decisions, and focused API tests. It prints a pass/fail count for each area, any failing case and its traceback, then a final total and `Result: PASS` or `Result: FAIL`. It exits with code 1 if any area fails. Add `--verbose` to print every passing case. The same gate runs on API pull requests and before API deployment.
 
-An optional live case sends a salary request through the actual chat API and Azure model. It verifies that exactly one income transaction was stored and that the response reports its real ID as completed. The test fixture creates a private in-memory SQLite database; it does not write to the configured PostgreSQL database. It makes paid Azure OpenAI calls and is not part of the automatic CI gate.
+| Area in summary | What it checks |
+| --- | --- |
+| Agent goldens and exact financial outcomes | A task completes only with a successful tool observation; follow-up splits use a verified transaction ID; ambiguous IDs require selection; quantity, itemized, and settlement splits reconcile in paise; contributions and existing debts affect settlement transfers; category edits and split participants yield the right memory candidates; date windows use the user's timezone. |
+| Guardrail decisions | Finance requests, unrelated requests, and unsafe requests follow expected guardrail decisions. |
+| Chat orchestration, task evidence, and thread history | Supervisor routing, task queues, receipt consent, category clarification, verified salary and analytics answers, chat API writes, and thread persistence. |
+| Expense splits and settlement arithmetic | Equal and itemized splits, receipt rows and taxes, multiple quantity allocations, coupons, fees, payer roles, debts, draft review, and plan edits. |
+| Spending queries and date filters | User-scoped query results, largest transaction ordering, account/category filters, aggregates, and local date windows. |
+| Memory capture and review | Chat clarification signals, extraction evidence, edits, outbox creation, and user-scoped suggestions. |
+| Voice transcription handoff | Audio input validation and transcription service behavior. |
+
+The exact-value goldens live in `apps/api/tests/goldens/agent_regressions.json`; their evaluator is `apps/api/tests/test_deepeval_agent_regressions.py`. They use real application functions with a deterministic DeepEval metric, so a model cannot make an incorrect number look correct by wording its answer differently. The other areas run existing pytest API and service tests. Tests that need persistence use an isolated SQLite database supplied by pytest fixtures. The default run does not call Azure or write to production PostgreSQL.
+
+## Optional live Azure evaluation
 
 ```powershell
 python scripts/run_agent_evaluations.py --live
 ```
 
-The live run needs `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, and an Azure deployment setting in the API environment. `--live` enables the live case only for that process; it does not change your shell's environment. Deterministic cases guard arithmetic and state handling; the live case checks one model behavior. Neither set proves every possible conversation will work, so new reported failures should become focused regression cases.
+This adds four end-to-end chat cases using the configured Azure model: record one salary transaction and report its real ID; create an equal split on a follow-up turn without duplicating the expense; log one receipt grand total without making a split; and answer a largest-expense query without writing a transaction. Every case checks saved API state, not just the assistant's prose. Each test has its own isolated SQLite wallet. The live run makes paid model calls and needs `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, and an Azure deployment setting. It is deliberately outside CI because model behavior and Azure availability can change independently of a code commit.
+
+The focused gate covers the listed scenarios, not every possible conversation or frontend behavior. When a new failure is found, add its exact inputs and required database outcome to a golden or focused test. Run the frontend build separately from `apps/web` with `npm run build` after UI changes.

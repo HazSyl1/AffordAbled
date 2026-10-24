@@ -30,14 +30,17 @@ class CheckResult:
         return self.exit_code == 0 and self.failed == 0 and self.passed > 0
 
 
-def _run_pytest(name: str, selection: str, *, live: bool) -> CheckResult:
+def _run_pytest(name: str, paths: list[str], *, selection: str | None = None, live: bool = False) -> CheckResult:
     environment = os.environ.copy()
+    environment["LANGSMITH_TRACING"] = "false"
     if live:
         environment["RUN_DEEPEVAL_LIVE"] = "1"
     command = [
         sys.executable, "-m", "pytest", "-v", "-p", "no:cacheprovider",
-        "tests/test_deepeval_agent_regressions.py", "-k", selection, "--tb=short",
+        *paths, "--tb=short",
     ]
+    if selection:
+        command.extend(["-k", selection])
     started = time.monotonic()
     process = subprocess.run(
         command, cwd=API_ROOT, env=environment, capture_output=True,
@@ -66,7 +69,8 @@ def _run_guardrails() -> CheckResult:
     started = time.monotonic()
     process = subprocess.run(
         [sys.executable, "scripts/run_deepeval_guardrail_eval.py"],
-        cwd=API_ROOT, capture_output=True, text=True, encoding="utf-8",
+        cwd=API_ROOT, env={**os.environ, "LANGSMITH_TRACING": "false"},
+        capture_output=True, text=True, encoding="utf-8",
         errors="replace", check=False,
     )
     result = CheckResult(
@@ -91,14 +95,31 @@ def _run_guardrails() -> CheckResult:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run AffordAbled DeepEval checks with one summary")
     parser.add_argument("--live", action="store_true", help="Also call the Azure model using an isolated test database")
+    parser.add_argument("--verbose", action="store_true", help="Show every passing test as well as failures")
     args = parser.parse_args()
 
     results = [
-        _run_pytest("Agent state and split arithmetic", "not live_salary", live=False),
+        _run_pytest("Agent goldens and exact financial outcomes", ["tests/test_deepeval_agent_regressions.py"],
+                    selection="not live_"),
         _run_guardrails(),
+        _run_pytest("Chat orchestration, task evidence, and thread history", [
+            "tests/test_agentic_chat_api.py", "tests/test_agent_supervisor_graph.py",
+            "tests/test_threads.py", "tests/test_intent_classifier.py",
+        ]),
+        _run_pytest("Expense splits and settlement arithmetic", [
+            "tests/test_itemized_splits.py", "tests/test_settlement_split.py",
+            "tests/test_complex_settlement.py", "tests/test_complex_settlement_api.py",
+        ]),
+        _run_pytest("Spending queries and date filters", ["tests/test_transaction_query_tools.py"]),
+        _run_pytest("Memory capture and review", [
+            "tests/test_transaction_memory_capture.py", "tests/test_chat_memory_analysis.py",
+            "tests/test_shared_memory.py",
+        ]),
+        _run_pytest("Voice transcription handoff", ["tests/test_speech_service.py"]),
     ]
     if args.live:
-        results.append(_run_pytest("Live Azure salary workflow", "live_salary", live=True))
+        results.append(_run_pytest("Live Azure chat workflows", ["tests/test_deepeval_agent_regressions.py"],
+                                   selection="live_", live=True))
 
     print("\nAffordAbled DeepEval summary")
     print("=" * 28)
@@ -109,18 +130,20 @@ def main() -> int:
             f"{result.skipped} skipped ({result.duration_seconds:.1f}s)"
         )
         for case_status, case_name in result.cases:
-            print(f"  {case_status}  {case_name}")
+            if args.verbose or case_status != "PASS":
+                print(f"  {case_status}  {case_name}")
         if not result.ok:
             print("  Details:")
             for line in result.diagnostics.splitlines():
                 print(f"    {line}")
     if not args.live:
-        print("Live Azure workflow: not run (add --live to include it)")
+        print("Live Azure workflows: not run (add --live to include them)")
     passed = sum(result.passed for result in results)
     failed = sum(result.failed for result in results)
     skipped = sum(result.skipped for result in results)
     duration = sum(result.duration_seconds for result in results)
     print(f"Total: {passed} passed, {failed} failed, {skipped} skipped in {duration:.1f}s")
+    print("Result: PASS" if all(result.ok for result in results) else "Result: FAIL")
     return 0 if all(result.ok for result in results) else 1
 
 

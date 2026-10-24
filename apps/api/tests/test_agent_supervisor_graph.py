@@ -1075,6 +1075,137 @@ async def test_transaction_that_also_requests_a_split_keeps_supervisor_planning(
 
 
 @pytest.mark.asyncio
+async def test_verified_transaction_advances_to_distinct_split_contract_before_routing() -> None:
+    graph = _graph()
+    supervisor = ScriptedSupervisor([])
+    graph._supervisor = supervisor  # type: ignore[assignment]
+    request = "Spent 1608 for dinner at Masato with Rujul Sudhansu and Sujal"
+    split_task = _split_task_for_request(request)
+    assert split_task is not None
+    queue = [request, split_task]
+    contracts = _sync_task_contracts(queue, None, original_request=request)
+    transaction_contract = TaskContract.model_validate(contracts[0])
+    split_contract = TaskContract.model_validate(contracts[1])
+    assert transaction_contract.id != split_contract.id
+    assert set(transaction_contract.required_tools) == {"create_transaction", "create_transaction_batch"}
+    assert split_contract.required_tools == ["create_split"]
+    transaction_id = str(uuid.uuid4())
+    split_id = str(uuid.uuid4())
+    transaction_summary = "Recorded the ₹1,608 Masato dinner expense."
+    split_summary = "Split ₹1,608 equally; each person owes ₹402."
+
+    transaction_result = {
+        "specialist": "transaction",
+        "task_id": transaction_contract.id,
+        "status": "success",
+        "summary": transaction_summary,
+        "data": {
+            "transaction": {"id": transaction_id, "amount_paise": 160800, "merchant": "Masato"},
+            "created_transactions": [
+                {"id": transaction_id, "amount_paise": 160800, "merchant": "Masato"},
+            ],
+            "observed_actions": [
+                {
+                    "task_id": transaction_contract.id,
+                    "tool": "create_transaction",
+                    "data": {"transaction": {"id": transaction_id, "amount_paise": 160800}},
+                }
+            ],
+        },
+        "tool_observations": [
+            {
+                "task_id": transaction_contract.id,
+                "tool": "create_transaction",
+                "ok": True,
+                "data": {"transaction": {"id": transaction_id, "amount_paise": 160800}},
+            }
+        ],
+    }
+
+    after_transaction = await graph._supervise(
+        {
+            "messages": [HumanMessage(content=request)],
+            "user_id": str(uuid.uuid4()),
+            "task_request": request,
+            "task_queue": queue,
+            "task_contracts": contracts,
+            "results": [transaction_result],
+        }
+    )
+
+    assert supervisor.calls == []
+    assert after_transaction["next_specialist"] == "supervisor"
+    assert len(after_transaction["task_queue"]) == 1
+    assert after_transaction["task_queue"][0].startswith("create an equal split")
+    progressed_contracts = [TaskContract.model_validate(item) for item in after_transaction["task_contracts"]]
+    assert [(item.id, item.status) for item in progressed_contracts] == [
+        (transaction_contract.id, "completed"),
+        (split_contract.id, "queued"),
+    ]
+
+    split_result = {
+        "specialist": "split",
+        "task_id": split_contract.id,
+        "status": "success",
+        "summary": split_summary,
+        "data": {
+            "observed_actions": [
+                {
+                    "task_id": split_contract.id,
+                    "tool": "create_split",
+                    "data": {"split": {"id": split_id, "transaction_id": transaction_id}},
+                }
+            ],
+            "split": {
+                "id": split_id,
+                "transaction_id": transaction_id,
+                "title": "Masato",
+                "owner_share_paise": 40200,
+                "total_paise": 160800,
+                "participants": [
+                    {"name": "Rujul", "share_paise": 40200},
+                    {"name": "Sudhansu", "share_paise": 40200},
+                    {"name": "Sujal", "share_paise": 40200},
+                ],
+            },
+        },
+        "tool_observations": [
+            {
+                "task_id": split_contract.id,
+                "tool": "create_split",
+                "ok": True,
+                "data": {"split": {"id": split_id, "transaction_id": transaction_id}},
+            }
+        ],
+    }
+    completed = await graph._supervise(
+        {
+            "messages": [HumanMessage(content=request)],
+            "user_id": str(uuid.uuid4()),
+            "task_request": request,
+            "task_queue": after_transaction["task_queue"],
+            "task_contracts": after_transaction["task_contracts"],
+            "completed_tasks": after_transaction["completed_tasks"],
+            "created_transaction_ids": after_transaction["created_transaction_ids"],
+            "results": [split_result],
+        }
+    )
+
+    assert supervisor.calls == []
+    assert completed["tasks_completed"] is True
+    assert completed["task_queue"] == []
+    assert completed["final_response"] == (
+        "Recorded ₹1,608.00 for Masato and added an equal split with Rujul, Sudhansu, Sujal. "
+        "Your share and each participant's share is ₹402.00."
+    )
+    assert "could not verify" not in completed["final_response"].casefold()
+    assert [(item["id"], item["status"]) for item in completed["task_contracts"]] == [
+        (transaction_contract.id, "completed"),
+        (split_contract.id, "completed"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_verified_terminal_tool_observation_skips_final_supervisor_call() -> None:
     graph = _graph()
     supervisor = ScriptedSupervisor([])

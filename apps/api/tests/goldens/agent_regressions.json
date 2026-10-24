@@ -54,5 +54,102 @@
     "participants": ["A", "B", "C", "D", "E", "F", "G"],
     "allocations": [{"people": ["A", "B", "C"], "quantity_per_person": 7, "unit_price_paise": 700000}],
     "expected": {"owner_share_paise": 9754788, "remainder_paise": 78038300, "shares_paise": {"A": 14654788, "B": 14654788, "C": 14654788, "D": 9754787, "E": 9754787, "F": 9754787, "G": 9754787}}
+  },
+  {
+    "name": "settlement_nets_drinks_contribution_and_debts_exactly",
+    "kind": "settlement_split",
+    "total_paise": 92738300,
+    "participants": ["A", "B", "C", "D", "E", "F", "G"],
+    "allocations": [{"people": ["A", "B", "C"], "quantity_per_person": 7, "unit_price_paise": 700000}],
+    "contributions": [{"person": "B", "amount_paise": 2900000}],
+    "debts": [{"debtor": "A", "creditor": "C", "amount_paise": 1700000}, {"debtor": "C", "creditor": "B", "amount_paise": 2000000}],
+    "expected": {
+      "owner_share_paise": 9754788,
+      "participant_shares": {"A": 14654788, "B": 14654788, "C": 14654788, "D": 9754787, "E": 9754787, "F": 9754787, "G": 9754787},
+      "priced_items_paise": 14700000,
+      "remainder_paise": 78038300,
+      "transfers": [
+        {"debtor": "A", "creditor": "You", "amount_paise": 16354788},
+        {"debtor": "C", "creditor": "You", "amount_paise": 14954788},
+        {"debtor": "B", "creditor": "You", "amount_paise": 9754788},
+        {"debtor": "D", "creditor": "You", "amount_paise": 9754787},
+        {"debtor": "E", "creditor": "You", "amount_paise": 9754787},
+        {"debtor": "F", "creditor": "You", "amount_paise": 9754787},
+        {"debtor": "G", "creditor": "You", "amount_paise": 9754787}
+      ]
+    }
+  },
+  {
+    "name": "settlement_supports_multiple_overlapping_quantity_groups",
+    "kind": "settlement_split",
+    "total_paise": 26500000,
+    "participants": ["A", "B", "C", "D"],
+    "allocations": [
+      {"people": ["A", "B", "C"], "quantity_per_person": 7, "unit_price_paise": 700000},
+      {"people": ["C", "D"], "quantity_per_person": 3, "unit_price_paise": 300000}
+    ],
+    "expected": {
+      "owner_share_paise": 2000000,
+      "participant_shares": {"A": 6900000, "B": 6900000, "C": 7800000, "D": 2900000},
+      "priced_items_paise": 16500000,
+      "remainder_paise": 10000000,
+      "transfers": [
+        {"debtor": "C", "creditor": "You", "amount_paise": 7800000},
+        {"debtor": "A", "creditor": "You", "amount_paise": 6900000},
+        {"debtor": "B", "creditor": "You", "amount_paise": 6900000},
+        {"debtor": "D", "creditor": "You", "amount_paise": 2900000}
+      ]
+    }
+  },
+  {
+    "name": "itemized_split_includes_owner_by_default",
+    "kind": "itemized_split",
+    "total_paise": 350000,
+    "participants": ["Shreyas", "Sudhansu", "Rujul", "Sujal"],
+    "items": [
+      {"name": "Alcohol", "amount_paise": 200000, "shared_by": ["Rujul", "Sudhansu"]},
+      {"name": "Non-alcoholic items", "amount_paise": 150000, "shared_by": ["Rujul", "Shreyas", "Sudhansu", "Sujal"]}
+    ],
+    "expected": {"owner_share_paise": 96667, "participant_shares": {"Shreyas": 30000, "Sudhansu": 96666, "Rujul": 96667, "Sujal": 30000}}
+  },
+  {
+    "name": "itemized_split_rejects_missing_tax_row",
+    "kind": "itemized_split",
+    "total_paise": 404700,
+    "participants": ["Sujal"],
+    "items": [{"name": "Food subtotal", "amount_paise": 373500, "shared_by": ["me", "Sujal"]}],
+    "expected_error": "Add the missing"
+  },
+  {
+    "name": "memory_category_edit_produces_review_candidate",
+    "kind": "memory_candidate",
+    "action": "edited",
+    "before": {"merchant": "PCM", "category_id": "old-category"},
+    "after": {"merchant": "PCM", "category_id": "health-category"},
+    "expected": [{"scope": "merchant", "subject_key": "pcm", "memory_type": "category_mapping", "value_json": {"category_id": "health-category"}}]
+  },
+  {
+    "name": "memory_split_ignores_owner_as_contact",
+    "kind": "memory_candidate",
+    "action": "accepted",
+    "before": {},
+    "after": {"mode": "equal", "participants": [{"name": "me", "share_ratio": 0.5}, {"name": "Isha", "share_ratio": 0.5}]},
+    "expected": [{"scope": "person", "subject_key": "isha", "memory_type": "split_method", "value_json": {"mode": "equal", "share_ratio": 0.5}}]
+  },
+  {
+    "name": "analytics_this_week_uses_real_week_start",
+    "kind": "date_window",
+    "message": "what did I spend this week",
+    "now_utc": "2026-10-14T08:30:00+00:00",
+    "expected": {"start": "2026-10-12T00:00:00+00:00", "end": "2026-10-14T08:30:00+00:00"}
+  },
+  {
+    "name": "analytics_today_respects_local_timezone",
+    "kind": "date_window",
+    "message": "today",
+    "now_utc": "2026-10-14T01:00:00+00:00",
+    "timezone": "America/Los_Angeles",
+    "date_period": "today",
+    "expected": {"start": "2026-10-13T07:00:00+00:00", "end": "2026-10-14T01:00:00+00:00"}
   }
 ]
