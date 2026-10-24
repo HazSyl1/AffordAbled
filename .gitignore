@@ -38,6 +38,8 @@ htmlcov/
 # Logs / runtime files
 **/logs/
 **/*.log
+.deepeval-results/
+**/.deepeval/
 apps/web/dev_out.log
 apps/web/dev_err.log
 

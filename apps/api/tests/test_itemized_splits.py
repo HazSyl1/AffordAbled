@@ -495,6 +495,24 @@ async def test_quantity_split_uses_recorded_total_and_rejects_llm_remainder(
                 'unit_price_rupees': 65000,
             }],
         })
+    shared_total_context = HandoffContext(
+        user_id=context.user_id,
+        request=(
+            'Split 1800 rupees of alcohol among A, B, and C and 600 rupees of dinner '
+            'among A, B, C, and D.'
+        ),
+        constraints={'created_transaction_ids': [str(transaction_id)]},
+    )
+    with pytest.raises(ValueError, match='For a total amount shared by named people, use an item row'):
+        await toolset.create_split(shared_total_context, {
+            'quantity_allocations': [{
+                'people': ['A', 'B', 'C'], 'quantity_per_person': 1,
+                'unit_price_rupees': 1800,
+            }, {
+                'people': ['A', 'B', 'C', 'D'], 'quantity_per_person': 1,
+                'unit_price_rupees': 600,
+            }],
+        })
     result = await toolset.create_split(context, {
         'participants': list('ABCDEFG'), 'mode': 'custom',
         'quantity_allocations': [{
@@ -508,6 +526,17 @@ async def test_quantity_split_uses_recorded_total_and_rejects_llm_remainder(
     assert result['split']['participants'][0]['share_paise'] == 14654788
     assert result['split']['participants'][-1]['share_paise'] == 9754787
     assert len(saved) == 1
+
+    inferred = await toolset.create_split(context, {
+        'mode': 'custom',
+        'quantity_allocations': [{
+            'people': ['A', 'B', 'C'], 'quantity_per_person': 7,
+            'unit_price_rupees': 7000,
+        }],
+    })
+    assert [item['name'] for item in inferred['split']['participants']] == ['A', 'B', 'C']
+    assert inferred['split']['total_paise'] == 92738300
+    assert len(saved) == 2
 
 
 def test_quantity_split_rejects_fixed_items_above_total() -> None:

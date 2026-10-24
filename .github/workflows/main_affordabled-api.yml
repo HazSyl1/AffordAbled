@@ -29,6 +29,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Check agent regression evaluations
+        working-directory: apps/api
+        run: |
+          source antenv/bin/activate
+          python scripts/run_agent_evaluations.py
+
       - name: Stage API package
         run: |
           mkdir -p deploy/api

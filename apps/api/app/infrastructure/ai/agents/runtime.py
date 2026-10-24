@@ -260,6 +260,10 @@ class SplitItemArguments(BaseModel):
         min_length=1, max_length=21, description='Names who shared this row; use me for owner.'
     )
     food_type: Literal['vegetarian', 'vegan', 'contains_meat', 'unknown', 'shared_charge'] = 'unknown'
+    owner_excluded: bool = Field(
+        default=False,
+        description='True only when the user explicitly says the wallet owner did not share this row.',
+    )
 
 
 class QuantitySplitArguments(BaseModel):
@@ -298,8 +302,9 @@ class CreateSplitArguments(BaseModel):
     quantity_allocations: list[QuantitySplitArguments] | None = Field(
         default=None, min_length=1, max_length=50,
         description=(
-            'For "N items each at X rupees; divide the rest equally". Supply only names, quantity, and unit '
-            'price. The tool calculates fixed shares and the remainder from the saved transaction.'
+            'Only for an explicit "N items each at X rupees per item; divide the rest equally" rule. '
+            'For a total such as "1800 rupees of alcohol shared by A and B", use an items row instead. '
+            'Supply names, quantity, and unit price; the tool calculates the remainder from the transaction.'
         ),
     )
     debts: list[SplitDebtArguments] | None = Field(

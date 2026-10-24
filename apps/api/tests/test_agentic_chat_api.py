@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -121,6 +122,80 @@ class TransactionSuccessLLM:
                     tool_calls=[{"name": "list_categories", "args": {"arguments": {}}, "id": "read-categories"}],
                 )
             return AIMessage(content="The expense was recorded.")
+
+        return RunnableLambda(respond)
+
+
+class ExpenseAndSplitLLM:
+    """Exercise a dependent transaction -> split workflow through the compiled graph."""
+
+    def __init__(self, account_id: str, category_id: str) -> None:
+        self.account_id = account_id
+        self.category_id = category_id
+        self.transaction_steps = 0
+        self.split_steps = 0
+        self.supervisor_prompts: list[str] = []
+        self.supervisor_decisions = [
+            SupervisorDecision(action="route", specialist="split"),
+        ]
+
+    def with_structured_output(self, schema: type[Any], **_kwargs: Any) -> RunnableLambda:
+        def respond(_prompt: Any) -> Any:
+            if schema is SupervisorDecision:
+                self.supervisor_prompts.append(str(_prompt))
+                return self.supervisor_decisions.pop(0)
+            raise AssertionError(f"Unexpected structured output: {schema}")
+
+        return RunnableLambda(respond)
+
+    def bind_tools(self, _tools: list[Any], **_kwargs: Any) -> RunnableLambda:
+        async def respond(messages: list[Any]) -> AIMessage:
+            system = str(messages[0].content).casefold()
+            if system.startswith("you are the split specialist"):
+                self.split_steps += 1
+                if self.split_steps == 1:
+                    trusted_handoff = str(messages[1].content)
+                    transaction_id = json.loads(
+                        trusted_handoff.removeprefix("Trusted handoff:\n")
+                    )["constraints"]["verified_transaction_references"][-1]["id"]
+                    return AIMessage(
+                        content="",
+                        tool_calls=[{
+                            "name": "create_split",
+                            "args": {"arguments": {
+                                "transaction_id": transaction_id,
+                                "mode": "equal",
+                                "participants": [
+                                    {"name": "Shreyash"},
+                                    {"name": "Rujul"},
+                                    {"name": "Sudhansu"},
+                                    {"name": "Sujal"},
+                                ],
+                            }},
+                            "id": "create-biryani-split",
+                        }],
+                    )
+                return AIMessage(content="The biryani dinner was split equally.")
+            if system.startswith("you are the transaction specialist"):
+                self.transaction_steps += 1
+                if self.transaction_steps == 1:
+                    return AIMessage(
+                        content="",
+                        tool_calls=[{
+                            "name": "create_transaction",
+                            "args": {"arguments": {
+                                "account_id": self.account_id,
+                                "category_id": self.category_id,
+                                "type": "expense",
+                                "amount_rupees": 420,
+                                "merchant": "biryani dinner",
+                                "note": "Shared with Shreyash, Rujul, Sudhansu, and Sujal",
+                            }},
+                            "id": "create-biryani-expense",
+                        }],
+                    )
+                return AIMessage(content="The biryani dinner expense was recorded.")
+            raise AssertionError(f"Unexpected specialist prompt: {system}")
 
         return RunnableLambda(respond)
 
@@ -575,6 +650,63 @@ async def test_chat_sets_success_flag_after_verified_transaction_even_if_another
         saved = await client.get(f"/api/v1/transactions/{transaction_id}", headers=headers)
         assert saved.status_code == 200
         assert saved.json()["amount_paise"] == 2000
+    finally:
+        app.dependency_overrides.pop(get_semantic_guardrail, None)
+        app.dependency_overrides.pop(get_transaction_extraction_llm, None)
+
+
+@pytest.mark.asyncio
+async def test_one_turn_expense_and_split_complete_with_distinct_verified_tasks(
+    client: AsyncClient, app: FastAPI
+) -> None:
+    token = await register_and_get_token(client, "agentic-expense-split-contracts@example.com")
+    headers = auth_headers(token)
+    account = await client.post(
+        "/api/v1/accounts",
+        json={"name": "Axis", "type": "bank", "balance_paise": 600000, "currency": "INR"},
+        headers=headers,
+    )
+    categories = await client.get("/api/v1/categories", headers=headers)
+    food = next(item for item in categories.json() if item["name"] == "Food" and item["type"] == "expense")
+    llm = ExpenseAndSplitLLM(account.json()["id"], food["id"])
+    app.dependency_overrides[get_semantic_guardrail] = lambda: AllowingGuardrail()
+    app.dependency_overrides[get_transaction_extraction_llm] = lambda: llm
+
+    try:
+        response = await client.post(
+            "/api/v1/chat",
+            json={"message": "Spent 420 on biryani dinner with Shreyash Rujul Sudhansu and Sujal"},
+            headers=headers,
+        )
+
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert payload["tasks_completed"] is True, {
+            "payload": payload,
+            "transaction_steps": llm.transaction_steps,
+            "split_steps": llm.split_steps,
+            "supervisor_prompts": llm.supervisor_prompts,
+        }
+        assert payload["transaction_logged"] is True
+        assert "could not verify" not in payload["message"].casefold()
+        assert "recorded" in payload["message"].casefold()
+        assert "split" in payload["message"].casefold()
+        assert len(llm.supervisor_prompts) == 1
+        assert llm.transaction_steps == 2
+        assert llm.split_steps == 2
+        transactions = (await client.get("/api/v1/transactions", headers=headers)).json()
+        splits = (await client.get("/api/v1/splits", headers=headers)).json()
+        assert len(transactions) == 1
+        assert transactions[0]["amount_paise"] == 42000
+        assert len(splits) == 1
+        assert splits[0]["transaction_id"] == transactions[0]["id"]
+        assert splits[0]["owner_share_paise"] == 8400
+        assert {item["name"]: item["share_paise"] for item in splits[0]["participants"]} == {
+            "Shreyash": 8400,
+            "Rujul": 8400,
+            "Sudhansu": 8400,
+            "Sujal": 8400,
+        }
     finally:
         app.dependency_overrides.pop(get_semantic_guardrail, None)
         app.dependency_overrides.pop(get_transaction_extraction_llm, None)

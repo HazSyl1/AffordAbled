@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import uuid
 from collections import Counter
@@ -47,6 +48,8 @@ from app.infrastructure.database.repositories.sqlalchemy_complex_settlement_repo
     SqlAlchemyComplexSettlementRepository,
 )
 from app.infrastructure.database.repositories.sqlalchemy_memory_repository import SqlAlchemyMemoryRepository
+
+logger = logging.getLogger(__name__)
 
 _MAX_REROUTES = 3
 _ANALYTICS_READ_TOOLS = {
@@ -176,6 +179,54 @@ def _with_verified_split_total(task: str, transaction: Mapping[str, Any]) -> str
         flags=re.IGNORECASE,
     ).strip()
     return f"{task_without_total} {verified_total}"
+
+
+def _same_turn_transaction_split_summary(
+    state: Mapping[str, Any], latest_result: Mapping[str, Any],
+) -> str | None:
+    """Describe a transaction and its completed split as one grounded outcome."""
+    if (
+        latest_result.get("specialist") != "split"
+        or latest_result.get("status") not in {"success", "partial"}
+    ):
+        return None
+    split = (latest_result.get("data") or {}).get("split") or {}
+    transaction_id = str(split.get("transaction_id") or "")
+    created_transaction_ids = {str(item) for item in state.get("created_transaction_ids", [])}
+    if not transaction_id or transaction_id not in created_transaction_ids or not split.get("id"):
+        return None
+
+    total_paise = int(split.get("total_paise") or 0)
+    owner_share_paise = int(split.get("owner_share_paise") or 0)
+    participants = [item for item in split.get("participants") or [] if isinstance(item, Mapping)]
+    participant_names = [str(item.get("name") or "").strip() for item in participants]
+    participant_names = [name for name in participant_names if name]
+    transaction_reference = next(
+        (
+            item for item in state.get("verified_transaction_references", [])
+            if str(item.get("id") or "") == transaction_id
+        ),
+        {},
+    )
+    merchant = str(transaction_reference.get("merchant") or split.get("title") or "").strip()
+
+    amount = f"₹{total_paise / 100:,.2f}" if total_paise else "the expense"
+    location = f" for {merchant}" if merchant else ""
+    people = ", ".join(participant_names)
+    participant_phrase = f" with {people}" if people else ""
+    response = f"Recorded {amount}{location} and added the split{participant_phrase}."
+    shares = [int(item.get("share_paise") or 0) for item in participants]
+    if owner_share_paise > 0 and shares and all(share == owner_share_paise for share in shares):
+        response = f"Recorded {amount}{location} and added an equal split{participant_phrase}."
+        response += f" Your share and each participant's share is ₹{owner_share_paise / 100:,.2f}."
+    elif participants:
+        saved_shares = [f"You ₹{owner_share_paise / 100:,.2f}"]
+        saved_shares.extend(
+            f"{str(item.get('name') or 'Participant')} ₹{int(item.get('share_paise') or 0) / 100:,.2f}"
+            for item in participants
+        )
+        response += f" Saved shares: {', '.join(saved_shares)}."
+    return response
 
 
 def _canonicalize_split_task_queue(task_queue: list[str], original_request: str) -> list[str]:
@@ -854,7 +905,11 @@ def _observation_has_contract_evidence(observation: dict[str, Any], tool: str) -
 
 def _verify_task_contract(contract: TaskContract | None, result: dict[str, Any]) -> bool:
     """Verify completion from task-bound tool facts, never specialist prose."""
-    if contract is None or result.get("status") != "success":
+    # A specialist is marked partial when any earlier tool attempt failed, even
+    # when it corrected the arguments and subsequently produced authoritative
+    # evidence. Completion is therefore determined by successful, task-bound
+    # observations below. A partial result without that evidence still fails.
+    if contract is None or result.get("status") not in {"success", "partial"}:
         return False
     result_task_id = result.get("task_id")
     if result_task_id and result_task_id != contract.id:
@@ -1800,6 +1855,7 @@ class AgenticSupervisorGraph:
         history = (state.get("conversation_history") or [])[-20:]
         task_queue = state.get("task_queue") or []
         task_request = str(state.get("task_request") or state["messages"][-1].content)
+        combined_split_task = _split_task_for_request(task_request)
         task_contracts = _sync_task_contracts(
             task_queue,
             state.get("task_contracts"),
@@ -1845,13 +1901,25 @@ class AgenticSupervisorGraph:
 
         latest_result = (results or [{}])[-1]
         shared_analytics_contracts = _verify_shared_analytics_tasks(task_queue, task_contracts, latest_result)
-        verified_terminal = (
+        verified_progress = (
             bool(results)
             and not state.get("contextual_followup")
-            and (len(task_queue) == 1 or bool(shared_analytics_contracts))
             and _verify_task_contract(active_contract, latest_result)
         )
-        if fast_route is not None:
+        deterministic_transaction_split = bool(
+            combined_split_task
+            and not results
+            and not task_queue
+            and not state.get("completed_tasks")
+            and not state.get("contextual_followup")
+        )
+        if deterministic_transaction_split:
+            decision = SupervisorDecision(
+                action="route",
+                specialist="transaction",
+                handoff={"queued_task": task_request, "deterministic_route": True},
+            )
+        elif fast_route is not None:
             # Clear, single-domain requests do not need an LLM merely to repeat
             # a route already recognized by the deterministic intent helpers.
             task_queue = [task_request]
@@ -1860,10 +1928,12 @@ class AgenticSupervisorGraph:
                 specialist=fast_route,
                 handoff={"queued_task": task_request, "deterministic_route": True},
             )
-        elif verified_terminal:
+        elif verified_progress:
             # The specialist summary and successful observations are already
-            # authoritative. The normal completion block below will assemble
-            # the final response and UI metadata without another LLM roundtrip.
+            # authoritative. Consume the active contract before asking the LLM
+            # to route another queued task. Otherwise a route to a different
+            # specialist can rewrite the still-active contract and attach the
+            # next tool evidence to the previous task ID.
             decision = SupervisorDecision(action="finish")
         else:
             decision = await self._supervisor.decide(context, results)
@@ -1877,9 +1947,17 @@ class AgenticSupervisorGraph:
                     handoff={"contextual_followup": True, "reuse_prior_results": True},
                 )
         if not task_queue and not state.get("completed_tasks"):
-            task_queue = [task.strip() for task in (decision.tasks or []) if task.strip()]
+            # A same-turn expense-and-split request has a fixed dependency:
+            # persist the expense first, then split that verified transaction.
+            # Do not let an LLM-compressed task list erase either operation or
+            # bind both tools to one task contract.
+            task_queue = (
+                [task_request, combined_split_task]
+                if combined_split_task
+                else [task.strip() for task in (decision.tasks or []) if task.strip()]
+            )
             explicit_clauses = _explicit_action_clauses(state.get("task_request", ""))
-            if len(explicit_clauses) > len(task_queue):
+            if not combined_split_task and len(explicit_clauses) > len(task_queue):
                 task_queue = explicit_clauses
             receipt_upload = _is_receipt_upload_request(str(state.get("task_request") or ""))
             if receipt_upload:
@@ -1907,13 +1985,21 @@ class AgenticSupervisorGraph:
             )
         if not state.get("results"):
             queued_specialist = _obvious_specialist(task_queue[0]) if task_queue else None
+            transaction_then_split = bool(
+                combined_split_task
+                and len(task_queue) > 1
+                and queued_specialist == "transaction"
+                and _obvious_specialist(task_queue[1]) == "split"
+            )
             setup_then_transaction = bool(
                 len(task_queue) > 1
                 and queued_specialist in {"account", "category"}
                 and _obvious_specialist(task_queue[1]) == "transaction"
             )
             continuing_completed_work = bool(state.get("completed_tasks") and queued_specialist == "transaction")
-            if queued_specialist is not None and (setup_then_transaction or continuing_completed_work) and (
+            if queued_specialist is not None and (
+                transaction_then_split or setup_then_transaction or continuing_completed_work
+            ) and (
                 decision.action != "route" or decision.specialist != queued_specialist
             ):
                 decision = SupervisorDecision(
@@ -2158,8 +2244,12 @@ class AgenticSupervisorGraph:
                     ],
                 ]
                 if not remaining_tasks:
+                    final_response = (
+                        _same_turn_transaction_split_summary(state, latest_result)
+                        or "\n".join(completed_tasks)
+                    )
                     return {
-                        "final_response": "\n".join(completed_tasks),
+                        "final_response": final_response,
                         "next_specialist": None,
                         "task_queue": [],
                         "task_contracts": task_contracts,
@@ -2282,6 +2372,23 @@ class AgenticSupervisorGraph:
                 "next_specialist": "supervisor",
             }
         if decision.action == "finish":
+            if latest_result.get("status") in {"success", "partial"}:
+                logger.warning(
+                    "agent.completion_verification_failed",
+                    extra={
+                        "active_task_id": active_contract.id if active_contract else None,
+                        "active_task_intent": active_contract.intent if active_contract else None,
+                        "active_required_tools": active_contract.required_tools if active_contract else [],
+                        "result_task_id": latest_result.get("task_id"),
+                        "result_specialist": latest_result.get("specialist"),
+                        "result_status": latest_result.get("status"),
+                        "observed_tools": [
+                            str(item.get("tool") or "")
+                            for item in _result_observations(latest_result)
+                        ],
+                        "task_queue_size": len(task_queue),
+                    },
+                )
             return {
                 "final_response": (
                     latest_result.get("summary", "I could not complete that request.")

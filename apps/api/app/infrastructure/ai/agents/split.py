@@ -453,6 +453,21 @@ class SplitToolset:
                 f'₹{transaction_total_rupees:.2f}. Correct the transaction amount before creating an itemized split.'
             )
         raw_people = args.get("participants") or args.get("people")
+        if raw_people is None:
+            # The tool schema already contains the names on item/allocation
+            # rows. Recover their ordered union instead of failing because the
+            # model did not duplicate those names at the top level.
+            inferred_people: list[str] = []
+            for allocation in args.get('quantity_allocations') or []:
+                if isinstance(allocation, dict):
+                    inferred_people.extend(str(name) for name in allocation.get('people') or [])
+            for item in args.get('items') or []:
+                if isinstance(item, dict):
+                    inferred_people.extend(str(name) for name in item.get('shared_by') or [])
+            raw_people = list(dict.fromkeys(
+                name.strip() for name in inferred_people
+                if name.strip() and not is_owner_participant_label(name)
+            ))
         if not isinstance(raw_people, list):
             raise ValueError("participants must be a list of person names.")
         people: list[ParticipantShare] = []
@@ -484,6 +499,11 @@ class SplitToolset:
         settlement_breakdown = None
         has_quantity_allocations = args.get('quantity_allocations') is not None
         has_settlement_adjustments = bool(args.get('debts') or args.get('contributions'))
+        if has_quantity_allocations and not quantity_rule:
+            raise ValueError(
+                'quantity_allocations require an explicit quantity per person and per-unit price in the request. '
+                'For a total amount shared by named people, use an item row with amount_paise and shared_by.'
+            )
         if has_quantity_allocations or has_settlement_adjustments:
             source_numbers = {
                 Decimal(value.replace(',', ''))
