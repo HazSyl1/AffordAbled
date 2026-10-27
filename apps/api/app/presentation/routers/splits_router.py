@@ -18,6 +18,7 @@ from app.presentation.schemas.split import (
     CreateSplitRequest,
     ItemizedSplitPreviewResponse,
     ItemizedSplitRequest,
+    PayOwedRequest,
     RepayParticipantRequest,
     RepaySettlementTransferRequest,
     SettleParticipantRequest,
@@ -153,7 +154,10 @@ async def create_money_owed(
     current_user: User = Depends(get_current_user), service: SplitService = Depends(get_split_service),
 ) -> SplitResponse:
     try:
-        split = await service.create_owed(current_user.id, payload.title, payload.name, payload.amount_paise)
+        split = await service.create_owed(
+            current_user.id, payload.title, payload.name, payload.amount_paise, payload.direction,
+            owner_name=current_user.name,
+        )
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     return SplitResponse.from_model(split)
@@ -238,6 +242,22 @@ async def repay_split_participant(
         raise HTTPException(status_code=422, detail=str(error)) from error
     if split is None:
         raise HTTPException(status_code=404, detail='Split participant not found.')
+    return SplitResponse.from_model(split)
+
+
+@router.post('/{split_id}/participants/{participant_id}/pay', response_model=SplitResponse)
+async def pay_money_owed(
+    split_id: uuid.UUID, participant_id: uuid.UUID, payload: PayOwedRequest,
+    current_user: User = Depends(get_current_user), service: SplitService = Depends(get_split_service),
+) -> SplitResponse:
+    try:
+        split = await service.pay_owed(current_user.id, split_id, participant_id, payload.account_id)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    if split is None:
+        raise HTTPException(status_code=404, detail='Owed entry or person not found.')
     return SplitResponse.from_model(split)
 
 

@@ -78,7 +78,8 @@ _TOOL_EVIDENCE_PATHS: dict[str, tuple[str, ...]] = {
     "deactivate_account": ("account.id",),
     "set_default_account": ("account.id",),
     "create_split": ("split.id",),
-    "create_owed": ("receivable.id",),
+    "create_owed": ("receivable.id", "payable.id"),
+    "create_owed_batch": ("payables",),
     "create_settlement_draft": ("settlement_draft.id",),
     "set_split_contact_preference": ("contact.id", "contact.name"),
     "create_transaction_report": ("export_id",),
@@ -102,6 +103,21 @@ def _current_datetime(timezone_name: str) -> str:
     except ZoneInfoNotFoundError:
         timezone = ZoneInfo("UTC")
     return datetime.now(timezone).isoformat()
+
+
+def _latest_current_datetime(current: str | None, update: str | None) -> str:
+    """Merge duplicate clock writes from parallel or resumed graph branches."""
+    values = [value for value in (current, update) if value]
+    if not values:
+        return ""
+    if len(values) == 1:
+        return values[0]
+    try:
+        return max(values, key=datetime.fromisoformat)
+    except (TypeError, ValueError):
+        # Trusted graph inputs are ISO timestamps. Keep the incoming value if
+        # an old checkpoint contains a legacy value that cannot be parsed.
+        return values[-1]
 
 
 def _is_complex_settlement_request(request: str) -> bool:
@@ -132,6 +148,8 @@ _MUTATION_TOOLS = {
 
 def _split_task_for_request(request: str) -> str | None:
     if _is_complex_settlement_request(request):
+        return None
+    if _is_standalone_owed_request(request):
         return None
     normalized = request.casefold()
     # Receipt workflow instructions mention splitting as a later optional step;
@@ -179,6 +197,15 @@ def _with_verified_split_total(task: str, transaction: Mapping[str, Any]) -> str
         flags=re.IGNORECASE,
     ).strip()
     return f"{task_without_total} {verified_total}"
+
+
+def _canonicalize_standalone_owed_task_queue(task_queue: list[str], original_request: str) -> list[str]:
+    """Prevent a planner paraphrase from turning a direct IOU into an expense task."""
+    if not _is_standalone_owed_request(original_request):
+        return task_queue
+    if re.search(r"\b(?:spent|expense|purchase|transaction|salary|income|deposit|withdraw)\b", original_request, re.I):
+        return task_queue
+    return [original_request]
 
 
 def _same_turn_transaction_split_summary(
@@ -241,13 +268,18 @@ def _canonicalize_split_task_queue(task_queue: list[str], original_request: str)
     )
     if transaction_task_index is None:
         canonical_queue.insert(0, original_request)
+        transaction_task_index = 0
     else:
         # Keep the full source on the transaction task too; a terse supervisor
         # paraphrase can drop amount, merchant, or other required details.
         canonical_queue[transaction_task_index] = original_request
     split_task_indices = [
         index for index, task in enumerate(canonical_queue)
-        if _required_tools(task, "split") == {"create_split"}
+        if (
+            index != transaction_task_index
+            and _obvious_specialist(task) == "split"
+            and _required_tools(task, "split") == {"create_split"}
+        )
     ]
     if not split_task_indices:
         canonical_queue.append(split_task)
@@ -291,6 +323,38 @@ def _explicit_action_clauses(request: str) -> list[str]:
 
 def _mentions(task: str, value: str) -> bool:
     return bool(value and re.search(rf"(?<!\w){re.escape(value.casefold())}(?!\w)", task.casefold()))
+
+
+def _is_standalone_owed_request(task: str) -> bool:
+    """Detect IOUs that should be tracked without inventing a purchase transaction."""
+    text = task.casefold().replace("\u2019", "'")
+    return bool(
+        re.search(
+            r"\b(?:money|amount|debt|iou)\b.{0,55}\b"
+            r"(?:i(?:'ve|\s+have)?|we(?:'ve|\s+have)?)\s+(?:to\s+)?(?:give|pay|owe)\b",
+            text,
+        )
+        or re.search(r"\b(?:i|we)\s+(?:still\s+)?(?:owe|borrowed|borrow)\b", text)
+        or re.search(r"\b(?:i|we)\s+(?:have|need)\s+to\s+pay\s+\w+", text)
+        or re.search(r"\b\w+\s+(?:owes|owed)\s+me\b", text)
+        or re.search(r"\bpay\s+me\s+\d", text)
+        or re.search(r"\b(?:record|track|add)\b.{0,35}\b(?:iou|money owed|debt)\b", text)
+    )
+
+
+def _owed_entries_from_text(task: str) -> list[tuple[str, str]]:
+    """Extract name/amount pairs conservatively; arithmetic is handled separately."""
+    pattern = re.compile(
+        r"(?<![\w])(?P<name>[A-Za-z][A-Za-z'-]*)\s*(?:owes?\s+(?:me\s+)?)?"
+        r"(?:\u20b9|rs\.?\s*)?\s*(?P<amount>\d[\d,]*(?:\.\d{1,2})?(?:\s*/\s*\d+)?)",
+        re.IGNORECASE,
+    )
+    excluded = {"i", "we", "me", "money", "owe", "give", "pay", "split", "divide", "owed", "rs", "inr"}
+    return [
+        (match.group("name"), re.sub(r"\s+", "", match.group("amount")).rstrip(","))
+        for match in pattern.finditer(task)
+        if match.group("name").casefold() not in excluded
+    ]
 
 
 def _matches_observed_action(task: str, action: dict[str, Any]) -> bool:
@@ -423,11 +487,18 @@ def _matches_observed_action(task: str, action: dict[str, Any]) -> bool:
     if tool == 'create_settlement_draft':
         return _is_complex_settlement_request(task) and bool((data.get('settlement_draft') or {}).get('id'))
     if tool == "create_owed":
-        receivable = data.get('receivable') or {}
+        receivable = data.get('receivable') or data.get('payable') or {}
         return (
-            any(_mentions(task, word) for word in ('owe', 'owes', 'owed', 'repay me', 'pay me'))
+            any(_mentions(task, word) for word in (
+                'owe', 'owes', 'owed', 'borrow', 'borrowed', 'loan', 'repay me', 'pay me',
+            ))
             and _mentions(task, str(receivable.get('person') or ''))
         )
+    if tool == "create_owed_batch":
+        entries = data.get("payables") or data.get("receivables") or []
+        expected_names = {name.casefold() for name, _ in _owed_entries_from_text(task)}
+        saved = {str(item.get("person") or "").casefold() for item in entries if isinstance(item, Mapping)}
+        return bool(expected_names) and expected_names.issubset(saved)
     if tool == "get_account_balances":
         return any(_mentions(task, word) for word in ("balance", "balances", "afford", "budget", "enough"))
     if tool == "get_current_datetime":
@@ -568,8 +639,11 @@ def _action_has_entity_evidence(action: dict[str, Any]) -> bool:
         "create_owed": "receivable",
     }
     if tool in entity_fields:
-        entity = data.get(entity_fields[tool]) or {}
+        entity = data.get(entity_fields[tool]) or (data.get("payable") if tool == "create_owed" else None) or {}
         return isinstance(entity, Mapping) and bool(entity.get("id"))
+    if tool == "create_owed_batch":
+        entries = data.get("payables") or data.get("receivables") or []
+        return bool(entries) and all(isinstance(item, Mapping) and bool(item.get("id")) for item in entries)
     if tool == "delete_transaction":
         return bool(data.get("deleted_transaction_id") or (data.get("transaction") or {}).get("id"))
     if tool == "restore_transaction":
@@ -674,7 +748,12 @@ def _required_tools(task: str, specialist: str | None) -> set[str] | None:
     if specialist == "split":
         if _is_complex_settlement_request(task):
             return {"create_settlement_draft"}
-        if says('owe', 'owes', 'owed', 'pay me', 'repay me') and not says('split', 'shared', 'participants'):
+        if _is_standalone_owed_request(task):
+            return {"create_owed_batch" if len(_owed_entries_from_text(task)) > 1 else "create_owed"}
+        if (
+            says('owe', 'owes', 'owed', 'borrow', 'borrowed', 'loan', 'pay me', 'repay me')
+            and not says('split', 'shared', 'participants')
+        ):
             return {"create_owed"}
         if says("split", "shared", "participants") and not says('remember', 'save preference'):
             return {"create_split"}
@@ -922,7 +1001,14 @@ def _verify_task_contract(contract: TaskContract | None, result: dict[str, Any])
         if observation_task_id and observation_task_id != contract.id:
             continue
         tool = str(observation.get("tool") or "")
-        if tool in contract.required_tools and _observation_has_contract_evidence(observation, tool):
+        evidence_ok = _observation_has_contract_evidence(observation, tool)
+        if tool == "create_owed_batch":
+            evidence_ok = (
+                evidence_ok
+                and _action_has_entity_evidence(observation)
+                and _matches_observed_action(contract.original_text, observation)
+            )
+        if tool in contract.required_tools and evidence_ok:
             matched_tools.add(tool)
     if contract.completion_mode == "all":
         return set(contract.required_tools).issubset(matched_tools)
@@ -964,6 +1050,8 @@ def _obvious_specialist(task: str) -> str | None:
     normalized = task.casefold()
     if _is_complex_settlement_request(task):
         return 'split'
+    if _is_standalone_owed_request(task):
+        return 'split'
     wants_report_file = any(
         _mentions(task, word) for word in ("export", "download", "csv", "xlsx", "excel", "pdf")
     )
@@ -976,7 +1064,14 @@ def _obvious_specialist(task: str) -> str | None:
         return "split"
     if re.search(r"\b(?:record|log|add)\b.{0,30}\b(?:expense|transaction|purchase)\b", normalized):
         return "transaction"
-    if re.search(r"\b(?:\w+)\s+(?:owes|owed)\s+me\b|\b(?:owe|pay)\s+me\s+\d", normalized):
+    if (
+        re.search(r"\b(?:\w+)\s+(?:owes|owed)\s+me\b|\b(?:owe|pay)\s+me\s+\d", normalized)
+        or re.search(r"\b(?:i|we)\s+(?:still\s+)?owe\s+(?:\w+|₹?\d)", normalized)
+        or re.search(r"\b(?:i|we)\s+(?:still\s+)?owe\s+₹?\d+\s+(?:to\s+)?\w+", normalized)
+        or re.search(r"\b(?:i|we)\s+(?:still\s+)?need\s+to\s+pay\s+\w+", normalized)
+        or re.search(r"\b(?:i|we)\s+(?:borrowed|borrow)\b.{0,50}\b(?:from|to)\s+\w+", normalized)
+        or re.search(r"\bloan\s+from\s+\w+", normalized)
+    ):
         return "split"
     if "split" in normalized and not re.search(r"\b(?:spent|spend|paid|pay|record|log)\b", normalized):
         return "split"
@@ -1412,8 +1507,11 @@ class AgentGraphState(TypedDict, total=False):
     # state updates in the same LangGraph step.
     conversation_history: Annotated[list[dict[str, str]], _append_conversation_history]
     user_id: str
+    owner_name: str | None
     timezone: str
-    current_datetime: str
+    # A resume can wake more than one attached branch in the same parent step.
+    # Keep the newest trusted clock instead of rejecting duplicate writes.
+    current_datetime: Annotated[str, _latest_current_datetime]
     task_request: str
     task_queue: list[str]
     task_contracts: list[dict[str, Any]]
@@ -1529,7 +1627,9 @@ class AgenticSupervisorGraph:
             ),
             "split": ToolBoundSpecialistRuntime(
                 name="split", llm=split_llm, system_prompt=SPLIT_PROMPT,
-                tools=split_tools, non_retryable_tools={"create_split", "create_owed", "create_settlement_draft"},
+                tools=split_tools, non_retryable_tools={
+                    "create_split", "create_owed", "create_owed_batch", "create_settlement_draft",
+                },
                 db_session=db_session, tool_lock=tool_lock,
             ),
             "analytics": ToolBoundSpecialistRuntime(
@@ -1579,7 +1679,8 @@ class AgenticSupervisorGraph:
         self.graph = graph.compile(checkpointer=checkpointer)
 
     async def invoke(
-        self, *, user_id: uuid.UUID, thread_id: str, message: str, timezone: str = "UTC"
+        self, *, user_id: uuid.UUID, thread_id: str, message: str, timezone: str = "UTC",
+        owner_name: str | None = None,
     ) -> dict[str, Any]:
         config = {"configurable": {"thread_id": f"{user_id}:{thread_id}"}}
         current_datetime = _current_datetime(timezone)
@@ -1712,6 +1813,7 @@ class AgenticSupervisorGraph:
                     {"role": "user", "content": message},
                 ][-100:],
                 "user_id": str(user_id),
+                "owner_name": owner_name,
                 "timezone": timezone,
                 "current_datetime": current_datetime,
                 # This is the task the active specialist must complete. It
@@ -1868,6 +1970,7 @@ class AgenticSupervisorGraph:
             history=history,
             timezone=state.get("timezone", "UTC"),
             current_datetime=state.get("current_datetime"),
+            owner_name=state.get("owner_name"),
             constraints={
                 "task_id": active_contract.id if active_contract else None,
                 "latest_user_reply": str(state["messages"][-1].content),
@@ -1964,9 +2067,11 @@ class AgenticSupervisorGraph:
                 # The generated receipt prompt mentions a later optional split.
                 # That is not user consent and must not become a queued action.
                 task_queue = [task for task in task_queue if _obvious_specialist(task) != "split"]
+            source_request = state.get("task_request") or str(state["messages"][-1].content)
+            task_queue = _canonicalize_standalone_owed_task_queue(task_queue, source_request)
             task_queue = _canonicalize_split_task_queue(
                 task_queue,
-                state.get("task_request") or str(state["messages"][-1].content),
+                source_request,
             )
             if not task_queue:
                 task_queue = [state.get("task_request") or str(state["messages"][-1].content)]
@@ -2467,6 +2572,7 @@ class AgenticSupervisorGraph:
             history=(state.get("conversation_history") or [])[-20:],
             timezone=state.get("timezone", "UTC"),
             current_datetime=state.get("current_datetime"),
+            owner_name=state.get("owner_name"),
             constraints={
                 "task_id": active_contract.id if active_contract else None,
                 "task_contract": active_contract.model_dump() if active_contract else None,
@@ -2507,6 +2613,7 @@ class AgenticChatOrchestrator:
         user_id: uuid.UUID,
         thread_id: str,
         message: str,
+        owner_name: str | None = None,
         timezone: str | None = None,
     ) -> ChatTurnResult:
         result = await self._graph.invoke(
@@ -2514,6 +2621,7 @@ class AgenticChatOrchestrator:
             thread_id=thread_id,
             message=message,
             timezone=timezone or "UTC",
+            owner_name=owner_name,
         )
         interrupts = result.get("__interrupt__", [])
         if interrupts:

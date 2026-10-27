@@ -12,8 +12,10 @@ DEFAULT_CATEGORIES = {
     ('Health', 'expense'),
     ('Entertainment', 'expense'),
     ('Misc', 'expense'),
+    ('Split', 'expense'),
     ('Salary', 'income'),
     ('Other Income', 'income'),
+    ('Split', 'income'),
 }
 
 

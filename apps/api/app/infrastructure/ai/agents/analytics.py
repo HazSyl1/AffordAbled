@@ -65,20 +65,23 @@ class AnalyticsToolset:
             raise RuntimeError("split analytics is unavailable")
         splits = await self._splits.list_for_user(context.user_id)
         summaries = []
-        total_outstanding = 0
         expense_split_outstanding = 0
         money_owed_outstanding = 0
+        money_owed_by_you = 0
         for split in splits:
             outstanding = sum(person.share_paise - person.settled_paise for person in split.participants)
-            total_outstanding += outstanding
             if split.transaction_id is None:
-                money_owed_outstanding += outstanding
+                if getattr(split, 'direction', 'to_you') == 'by_you':
+                    money_owed_by_you += outstanding
+                else:
+                    money_owed_outstanding += outstanding
             else:
                 expense_split_outstanding += outstanding
             summaries.append({
                 "id": str(split.id),
                 "title": split.title,
                 "kind": "expense_split" if split.transaction_id else "money_owed",
+                "direction": 'to_you' if split.transaction_id else getattr(split, 'direction', 'to_you'),
                 "transaction_id": str(split.transaction_id) if split.transaction_id else None,
                 "total_paise": split.owner_share_paise + sum(person.share_paise for person in split.participants),
                 "outstanding_paise": outstanding,
@@ -90,10 +93,13 @@ class AnalyticsToolset:
                 ],
             })
         kind = str(args.get('kind') or 'all')
+        direction = str(args.get('direction') or 'all')
         status = str(args.get('status') or 'all')
         person_name = str(args.get('person_name') or '').strip().casefold()
         if kind != 'all':
             summaries = [item for item in summaries if item['kind'] == kind]
+        if direction != 'all':
+            summaries = [item for item in summaries if item['direction'] == direction]
         if status == 'outstanding':
             summaries = [item for item in summaries if item['outstanding_paise'] > 0]
         elif status == 'settled':
@@ -112,13 +118,19 @@ class AnalyticsToolset:
         else:
             summaries.sort(key=lambda item: item['outstanding_paise'], reverse=sort_order == 'desc')
         total_matching_count = len(summaries)
-        total_outstanding = sum(item['outstanding_paise'] for item in summaries)
         expense_split_outstanding = sum(
             item['outstanding_paise'] for item in summaries if item['kind'] == 'expense_split'
         )
         money_owed_outstanding = sum(
-            item['outstanding_paise'] for item in summaries if item['kind'] == 'money_owed'
+            item['outstanding_paise'] for item in summaries
+            if item['kind'] == 'money_owed' and item['direction'] == 'to_you'
         )
+        money_owed_by_you = sum(
+            item['outstanding_paise'] for item in summaries
+            if item['kind'] == 'money_owed' and item['direction'] == 'by_you'
+        )
+        # The outstanding headline represents receivables. Payables are returned separately.
+        total_outstanding = expense_split_outstanding + money_owed_outstanding
         summaries = summaries[:max(1, min(int(args.get('limit') or 10), 25))]
         return {
             "split_count": len(summaries),
@@ -126,6 +138,7 @@ class AnalyticsToolset:
             "total_outstanding_paise": total_outstanding,
             "expense_split_outstanding_paise": expense_split_outstanding,
             "money_owed_outstanding_paise": money_owed_outstanding,
+            "money_owed_by_you_paise": money_owed_by_you,
             "matching_split_count": total_matching_count,
             "truncated_split_count": max(0, total_matching_count - len(summaries)),
             "splits": summaries,

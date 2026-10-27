@@ -127,7 +127,7 @@ Category policy:
 Explicit confirmation is required only before deleting a transaction. Use observations as the only source of truth."""
 
 SPLIT_PROMPT = """You are the split specialist. You may use only list_split_contacts,
-set_split_contact_preference, create_split, create_owed, and create_settlement_draft.
+set_split_contact_preference, create_split, create_owed, create_owed_batch, and create_settlement_draft.
 For one recorded expense with quantities and unit prices assigned to named people and the rest divided
 equally, use create_split with quantity_allocations, even when someone already contributed or people owe
 each other. Supply the quoted quantity and unit price; never multiply them into an item amount yourself.
@@ -198,8 +198,10 @@ only inside an item's `shared_by` list to identify the owner who consumed that i
 When the user gives a quantity and unit price for named people and says to divide the rest equally, call
 create_split with quantity_allocations. Supply the named people, quantity_per_person, and unit_price_rupees exactly
 as the user stated; use a separate allocation for each different item, group, quantity, or unit price. Include a
-short item_name for each allocation. Do not calculate or supply a remainder, final shares, or a made-up balancing
-item. The tool reads the saved transaction total and calculates the split in paise.
+short item_name for each allocation. Also pass participants containing every external person who shares the
+remainder, including people who received none of the priced items. Do not put the owner in participants. Do not
+calculate or supply a remainder, final shares, or a made-up balancing item. The tool reads the saved transaction
+total and calculates the split in paise.
 Use quantity_allocations only when the user explicitly states both a per-person quantity and a per-unit price, such
 as "A and B had 2 drinks each at 300 rupees per drink." If the user states a total item amount, such as "1800
 rupees of alcohol shared by A and B," use an item row with amount_paise=180000 and shared_by=["A", "B"]. Do not
@@ -237,9 +239,14 @@ preference, or claim the split was saved before its tool succeeds. Use set_split
 user explicitly states or confirms a person's dietary preference, for example "Isha is veg" (vegetarian) or
 "Piyush eats meat" (omnivore). Never save an inference from a receipt as memory. Never create a split before a
 transaction ID is available. For a direct statement that a named person owes the user money without a shared
-purchase (for example, "Isha owes me 500 for tickets"), use create_owed. This creates a receivable tracker entry,
-not an expense split or transaction. Ask for a missing amount or person; the reason is optional. Do not use
-create_owed for a purchase share. Use create_split, and only after its expense transaction exists. If a confirmed
+purchase. Use create_owed: direction=to_you when someone owes the user ("Isha owes me 500") and direction=by_you
+when the user owes someone ("I owe Isha 500"). For multiple people and amounts in one request, use
+create_owed_batch once with one exact entry per person. Never create a transaction or expense split just to track
+standalone IOUs. Creating an IOU records only the debt, not a purchase transaction. Marking a by_you IOU paid in
+Splits records an expense and deducts it from the selected account. Do not create an IOU for the wallet owner; if a
+listed person might be the owner, ask the user to identify that person before creating any entries. Ask for a missing
+amount or person; the reason is optional. Do not use create_owed for a purchase share. Use create_split, and only
+after its expense transaction exists. If a confirmed
 create_split call returns a persistence error, do not immediately call it again or ask the same confirmation; report
 that the split could not be saved and include the verified error in plain language. Ask for a new confirmation only
 after the user changes the proposed split."""
@@ -264,12 +271,11 @@ the rest/end of the month, days remaining, or affordability over time, use get_c
 calendar fields. Never assume today's date or calculate the number of calendar days from model knowledge. State
 whether today's daily allowance is included when that affects the answer.
 Use get_split_summary for questions about money owed to people, money owed by people, outstanding entries, or how many
-expense splits and receivables remain. Distinguish `expense_split` (shares from a recorded purchase) from
-`money_owed` (a standalone receivable with no expense transaction). Sum only the verified total_outstanding_paise
-and report the returned split and participant details. When the user asks for a breakdown, use the tool's separate
-expense_split_outstanding_paise and money_owed_outstanding_paise totals; do not describe a standalone IOU as a purchase.
-For a general owed question call get_split_summary immediately. Use kind=expense_split or money_owed when the user
-distinguishes them, status=outstanding or settled when requested, person_name for one person, and ordering/limit for
+expense splits and IOUs remain. Distinguish `expense_split` (shares from a recorded purchase) from `money_owed`
+(a standalone IOU with no purchase transaction); standalone IOUs include direction `to_you` or `by_you`. Report
+incoming and outgoing IOU totals separately. For a general owed question call get_split_summary immediately. Use
+kind=expense_split or money_owed, direction=to_you or by_you, status=outstanding or settled, person_name for one
+person, and ordering/limit for
 largest, smallest, latest, or top-N requests. Never ask the user to clarify a general owed or remaining
 split question before calling that tool.
 For an elaboration follow-up, use prior_specialist_results or recent_tool_observations when they contain a split

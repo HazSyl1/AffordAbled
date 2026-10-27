@@ -12,6 +12,7 @@ export interface Split {
   id: string;
   transaction_id: string | null;
   kind: 'expense_split' | 'money_owed';
+  direction: 'to_you' | 'by_you';
   title: string;
   owner_share_paise: number;
   total_paise: number;
@@ -59,6 +60,7 @@ export interface CreateOwedRequest {
   title?: string;
   name: string;
   amount_paise: number;
+  direction: 'to_you' | 'by_you';
 }
 
 export interface UpdateSplitRequest {
@@ -91,6 +93,13 @@ const splitsApi = apiClient.injectEndpoints({
     }),
     createOwed: builder.mutation<Split, CreateOwedRequest>({
       query: (body) => ({ url: '/splits/owed', method: 'POST', body }), invalidatesTags: ['Split'],
+    }),
+    payMoneyOwed: builder.mutation<Split, { splitId: string; participantId: string; accountId: string }>({
+      query: ({ splitId, participantId, accountId }) => ({
+        url: `/splits/${splitId}/participants/${participantId}/pay`, method: 'POST',
+        body: { account_id: accountId },
+      }),
+      invalidatesTags: ['Split', 'Transaction', 'Account', 'Category'],
     }),
     updateSplit: builder.mutation<Split, { splitId: string; body: UpdateSplitRequest }>({
       query: ({ splitId, body }) => ({ url: `/splits/${splitId}`, method: 'PATCH', body }),
@@ -129,6 +138,7 @@ export const {
   useSettleSplitParticipantMutation,
   useDeleteSplitMutation, useUpdateSplitMutation, useRepaySplitParticipantMutation,
   useRepaySettlementTransferMutation,
+  usePayMoneyOwedMutation,
   useListSplitContactPreferencesQuery, useSetSplitContactPreferenceMutation,
   useListSplitPreferenceSuggestionsQuery,
   useDeleteSplitContactPreferenceMutation,

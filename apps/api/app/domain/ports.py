@@ -119,5 +119,6 @@ class ChatOrchestrator(Protocol):
         user_id: uuid.UUID,
         thread_id: str,
         message: str,
+        owner_name: str | None = None,
         timezone: str | None = None,
     ) -> ChatTurnResult: ...

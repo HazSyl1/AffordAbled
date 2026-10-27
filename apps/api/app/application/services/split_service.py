@@ -14,6 +14,15 @@ def is_owner_participant_label(name: str | None) -> bool:
     return ' '.join((name or '').strip().casefold().split()) in _OWNER_PARTICIPANT_LABELS
 
 
+def matches_owner_name(name: str, owner_name: str | None) -> bool:
+    """Match an owner name or first-name-only reference conservatively for IOU safety."""
+    if not owner_name:
+        return False
+    name_parts = ' '.join(capitalize_name(name).casefold().split()).split()
+    owner_parts = ' '.join(capitalize_name(owner_name).casefold().split()).split()
+    return bool(name_parts and owner_parts and (name_parts == owner_parts or name_parts[0] == owner_parts[0]))
+
+
 @dataclass(frozen=True)
 class ParticipantShare:
     name: str
@@ -34,7 +43,11 @@ class SplitStore(Protocol):
         settlement_breakdown: dict | None = None,
     ): ...
 
-    async def create_owed(self, user_id: uuid.UUID, title: str, person: ParticipantShare): ...
+    async def create_owed(self, user_id: uuid.UUID, title: str, person: ParticipantShare, direction: str): ...
+
+    async def create_owed_batch(
+        self, user_id: uuid.UUID, title: str, people: list[ParticipantShare], direction: str,
+    ): ...
 
     async def list_for_user(self, user_id: uuid.UUID): ...
 
@@ -51,6 +64,11 @@ class SplitStore(Protocol):
     ): ...
 
     async def repay(
+        self, user_id: uuid.UUID, split_id: uuid.UUID,
+        participant_id: uuid.UUID, account_id: uuid.UUID,
+    ): ...
+
+    async def pay_owed(
         self, user_id: uuid.UUID, split_id: uuid.UUID,
         participant_id: uuid.UUID, account_id: uuid.UUID,
     ): ...
@@ -81,18 +99,56 @@ class SplitService:
     store: SplitStore
     memory_event_writer: MemoryEventWriter | None = None
 
-    async def create_owed(self, user_id: uuid.UUID, title: str | None, name: str, amount_paise: int):
+    async def create_owed(
+        self, user_id: uuid.UUID, title: str | None, name: str, amount_paise: int,
+        direction: str = 'to_you', owner_name: str | None = None,
+    ):
         clean_title = (title or '').strip() or 'Money owed'
         clean_name = capitalize_name(name)
         if len(clean_title) > 255:
             raise ValueError('Enter a description (up to 255 characters).')
         if not clean_name or len(clean_name) > 100 or is_owner_participant_label(clean_name):
-            raise ValueError('Enter the name of the person who owes you.')
+            message = 'Enter the person who owes you.' if direction == 'to_you' else 'Enter the person you owe.'
+            raise ValueError(message)
+        if matches_owner_name(clean_name, owner_name):
+            raise ValueError(
+                'This person matches your profile name. Confirm whether you meant yourself or another person.'
+            )
         if amount_paise <= 0:
             raise ValueError('Amount owed must be positive.')
+        if direction not in {'to_you', 'by_you'}:
+            raise ValueError('Choose whether the other person owes you or you owe them.')
         return await self.store.create_owed(
-            user_id, clean_title, ParticipantShare(clean_name, amount_paise),
+            user_id, clean_title, ParticipantShare(clean_name, amount_paise), direction,
         )
+
+    async def create_owed_batch(
+        self, user_id: uuid.UUID, title: str | None, people: list[ParticipantShare],
+        direction: str = 'by_you', owner_name: str | None = None,
+    ):
+        clean_title = (title or '').strip() or 'Money owed'
+        if len(clean_title) > 255:
+            raise ValueError('Enter a description (up to 255 characters).')
+        if direction not in {'to_you', 'by_you'}:
+            raise ValueError('Choose whether the other person owes you or you owe them.')
+        if not 1 <= len(people) <= 20:
+            raise ValueError('Add between 1 and 20 people.')
+        cleaned: list[ParticipantShare] = []
+        for person in people:
+            name = capitalize_name(person.name)
+            if not name or len(name) > 100 or is_owner_participant_label(name):
+                message = 'Enter the person who owes you.' if direction == 'to_you' else 'Enter the person you owe.'
+                raise ValueError(message)
+            if matches_owner_name(name, owner_name):
+                raise ValueError(
+                    f'{name} matches your profile name. Confirm whether this entry is for you or another person.'
+                )
+            if person.share_paise <= 0:
+                raise ValueError('Each amount owed must be positive.')
+            cleaned.append(ParticipantShare(name, person.share_paise))
+        if len({person.name.casefold() for person in cleaned}) != len(cleaned):
+            raise ValueError('Each person can appear only once in a request.')
+        return await self.store.create_owed_batch(user_id, clean_title, cleaned, direction)
 
     async def create(
         self, user_id: uuid.UUID, transaction_id: uuid.UUID, title: str, amount_paise: int,
@@ -222,6 +278,12 @@ class SplitService:
         participant_id: uuid.UUID, account_id: uuid.UUID,
     ):
         return await self.store.repay(user_id, split_id, participant_id, account_id)
+
+    async def pay_owed(
+        self, user_id: uuid.UUID, split_id: uuid.UUID,
+        participant_id: uuid.UUID, account_id: uuid.UUID,
+    ):
+        return await self.store.pay_owed(user_id, split_id, participant_id, account_id)
 
     async def repay_settlement_transfer(
         self, user_id: uuid.UUID, split_id: uuid.UUID, debtor: str, account_id: uuid.UUID,

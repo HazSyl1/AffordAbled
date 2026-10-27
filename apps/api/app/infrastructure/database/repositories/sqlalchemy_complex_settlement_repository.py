@@ -265,7 +265,7 @@ class SqlAlchemyComplexSettlementRepository:
             if account is None:
                 raise LookupError('Wallet account was not found.')
             incoming = transfer.creditor == 'You'
-            category_name = 'Split repayment' if incoming else 'Split payment'
+            category_name = 'Split'
             category_type = 'income' if incoming else 'expense'
             category = await self.session.scalar(select(CategoryModel).where(
                 CategoryModel.user_id == user_id, CategoryModel.name == category_name,

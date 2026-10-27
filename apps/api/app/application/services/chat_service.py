@@ -60,15 +60,16 @@ class ChatService:
         if not normalized_message:
             raise InvalidChatInputError("Message cannot be empty")
 
+        user = await self.user_repository.get_by_id(user_id)
         resolved_thread_id = (thread_id or "").strip() or str(uuid.uuid4())
         result = await self.orchestrator.run_turn(
             user_id=user_id,
             thread_id=resolved_thread_id,
             message=normalized_message,
+            owner_name=user.name if user is not None else None,
             timezone=timezone,
         )
 
-        user = await self.user_repository.get_by_id(user_id)
         if user is not None and user.conversation_storage_enabled:
             now = datetime.now(UTC)
             existing_thread = await self.chat_thread_repository.get_for_user(user_id, resolved_thread_id)

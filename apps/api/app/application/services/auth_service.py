@@ -19,8 +19,10 @@ DEFAULT_CATEGORIES: tuple[tuple[str, CategoryType], ...] = (
     ('Health', CategoryType.EXPENSE),
     ('Entertainment', CategoryType.EXPENSE),
     ('Misc', CategoryType.EXPENSE),
+    ('Split', CategoryType.EXPENSE),
     ('Salary', CategoryType.INCOME),
     ('Other Income', CategoryType.INCOME),
+    ('Split', CategoryType.INCOME),
 )
 
 

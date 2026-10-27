@@ -22,7 +22,8 @@ from app.infrastructure.database.models import (
     UserModel,
 )
 
-SPLIT_REPAYMENT_CATEGORY = 'Split repayment'
+SPLIT_REPAYMENT_CATEGORY = 'Split'
+DEBT_REPAYMENT_CATEGORY = 'Split'
 
 
 class SqlAlchemySplitRepository:
@@ -111,18 +112,30 @@ class SqlAlchemySplitRepository:
         return await self.get_for_user(user_id, split.id)
 
     async def create_owed(
-        self, user_id: uuid.UUID, title: str, person: ParticipantShare,
+        self, user_id: uuid.UUID, title: str, person: ParticipantShare, direction: str = 'to_you',
     ) -> SplitModel:
-        split = SplitModel(
-            id=uuid.uuid4(), user_id=user_id, transaction_id=None, title=title,
-            owner_share_paise=0, item_breakdown=None,
-            participants=[SplitParticipantModel(
-                id=uuid.uuid4(), name=person.name, share_paise=person.share_paise, settled_paise=0,
-            )],
-        )
-        self.session.add(split)
-        await self.session.commit()
-        return await self.get_for_user(user_id, split.id)
+        return (await self.create_owed_batch(user_id, title, [person], direction))[0]
+
+    async def create_owed_batch(
+        self, user_id: uuid.UUID, title: str, people: list[ParticipantShare], direction: str,
+    ) -> list[SplitModel]:
+        splits = [
+            SplitModel(
+                id=uuid.uuid4(), user_id=user_id, transaction_id=None, title=title,
+                direction=direction, owner_share_paise=0, item_breakdown=None,
+                participants=[SplitParticipantModel(
+                    id=uuid.uuid4(), name=person.name, share_paise=person.share_paise, settled_paise=0,
+                )],
+            )
+            for person in people
+        ]
+        self.session.add_all(splits)
+        try:
+            await self.session.commit()
+        except Exception:
+            await self.session.rollback()
+            raise
+        return [await self.get_for_user(user_id, split.id) for split in splits]
 
     async def list_for_user(self, user_id: uuid.UUID) -> list[SplitModel]:
         rows = await self.session.scalars(
@@ -271,6 +284,8 @@ class SqlAlchemySplitRepository:
         split = await self.get_for_user(user_id, split_id)
         if split is None:
             return None
+        if split.transaction_id is None and split.direction != 'to_you':
+            raise ValueError('This is money you owe. Use Mark paid to record the expense repayment.')
         participant = next((person for person in split.participants if person.id == participant_id), None)
         if participant is None:
             return None
@@ -302,6 +317,57 @@ class SqlAlchemySplitRepository:
             # The participant is an existing row. Insert its new FK target before updating the link.
             await self.session.flush()
             account.balance_paise += participant.share_paise
+            account.updated_at = now
+            participant.settled_paise = participant.share_paise
+            participant.repayment_transaction_id = transaction.id
+            await self.session.commit()
+        except Exception:
+            await self.session.rollback()
+            raise
+        return await self.get_for_user(user_id, split_id)
+
+    async def pay_owed(
+        self, user_id: uuid.UUID, split_id: uuid.UUID,
+        participant_id: uuid.UUID, account_id: uuid.UUID,
+    ) -> SplitModel | None:
+        """Record an outgoing expense and settle a standalone debt owed by the user."""
+        await self.session.scalar(select(UserModel.id).where(UserModel.id == user_id).with_for_update())
+        split = await self.get_for_user(user_id, split_id)
+        if split is None:
+            return None
+        if split.transaction_id is not None or split.direction != 'by_you':
+            raise ValueError('Only standalone amounts you owe can be marked paid here.')
+        participant = next((person for person in split.participants if person.id == participant_id), None)
+        if participant is None:
+            return None
+        if participant.settled_paise >= participant.share_paise or participant.repayment_transaction_id is not None:
+            raise ValueError('This amount is already paid.')
+        account = await self.session.scalar(select(AccountModel).where(
+            AccountModel.id == account_id, AccountModel.user_id == user_id, AccountModel.is_active.is_(True),
+        ))
+        if account is None:
+            raise LookupError('Payment account was not found or is inactive.')
+        category = await self.session.scalar(select(CategoryModel).where(
+            CategoryModel.user_id == user_id, CategoryModel.type == 'expense',
+            CategoryModel.name == DEBT_REPAYMENT_CATEGORY,
+        ))
+        now = datetime.now(UTC)
+        if category is None:
+            category = CategoryModel(
+                id=uuid.uuid4(), user_id=user_id, name=DEBT_REPAYMENT_CATEGORY, type='expense',
+            )
+            self.session.add(category)
+        amount_paise = participant.share_paise - participant.settled_paise
+        transaction = TransactionModel(
+            id=uuid.uuid4(), user_id=user_id, account_id=account_id,
+            category_id=category.id, type='expense', amount_paise=amount_paise,
+            merchant=participant.name, note=f'Repayment of amount owed: {split.title}',
+            occurred_at=now, created_at=now, updated_at=now,
+        )
+        self.session.add(transaction)
+        try:
+            await self.session.flush()
+            account.balance_paise -= amount_paise
             account.updated_at = now
             participant.settled_paise = participant.share_paise
             participant.repayment_transaction_id = transaction.id

@@ -39,6 +39,7 @@ class HandoffContext(BaseModel):
     """Trusted context supplied by the supervisor to one specialist."""
 
     user_id: uuid.UUID
+    owner_name: str | None = Field(default=None, max_length=120)
     request: str = Field(min_length=1, max_length=4_000)
     history: list[dict[str, str]] = Field(default_factory=list, max_length=20)
     timezone: str = "UTC"
