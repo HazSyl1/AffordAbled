@@ -21,7 +21,10 @@ from app.infrastructure.ai.agents.split import SplitToolset
 from app.infrastructure.ai.agents.supervisor_graph import (
     AgentGraphState,
     _canonicalize_split_task_queue,
+    _canonicalize_standalone_owed_task_queue,
+    _is_standalone_owed_request,
     _obvious_specialist,
+    _owed_entries_from_text,
     _required_tools,
     _split_task_for_request,
     _with_verified_split_total,
@@ -230,6 +233,50 @@ def test_supervisor_replaces_compressed_split_task_with_full_original_request() 
     assert split_only_queue[0] == request
     assert len(split_only_queue) == 2
     assert request in split_only_queue[1]
+
+
+def test_supervisor_preserves_distinct_transaction_and_split_tasks_for_exact_live_prompt() -> None:
+    request = (
+        "Record an expense of 1608 rupees for dinner at Masato from Axis and split it equally "
+        "between me, Rujul, Sudhansu, and Sujal."
+    )
+    split_task = _split_task_for_request(request)
+
+    assert split_task is not None
+    queue = _canonicalize_split_task_queue([request, split_task], request)
+
+    assert len(queue) == 2
+    assert queue[0] == request
+    assert _obvious_specialist(queue[0]) == "transaction"
+    assert _required_tools(queue[0], "transaction") == {
+        "create_transaction",
+        "create_transaction_batch",
+    }
+    assert queue[1] == split_task
+    assert _obvious_specialist(queue[1]) == "split"
+    assert _required_tools(queue[1], "split") == {"create_split"}
+
+
+def test_supervisor_preserves_distinct_tasks_for_exact_complex_live_prompt() -> None:
+    request = (
+        "Record a 927383 rupee dinner expense from Axis and split it among A, B, C, D, E, F, G, "
+        "and me. A, B, and C each had 7 vodka cranberries costing 7000 rupees each. Divide the "
+        "remaining bill equally among all eight of us. A owes C 17000 rupees, B already contributed "
+        "29000 rupees, and C owes B 20000 rupees. Include all of those adjustments in this split."
+    )
+    split_task = _split_task_for_request(request)
+
+    assert split_task is not None
+    queue = _canonicalize_split_task_queue([request, split_task], request)
+
+    assert queue == [request, split_task]
+    assert _obvious_specialist(queue[0]) == "transaction"
+    assert _obvious_specialist(queue[1]) == "split"
+    assert _required_tools(queue[0], "transaction") == {
+        "create_transaction",
+        "create_transaction_batch",
+    }
+    assert _required_tools(queue[1], "split") == {"create_split"}
 
 
 def test_supervisor_collapses_duplicate_remainder_split_tasks() -> None:
@@ -505,6 +552,7 @@ async def test_quantity_split_uses_recorded_total_and_rejects_llm_remainder(
     )
     with pytest.raises(ValueError, match='For a total amount shared by named people, use an item row'):
         await toolset.create_split(shared_total_context, {
+            'participants': ['A', 'B', 'C', 'D'],
             'quantity_allocations': [{
                 'people': ['A', 'B', 'C'], 'quantity_per_person': 1,
                 'unit_price_rupees': 1800,
@@ -527,16 +575,31 @@ async def test_quantity_split_uses_recorded_total_and_rejects_llm_remainder(
     assert result['split']['participants'][-1]['share_paise'] == 9754787
     assert len(saved) == 1
 
-    inferred = await toolset.create_split(context, {
-        'mode': 'custom',
-        'quantity_allocations': [{
-            'people': ['A', 'B', 'C'], 'quantity_per_person': 7,
-            'unit_price_rupees': 7000,
-        }],
+    with pytest.raises(ValueError, match='every external person sharing the remainder'):
+        await toolset.create_split(context, {
+            'mode': 'custom',
+            'quantity_allocations': [{
+                'people': ['A', 'B', 'C'], 'quantity_per_person': 7,
+                'unit_price_rupees': 7000,
+            }],
+        })
+    assert len(saved) == 1
+
+    explicit_count_context = context.model_copy(update={
+        'request': (
+            'Record a 927383 rupee dinner and divide the remaining bill equally among all eight of us. '
+            'A, B, and C each had 7 drinks costing 7000 rupees each.'
+        ),
     })
-    assert [item['name'] for item in inferred['split']['participants']] == ['A', 'B', 'C']
-    assert inferred['split']['total_paise'] == 92738300
-    assert len(saved) == 2
+    with pytest.raises(ValueError, match='shared by 8 people'):
+        await toolset.create_split(explicit_count_context, {
+            'participants': ['A', 'B', 'C'],
+            'quantity_allocations': [{
+                'people': ['A', 'B', 'C'], 'quantity_per_person': 7,
+                'unit_price_rupees': 7000,
+            }],
+        })
+    assert len(saved) == 1
 
 
 def test_quantity_split_rejects_fixed_items_above_total() -> None:
@@ -551,8 +614,8 @@ async def test_chat_can_record_standalone_money_owed_without_transaction() -> No
     captured: list[tuple] = []
 
     class FakeSplits:
-        async def create_owed(self, user_id, title, name, amount_paise):
-            captured.append((user_id, title, name, amount_paise))
+        async def create_owed(self, user_id, title, name, amount_paise, direction='to_you', owner_name=None):
+            captured.append((user_id, title, name, amount_paise, direction))
             return SimpleNamespace(
                 id=uuid.uuid4(), title=title,
                 participants=[SimpleNamespace(name='Isha', share_paise=amount_paise)],
@@ -568,9 +631,103 @@ async def test_chat_can_record_standalone_money_owed_without_transaction() -> No
     assert result['receivable']['kind'] == 'money_owed'
     assert result['receivable']['person'] == 'Isha'
     assert result['receivable']['amount_paise'] == 50000
-    assert captured == [(user_id, 'Concert tickets', 'isha', 50000)]
+    assert captured == [(user_id, 'Concert tickets', 'isha', 50000, 'to_you')]
     assert _obvious_specialist(context.request) == 'split'
     assert _required_tools(context.request, 'split') == {'create_owed'}
+
+
+@pytest.mark.asyncio
+async def test_chat_can_record_money_the_user_owes_without_creating_a_purchase() -> None:
+    captured: list[tuple] = []
+
+    class FakeSplits:
+        async def create_owed(self, user_id, title, name, amount_paise, direction='to_you', owner_name=None):
+            captured.append((user_id, title, name, amount_paise, direction))
+            return SimpleNamespace(
+                id=uuid.uuid4(), title=title,
+                participants=[SimpleNamespace(name='Isha', share_paise=amount_paise)],
+            )
+
+    user_id = uuid.uuid4()
+    context = HandoffContext(user_id=user_id, request='I owe Isha 500 for movie tickets')
+    toolset = SplitToolset(FakeSplits(), SimpleNamespace())
+    result = await toolset.create_owed(context, {
+        'name': 'isha', 'title': 'Movie tickets', 'amount_paise': 50000, 'direction': 'by_you',
+    })
+
+    assert result['payable']['kind'] == 'money_owed'
+    assert result['payable']['direction'] == 'by_you'
+    assert result['payable']['person'] == 'Isha'
+    assert captured == [(user_id, 'Movie tickets', 'isha', 50000, 'by_you')]
+    assert _obvious_specialist(context.request) == 'split'
+    assert _required_tools(context.request, 'split') == {'create_owed'}
+
+
+def test_multiple_standalone_payables_route_to_batch_without_expense_split() -> None:
+    request = "the money I've to give to Piyush 3814.17, Amruth 1212, Sarthak 11836.9, Ruzul 3120/5"
+    assert _is_standalone_owed_request(request)
+    assert _obvious_specialist(request) == 'split'
+    assert _required_tools(request, 'split') == {'create_owed_batch'}
+    assert _split_task_for_request(request) is None
+    assert _canonicalize_standalone_owed_task_queue(
+        ['record a transaction for these amounts', 'create a split'], request,
+    ) == [request]
+    assert _owed_entries_from_text(request) == [
+        ('Piyush', '3814.17'), ('Amruth', '1212'), ('Sarthak', '11836.9'), ('Ruzul', '3120/5'),
+    ]
+    mixed_request = request + ' and spent 500 at Cafe'
+    assert _canonicalize_standalone_owed_task_queue(['track IOUs', 'record expense'], mixed_request) == [
+        'track IOUs', 'record expense',
+    ]
+
+
+@pytest.mark.asyncio
+async def test_batch_standalone_payables_calculates_explicit_division_and_saves_without_transaction() -> None:
+    saved: list[tuple] = []
+
+    class FakeSplits:
+        async def create_owed_batch(self, user_id, title, people, direction, owner_name=None):
+            saved.append((user_id, title, people, direction, owner_name))
+            return [SimpleNamespace(
+                id=uuid.uuid4(), title=title,
+                participants=[SimpleNamespace(name=person.name, share_paise=person.share_paise)],
+            ) for person in people]
+
+    context = HandoffContext(
+        user_id=uuid.uuid4(), owner_name='Sarthak', request='I owe Piyush 3814.17 and Amruth 1212; Ruzul 3120/5',
+    )
+    toolset = SplitToolset(FakeSplits(), SimpleNamespace())
+    result = await toolset.create_owed_batch(context, {
+        'direction': 'by_you',
+        'entries': [
+            {'name': 'Piyush', 'amount_rupees': '3814.17'},
+            {'name': 'Amruth', 'amount_rupees': '1212'},
+            {'name': 'Ruzul', 'amount_rupees': '3120', 'divided_by': 5},
+        ],
+    })
+    assert [item['amount_paise'] for item in result['payables']] == [381417, 121200, 62400]
+    assert [item['id'] for item in result['payables']]
+    assert saved[0][3:] == ('by_you', 'Sarthak')
+
+
+@pytest.mark.asyncio
+async def test_batch_owed_rejects_owner_alias_before_persisting_any_iou() -> None:
+    class FakeSplits:
+        saved = False
+
+        async def create_owed_batch(self, *_args, **_kwargs):
+            self.saved = True
+            return []
+
+    store = FakeSplits()
+    service = SplitService(store)
+    with pytest.raises(ValueError, match='matches your profile name'):
+        await service.create_owed_batch(
+            uuid.uuid4(), None,
+            [ParticipantShare('Piyush', 10000), ParticipantShare('Sarthak', 20000)],
+            direction='by_you', owner_name='Sarthak C',
+        )
+    assert not store.saved
 
 
 @pytest.mark.asyncio

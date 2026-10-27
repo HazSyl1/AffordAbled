@@ -115,6 +115,7 @@ def _persistent_tool_context(state: dict[str, Any]) -> HandoffContext:
     task_id, task_contract = _active_task_identity(state)
     return HandoffContext(
         user_id=state["user_id"],
+        owner_name=state.get("owner_name"),
         request=(state.get("task_queue") or [state["task_request"]])[0],
         history=(state.get("conversation_history") or [])[-20:],
         timezone=state.get("timezone", "UTC"),
@@ -291,7 +292,13 @@ class CreateSplitArguments(BaseModel):
     transaction_id: str | None = Field(default=None, description='Expense ID; omit for a newly recorded expense.')
     title: str | None = None
     mode: Literal['equal', 'custom'] = 'equal'
-    participants: list[str | SplitPersonArguments] | None = None
+    participants: list[str | SplitPersonArguments] | None = Field(
+        default=None,
+        description=(
+            'Every external person sharing the expense remainder. Required with quantity_allocations, including '
+            'people who received no priced item. Omit owner aliases such as me or You.'
+        ),
+    )
     people: list[str | SplitPersonArguments] | None = None
     owner_share_paise: int | None = Field(default=None, ge=0)
     owner_share_rupees: Decimal | None = Field(default=None, ge=0)
@@ -304,7 +311,8 @@ class CreateSplitArguments(BaseModel):
         description=(
             'Only for an explicit "N items each at X rupees per item; divide the rest equally" rule. '
             'For a total such as "1800 rupees of alcohol shared by A and B", use an items row instead. '
-            'Supply names, quantity, and unit price; the tool calculates the remainder from the transaction.'
+            'Supply names, quantity, and unit price; the tool calculates the remainder from the transaction. '
+            'Also supply participants with every external person sharing that remainder.'
         ),
     )
     debts: list[SplitDebtArguments] | None = Field(
@@ -322,13 +330,38 @@ class CreateSplitToolInput(BaseModel):
 
 
 class CreateOwedArguments(BaseModel):
-    name: str = Field(min_length=1, max_length=100, description='Person who owes the authenticated user.')
-    amount_paise: int = Field(gt=0, description='Amount they owe, in paise.')
+    name: str = Field(min_length=1, max_length=100, description='Other person in this standalone IOU.')
+    amount_paise: int = Field(gt=0, description='Amount owed, in paise.')
+    direction: Literal['to_you', 'by_you'] = Field(
+        default='to_you', description='to_you means they owe you; by_you means you owe them.',
+    )
     title: str | None = Field(default=None, max_length=255, description='Optional short reason for the debt.')
 
 
 class CreateOwedToolInput(BaseModel):
     arguments: CreateOwedArguments
+
+
+class OwedEntryArguments(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    amount_rupees: Decimal = Field(
+        gt=0, description='Quoted amount in rupees, before any explicit division, such as 3814.17 or 3120.'
+    )
+    divided_by: int | None = Field(
+        default=None,
+        gt=0,
+        description='Use only for explicit division such as 3120/5: amount_rupees=3120, divided_by=5.',
+    )
+
+
+class CreateOwedBatchArguments(BaseModel):
+    entries: list[OwedEntryArguments] = Field(min_length=1, max_length=20)
+    direction: Literal['to_you', 'by_you'] = Field(default='by_you')
+    title: str | None = Field(default=None, max_length=255)
+
+
+class CreateOwedBatchToolInput(BaseModel):
+    arguments: CreateOwedBatchArguments
 
 
 class CreateSettlementDraftArguments(BaseModel):
@@ -458,6 +491,7 @@ class GetSpendingComparisonToolInput(BaseModel):
 
 class GetSplitSummaryArguments(BaseModel):
     kind: Literal['all', 'expense_split', 'money_owed'] = 'all'
+    direction: Literal['all', 'to_you', 'by_you'] = 'all'
     status: Literal['all', 'outstanding', 'settled'] = 'all'
     person_name: str | None = Field(default=None, description='Optional participant name filter.')
     order_by: Literal['outstanding', 'created_at', 'title'] = 'outstanding'
@@ -504,6 +538,7 @@ _TOOL_SCHEMAS: dict[str, type[BaseModel]] = {
     "restore_transaction": TransactionIdToolInput,
     "create_split": CreateSplitToolInput,
     "create_owed": CreateOwedToolInput,
+    "create_owed_batch": CreateOwedBatchToolInput,
     "create_settlement_draft": CreateSettlementDraftToolInput,
     "set_split_contact_preference": SetSplitContactPreferenceToolInput,
     "get_transactions": GetTransactionsToolInput,
@@ -589,9 +624,16 @@ _TOOL_DESCRIPTIONS = {
         "payments toward this bill as contributions; the tool calculates a separate net settlement plan."
     ),
     "create_owed": (
-        "Record money a named person owes the authenticated user, even when there is no expense transaction. "
-        "Use only when the user explicitly says someone owes/is to repay them; provide amount_paise and a reason. "
-        "This is a receivable tracker entry, not an expense split and does not create a transaction."
+        "Record a standalone IOU without a purchase. Set direction=to_you when the other person owes the user, "
+        "or direction=by_you when the user owes the other person. Provide positive amount_paise and a reason if "
+        "known. Creating the IOU does not create a transaction. Marking a by_you IOU paid creates an expense."
+    ),
+    "create_owed_batch": (
+        "Record several standalone IOUs atomically, without a purchase, wallet transaction, or expense split. "
+        "Use direction=by_you when the user owes the named people, or to_you when they owe the user. "
+        "Pass the quoted rupee amount and explicit divided_by separately (e.g. 3120/5 -> amount_rupees=3120, "
+        "divided_by=5); the tool performs exact decimal arithmetic and converts to paise. Do not include the owner; "
+        "ask if a listed name matches the owner's profile. Use only when each person and amount is clear."
     ),
     "create_settlement_draft": (
         "Calculate and save a review-only draft for a complex group settlement. Provide every bill and who paid it. "
@@ -915,6 +957,7 @@ class ToolBoundSpecialistRuntime:
                 "restore_transaction",
                 "create_split",
                 "create_owed",
+                "create_owed_batch",
                 "create_settlement_draft",
                 "set_split_contact_preference",
                 "get_account_balances",

@@ -27,6 +27,7 @@ class CreateOwedRequest(BaseModel):
     title: str | None = Field(default=None, max_length=255)
     name: str = Field(min_length=1, max_length=100)
     amount_paise: int = Field(gt=0)
+    direction: Literal['to_you', 'by_you'] = 'to_you'
 
 
 class UpdateParticipantRequest(BaseModel):
@@ -54,6 +55,10 @@ class SettleParticipantRequest(BaseModel):
 
 
 class RepayParticipantRequest(BaseModel):
+    account_id: uuid.UUID
+
+
+class PayOwedRequest(BaseModel):
     account_id: uuid.UUID
 
 
@@ -103,6 +108,7 @@ class SplitResponse(BaseModel):
     id: uuid.UUID
     transaction_id: uuid.UUID | None
     kind: Literal['expense_split', 'money_owed']
+    direction: Literal['to_you', 'by_you']
     title: str
     owner_share_paise: int
     total_paise: int
@@ -119,6 +125,7 @@ class SplitResponse(BaseModel):
             id=split.id,
             transaction_id=split.transaction_id,
             kind='expense_split' if split.transaction_id else 'money_owed',
+            direction='to_you' if split.transaction_id else split.direction,
             title=split.title,
             owner_share_paise=split.owner_share_paise,
             total_paise=split.owner_share_paise + sum(person.share_paise for person in people),

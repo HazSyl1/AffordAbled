@@ -8,7 +8,7 @@ import { useListAccountsQuery } from '../../features/accounts/accountsApi';
 import {
   useCreateSplitMutation, useListSplitContactsQuery, useListSplitsQuery,
   useCreateOwedMutation,
-  useRepaySplitParticipantMutation, useRepaySettlementTransferMutation,
+  useRepaySplitParticipantMutation, useRepaySettlementTransferMutation, usePayMoneyOwedMutation,
   useDeleteSplitMutation, useUpdateSplitMutation,
   type CreateSplitRequest, type Split,
 } from '../../features/splits/splitsApi';
@@ -20,6 +20,7 @@ import { ComplexSettlementPlanner } from './ComplexSettlementPlanner';
 
 type Person = { name: string; amount: string | null; isNew: boolean };
 const NEW_PERSON = '__new_person__';
+const NEW_OWED_PERSON = '__new_owed_person__';
 const newPerson = (): Person => ({ name: '', amount: null, isNew: false });
 const inputClass = 'min-w-0 w-full rounded-xl border border-[var(--bg-border)] bg-[var(--bg-elevated)] px-3 py-2 text-[var(--text-primary)]';
 
@@ -163,6 +164,7 @@ export function SplitsPage() {
   const [createSplit, { isLoading: creating }] = useCreateSplitMutation();
   const [createOwed, { isLoading: creatingOwed }] = useCreateOwedMutation();
   const [repay, { isLoading: repaying }] = useRepaySplitParticipantMutation();
+  const [payMoneyOwed, { isLoading: payingOwed }] = usePayMoneyOwedMutation();
   const [repaySettlementTransfer, { isLoading: repayingTransfer }] = useRepaySettlementTransferMutation();
   const [settlePlanTransfer] = useSettleSettlementPlanTransferMutation();
   const [deleteSplit, { isLoading: deleting }] = useDeleteSplitMutation();
@@ -185,13 +187,17 @@ export function SplitsPage() {
   const [owedOpen, setOwedOpen] = useState(false);
   const [complexOpen, setComplexOpen] = useState(Boolean(searchParams.get('draft')));
   const [owedName, setOwedName] = useState('');
+  const [addingOwedPerson, setAddingOwedPerson] = useState(false);
   const [owedAmount, setOwedAmount] = useState('');
   const [owedTitle, setOwedTitle] = useState('');
-  const totalOwedPaise = splits.reduce((total, split) => total + split.outstanding_paise, 0);
+  const [owedDirection, setOwedDirection] = useState<'to_you' | 'by_you'>('to_you');
   const expenseSplitOwedPaise = splits.filter((split) => split.kind === 'expense_split')
     .reduce((total, split) => total + split.outstanding_paise, 0);
-  const standaloneOwedPaise = splits.filter((split) => split.kind === 'money_owed')
+  const standaloneOwedPaise = splits.filter((split) => split.kind === 'money_owed' && split.direction === 'to_you')
     .reduce((total, split) => total + split.outstanding_paise, 0);
+  const payableOwedPaise = splits.filter((split) => split.kind === 'money_owed' && split.direction === 'by_you')
+    .reduce((total, split) => total + split.outstanding_paise, 0);
+  const totalOwedPaise = expenseSplitOwedPaise + standaloneOwedPaise;
   const orderedSplits = [...splits].sort((a, b) => Number(b.outstanding_paise > 0) - Number(a.outstanding_paise > 0));
   const activeAccounts = accounts.filter((account) => account.is_active);
   const defaultAccountId = activeAccounts.find((account) => account.is_default)?.id ?? activeAccounts[0]?.id ?? '';
@@ -297,12 +303,13 @@ export function SplitsPage() {
     setError('');
     const amount = paise(owedAmount);
     if (!owedName.trim() || amount === null || amount <= 0) {
-      setError('Enter who owes you and a positive amount.');
+      setError(`Enter ${owedDirection === 'to_you' ? 'who owes you' : 'who you owe'} and a positive amount.`);
       return;
     }
     try {
-      await createOwed({ name: owedName.trim(), title: owedTitle.trim(), amount_paise: amount }).unwrap();
-      setOwedName(''); setOwedAmount(''); setOwedTitle(''); setOwedOpen(false);
+      await createOwed({ name: owedName.trim(), title: owedTitle.trim(), amount_paise: amount, direction: owedDirection }).unwrap();
+      setOwedName(''); setAddingOwedPerson(false); setOwedAmount(''); setOwedTitle('');
+      setOwedDirection('to_you'); setOwedOpen(false);
     } catch (failure) { setError(detail(failure)); }
   }
 
@@ -311,6 +318,14 @@ export function SplitsPage() {
     if (!accountId) { setError('Choose the account that received the repayment.'); return; }
     setError('');
     try { await repay({ splitId, participantId, accountId }).unwrap(); }
+    catch (failure) { setError(detail(failure)); }
+  }
+
+  async function markOwedPaid(splitId: string, participantId: string) {
+    const accountId = repaymentAccounts[participantId] ?? defaultAccountId;
+    if (!accountId) { setError('Choose the account you will pay from.'); return; }
+    setError('');
+    try { await payMoneyOwed({ splitId, participantId, accountId }).unwrap(); }
     catch (failure) { setError(detail(failure)); }
   }
 
@@ -389,13 +404,18 @@ export function SplitsPage() {
   return <div className='mx-auto w-full max-w-[900px] space-y-5 px-4 py-4 md:px-6 md:py-6'>
     <header>
       <h1 className='text-xl font-bold text-[var(--text-primary)]'>Splits</h1>
-      <p className='text-sm text-[var(--text-muted)]'>Track expense shares and other money people owe you.</p>
+      <p className='text-sm text-[var(--text-muted)]'>Track expense shares, money others owe you, and money you owe.</p>
     </header>
     <div className='min-w-0 space-y-4 rounded-2xl border border-[var(--bg-border)] bg-[var(--bg-card)] p-4'>
       <div className='min-w-0' aria-live='polite'>
-        <p className='text-xs text-[var(--text-muted)]'>Outstanding from regular splits and IOUs</p>
+        <p className='text-xs text-[var(--text-muted)]'>Others owe you</p>
         <p className='break-words text-2xl font-bold text-[var(--positive)]'>{isLoading ? '…' : formatPaiseAsInr(totalOwedPaise)}</p>
         <p className='text-xs text-[var(--text-muted)]'>Expense shares {formatPaiseAsInr(expenseSplitOwedPaise)} · Other IOUs {formatPaiseAsInr(standaloneOwedPaise)}</p>
+        <div className='mt-3 border-t border-[var(--bg-border)] pt-3'>
+          <p className='text-xs text-[var(--text-muted)]'>You owe</p>
+          <p className='break-words text-xl font-semibold text-red-400'>{isLoading ? '…' : `${payableOwedPaise > 0 ? '−' : ''}${formatPaiseAsInr(payableOwedPaise)}`}</p>
+          <p className='text-xs text-[var(--text-muted)]'>Payable IOUs are separate from amounts others owe you.</p>
+        </div>
         <p className='mt-1 text-xs text-[var(--text-muted)]'>Group settlement plans are listed separately below and are not included in this total.</p>
       </div>
       <div className='grid min-w-0 grid-cols-1 gap-2 min-[480px]:grid-cols-2 md:grid-cols-3'>
@@ -413,15 +433,32 @@ export function SplitsPage() {
     </div>
     {complexOpen && <ComplexSettlementPlanner />}
     {owedOpen && <Card className='space-y-3 p-5'>
-      <div><h2 className='font-semibold text-[var(--text-primary)]'>Record money someone owes you</h2>
-        <p className='text-xs text-[var(--text-muted)]'>For a loan, tickets, or another amount that is not tied to a recorded purchase.</p></div>
+      <div><h2 className='font-semibold text-[var(--text-primary)]'>Record an amount owed</h2>
+        <p className='text-xs text-[var(--text-muted)]'>Track a loan or other IOU separately from a shared purchase. No transaction is created until it is paid.</p></div>
       <form onSubmit={saveOwed} className='grid gap-3 sm:grid-cols-2'>
+        <label className='space-y-1 text-sm text-[var(--text-secondary)]'>Who owes the money?
+          <ThemedSelect id='owed-direction' value={owedDirection} placeholder='Choose who owes' options={[
+            { value: 'to_you', label: 'Someone owes me' }, { value: 'by_you', label: 'I owe someone' },
+          ]} onChange={(value) => setOwedDirection(value as 'to_you' | 'by_you')} />
+        </label>
         <label className='space-y-1 text-sm text-[var(--text-secondary)]'>Person
-          {contacts.length > 0 && <ThemedSelect id='owed-person' value={contacts.includes(owedName) ? owedName : ''}
-            placeholder='Choose a saved person' options={contacts.map((name) => ({ value: name, label: name }))}
-            onChange={setOwedName} />}
-          <input className={inputClass} maxLength={100} value={owedName} placeholder='Name (e.g. Isha)'
-            onChange={(event) => setOwedName(event.target.value)} />
+          {contacts.length > 0 && <ThemedSelect id='owed-person' value={addingOwedPerson ? NEW_OWED_PERSON : owedName}
+            placeholder='Choose a saved person' options={[
+              ...contacts.map((name) => ({ value: name, label: name })),
+              { value: NEW_OWED_PERSON, label: '+ Add a new person' },
+            ]}
+            onChange={(value) => {
+              if (value === NEW_OWED_PERSON) {
+                setOwedName('');
+                setAddingOwedPerson(true);
+              } else {
+                setOwedName(value);
+                setAddingOwedPerson(false);
+              }
+            }} />}
+          {(contacts.length === 0 || addingOwedPerson) && <input className={inputClass} maxLength={100} value={owedName}
+            placeholder={owedDirection === 'to_you' ? 'Enter the person who owes you' : 'Enter the person you owe'}
+            onChange={(event) => setOwedName(event.target.value)} />}
         </label>
         <label className='space-y-1 text-sm text-[var(--text-secondary)]'>Amount (₹)
           <input className={inputClass} inputMode='decimal' value={owedAmount} placeholder='500.00'
@@ -431,7 +468,7 @@ export function SplitsPage() {
           <input className={inputClass} maxLength={255} value={owedTitle} placeholder='Tickets I paid for'
             onChange={(event) => setOwedTitle(event.target.value)} />
         </label>
-        <div className='grid grid-cols-1 gap-2 sm:col-span-2 sm:grid-cols-2'><Button type='submit' isLoading={creatingOwed}>Save amount owed</Button>
+        <div className='grid grid-cols-1 gap-2 sm:col-span-2 sm:grid-cols-2'><Button type='submit' isLoading={creatingOwed}>Save IOU</Button>
           <Button type='button' variant='secondary' onClick={() => setOwedOpen(false)}>Cancel</Button></div>
       </form>
     </Card>}
@@ -631,10 +668,13 @@ export function SplitsPage() {
             className={`scroll-mt-6 space-y-3 p-5 ${focusedSplitId === split.id ? 'ring-2 ring-[var(--brand-primary)]' : ''}`}>
             <div className='flex min-w-0 flex-col gap-3 sm:flex-row sm:justify-between'><div className='min-w-0'><h3 className='break-words font-semibold text-[var(--text-primary)]'>{split.title}</h3>
               <span className='mb-1 inline-flex rounded-full bg-[var(--brand-subtle)] px-2 py-0.5 text-[10px] font-semibold text-[var(--brand-primary)]'>
-                {split.kind === 'money_owed' ? 'Money owed to you' : 'Expense split'}
+                {split.kind === 'money_owed' ? (split.direction === 'by_you' ? 'You owe' : 'Money owed to you') : 'Expense split'}
               </span>
               <p className='text-xs text-[var(--text-muted)]'>Total {formatPaiseAsInr(split.total_paise)}{split.kind === 'expense_split' ? ` · Your share ${formatPaiseAsInr(split.owner_share_paise)}` : ''}</p></div>
-              <div className='min-w-0 text-left sm:text-right'><span className='break-words text-sm font-semibold text-[var(--text-primary)]'>{formatPaiseAsInr(split.outstanding_paise)} {split.settlement_breakdown ? 'due to you' : 'due'}</span>
+              <div className='min-w-0 text-left sm:text-right'><span className={`break-words text-sm font-semibold ${split.kind === 'money_owed' && split.direction === 'by_you' && split.outstanding_paise > 0 ? 'text-red-400' : 'text-[var(--text-primary)]'}`}>
+                {split.kind === 'money_owed' && split.direction === 'by_you'
+                  ? `${split.outstanding_paise > 0 ? '−' : ''}${formatPaiseAsInr(split.outstanding_paise)} you owe`
+                  : `${formatPaiseAsInr(split.outstanding_paise)} ${split.settlement_breakdown ? 'due to you' : 'due'}`}</span>
                 <div className='flex flex-wrap gap-2 sm:justify-end'>
                   {split.transaction_id && <button type='button' className='rounded-lg border border-[var(--bg-border)] px-3 py-1.5 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:border-[var(--brand-primary)] hover:bg-[var(--brand-subtle)] hover:text-[var(--brand-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)] focus-visible:ring-offset-2'
                     onClick={() => navigate(`/transactions?transactionId=${split.transaction_id}`)}>View transaction</button>}
@@ -642,7 +682,7 @@ export function SplitsPage() {
                     onClick={() => setEditingSplitId(editingSplitId === split.id ? null : split.id)}>
                     {editingSplitId === split.id ? 'Close edit' : 'Edit split'}
                   </button>}
-                  {unpaidCount(split) > 1 && <button type='button'
+                  {split.direction === 'to_you' && unpaidCount(split) > 1 && <button type='button'
                     className='max-w-full rounded-lg border border-[var(--brand-primary)]/30 bg-[var(--brand-subtle)] px-3 py-1.5 text-center text-xs font-semibold whitespace-normal text-[var(--brand-primary)] disabled:opacity-50'
                     disabled={repayingAllSplitId !== null || repaying || repayingTransfer || activeAccounts.length === 0}
                     onClick={() => void markAllRepaid(split)}>
@@ -714,14 +754,17 @@ export function SplitsPage() {
             [...split.participants].sort((a, b) =>
               Number(a.settled_paise >= a.share_paise) - Number(b.settled_paise >= b.share_paise))
               .map((person) => <div key={person.id} className='flex min-w-0 flex-col gap-3 border-t border-[var(--bg-border)] pt-2 text-sm sm:flex-row sm:items-center sm:justify-between'>
-              <span className='min-w-0 break-words text-[var(--text-primary)]'>{person.name} · {formatPaiseAsInr(person.share_paise)}</span>
+              <span className={`min-w-0 break-words ${split.kind === 'money_owed' && split.direction === 'by_you' ? 'text-red-400' : 'text-[var(--text-primary)]'}`}>
+                {split.kind === 'money_owed' && split.direction === 'by_you'
+                  ? `You owe ${person.name} · ${person.share_paise > person.settled_paise ? '−' : ''}${formatPaiseAsInr(person.share_paise - person.settled_paise)}`
+                  : `${person.name} · ${formatPaiseAsInr(person.share_paise)}`}</span>
               {!split.settlement_breakdown && (person.settled_paise === person.share_paise ? <div className='flex flex-col items-end gap-1'>
-                <span className='text-green-400'>Repaid</span>
+                <span className='text-green-400'>{split.kind === 'money_owed' && split.direction === 'by_you' ? 'Paid' : 'Repaid'}</span>
                 {person.repayment_transaction_id && <button type='button' className='text-xs text-[var(--brand-primary)]'
                   onClick={() => navigate(`/transactions?transactionId=${person.repayment_transaction_id}`)}>View repayment</button>}
               </div> :
                 <div className='flex flex-col items-end gap-1'>
-                  <label className='space-y-1 text-xs text-[var(--text-muted)]'>Received in
+                  <label className='space-y-1 text-xs text-[var(--text-muted)]'>{split.kind === 'money_owed' && split.direction === 'by_you' ? 'Paid from' : 'Received in'}
                     <select aria-label={`Account receiving repayment from ${person.name}`}
                       className='block w-full max-w-40 rounded-lg border border-[var(--bg-border)] bg-[var(--bg-elevated)] p-1 text-xs text-[var(--text-primary)]'
                       value={repaymentAccounts[person.id] ?? defaultAccountId}
@@ -730,13 +773,18 @@ export function SplitsPage() {
                       {activeAccounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}
                     </select>
                   </label>
-                  <button type='button' disabled={repaying || repayingAllSplitId !== null ||
+                  <button type='button' disabled={repaying || payingOwed || repayingAllSplitId !== null ||
                     !(repaymentAccounts[person.id] ?? defaultAccountId)}
                     className='rounded-lg bg-[var(--brand-primary)] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[var(--brand-hover)] disabled:opacity-50'
-                    onClick={() => markRepaid(split.id, person.id)}>Mark repaid</button>
+                    onClick={() => split.kind === 'money_owed' && split.direction === 'by_you'
+                      ? markOwedPaid(split.id, person.id) : markRepaid(split.id, person.id)}>
+                    {split.kind === 'money_owed' && split.direction === 'by_you' ? 'Mark paid' : 'Mark repaid'}</button>
                 </div>)}
             </div>)}
-            {!split.settlement_breakdown && split.outstanding_paise > 0 && <p className='text-xs text-[var(--text-muted)]'>Mark repaid records a Split repayment income transaction in the selected account.</p>}
+            {!split.settlement_breakdown && split.outstanding_paise > 0 && <p className='text-xs text-[var(--text-muted)]'>
+              {split.kind === 'money_owed' && split.direction === 'by_you'
+                ? 'Mark paid records an expense in the Split category and deducts it from the selected account.'
+                : 'Mark repaid records income in the Split category in the selected account.'}</p>}
             </>}
           </Card>)}
     </section>

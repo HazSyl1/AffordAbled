@@ -33,6 +33,27 @@ class SplitToolset:
         self._complex_settlements = complex_settlement_service
 
     @staticmethod
+    def _stated_split_group_size(source_text: str) -> int | None:
+        """Return an explicit inclusive group size such as "all eight of us" when present."""
+        number_words = {
+            'two': 2, 'three': 3, 'four': 4, 'five': 5, 'six': 6, 'seven': 7, 'eight': 8,
+            'nine': 9, 'ten': 10, 'eleven': 11, 'twelve': 12, 'thirteen': 13, 'fourteen': 14,
+            'fifteen': 15, 'sixteen': 16, 'seventeen': 17, 'eighteen': 18, 'nineteen': 19,
+            'twenty': 20,
+        }
+        match = re.search(
+            r'\b(?:among|between|across|for|split among|divided among)\s+(?:all\s+)?'
+            r'(\d{1,2}|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|'
+            r'fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)\s+(?:of\s+us|people|persons)\b',
+            source_text,
+            re.IGNORECASE,
+        )
+        if match is None:
+            return None
+        token = match.group(1).casefold()
+        return int(token) if token.isdigit() else number_words[token]
+
+    @staticmethod
     def _trusted_followup_transaction_id(context: HandoffContext) -> str | None:
         """Resolve a reference such as 'split this' from successful transaction tool evidence."""
         latest_reply = str(context.constraints.get('latest_user_reply') or context.request).strip()
@@ -319,6 +340,7 @@ class SplitToolset:
             "set_split_contact_preference": self.set_split_contact_preference,
             "create_split": self.create_split,
             "create_owed": self.create_owed,
+            "create_owed_batch": self.create_owed_batch,
         }
         if self._complex_settlements is not None:
             tools['create_settlement_draft'] = self.create_settlement_draft
@@ -342,7 +364,7 @@ class SplitToolset:
         }}
 
     async def create_owed(self, context: HandoffContext, args: dict[str, Any]) -> dict[str, Any]:
-        """Track an explicit receivable without fabricating a transaction or expense split."""
+        """Track a standalone IOU without creating a purchase or expense split."""
         raw_amount = args.get('amount_paise')
         if isinstance(raw_amount, bool) or not isinstance(raw_amount, int) or raw_amount <= 0:
             raise ValueError('amount_paise must be a positive integer amount in paise.')
@@ -351,12 +373,48 @@ class SplitToolset:
             raise ValueError('Name the other person who owes you.')
         self._validate_requested_people([ParticipantShare(name, raw_amount)], context)
         title = str(args.get('title') or 'Money owed').strip()
-        split = await self._splits.create_owed(context.user_id, title, name, raw_amount)
-        return {'receivable': {
-            'id': str(split.id), 'kind': 'money_owed', 'title': split.title,
-            'amount_paise': raw_amount,
-            'person': split.participants[0].name,
-        }}
+        direction = str(args.get('direction') or 'to_you')
+        if direction not in {'to_you', 'by_you'}:
+            raise ValueError('direction must be to_you or by_you.')
+        split = await self._splits.create_owed(
+            context.user_id, title, name, raw_amount, direction, owner_name=context.owner_name,
+        )
+        result = {
+            'id': str(split.id), 'kind': 'money_owed', 'direction': direction,
+            'title': split.title, 'amount_paise': raw_amount, 'person': split.participants[0].name,
+        }
+        return {'receivable' if direction == 'to_you' else 'payable': result}
+
+    async def create_owed_batch(self, context: HandoffContext, args: dict[str, Any]) -> dict[str, Any]:
+        entries = args.get('entries') or []
+        people: list[ParticipantShare] = []
+        for entry in entries:
+            try:
+                rupees = Decimal(str(entry.get('amount_rupees')))
+                divisor = entry.get('divided_by')
+                if divisor is not None:
+                    if isinstance(divisor, bool) or not isinstance(divisor, int) or divisor <= 0:
+                        raise ValueError
+                    rupees /= divisor
+                paise = rupees * 100
+                if not rupees.is_finite() or paise != paise.to_integral_value() or paise <= 0:
+                    raise ValueError
+            except (ArithmeticError, TypeError, ValueError):
+                raise ValueError('Each IOU amount must resolve to a positive exact number of paise.') from None
+            people.append(ParticipantShare(str(entry.get('name') or '').strip(), int(paise)))
+        direction = str(args.get('direction') or 'by_you')
+        title = str(args.get('title') or 'Money owed').strip()
+        splits = await self._splits.create_owed_batch(
+            context.user_id, title, people, direction, owner_name=context.owner_name,
+        )
+        key = 'receivables' if direction == 'to_you' else 'payables'
+        return {key: [
+            {
+                'id': str(split.id), 'kind': 'money_owed', 'direction': direction,
+                'title': split.title, 'amount_paise': person.share_paise, 'person': person.name,
+            }
+            for split in splits for person in split.participants
+        ]}
 
     async def list_split_contacts(self, context: HandoffContext, _args: dict[str, Any]) -> dict[str, Any]:
         preferences = await self._splits.list_contact_preferences(context.user_id)
@@ -453,6 +511,12 @@ class SplitToolset:
                 f'₹{transaction_total_rupees:.2f}. Correct the transaction amount before creating an itemized split.'
             )
         raw_people = args.get("participants") or args.get("people")
+        if args.get('quantity_allocations') is not None and not raw_people:
+            raise ValueError(
+                'Quantity remainder splits require participants with every external person sharing the remainder, '
+                'including people who received no priced item. Do not infer the full group only from '
+                'quantity_allocations.'
+            )
         if raw_people is None:
             # The tool schema already contains the names on item/allocation
             # rows. Recover their ordered union instead of failing because the
@@ -491,6 +555,15 @@ class SplitToolset:
         if not people:
             raise ValueError('Name at least one other person; your own share is tracked separately.')
         self._validate_requested_people(people, context)
+        if args.get('quantity_allocations') is not None:
+            stated_group_size = self._stated_split_group_size(source_request)
+            actual_group_size = len(people) + 1
+            if stated_group_size is not None and actual_group_size != stated_group_size:
+                raise ValueError(
+                    f'The request says the remainder is shared by {stated_group_size} people including the owner, '
+                    f'but participants contains only {len(people)} external people. Include every named remainder '
+                    'participant before calculating the split.'
+                )
         mode = str(args.get("mode") or "equal").lower()
         owner_share = args.get("owner_share_paise")
         if owner_share is None and args.get("owner_share_rupees") is not None:

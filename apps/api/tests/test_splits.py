@@ -140,6 +140,47 @@ async def test_standalone_money_owed_is_distinct_and_user_scoped(client: AsyncCl
     assert (await client.get(f"/api/v1/splits/{entry['id']}", headers=auth_headers(other))).status_code == 404
 
 
+async def test_money_user_owes_is_payable_and_payment_creates_expense(client: AsyncClient) -> None:
+    token = await register_and_get_token(client, 'standalone-payable@example.com')
+    headers = auth_headers(token)
+    account_id, _ = await _expense(client, token, amount=1000)
+    created = await client.post('/api/v1/splits/owed', headers=headers, json={
+        'title': 'Movie tickets', 'name': 'isha', 'amount_paise': 12500, 'direction': 'by_you',
+    })
+    assert created.status_code == 201, created.text
+    entry = created.json()
+    assert entry['kind'] == 'money_owed' and entry['direction'] == 'by_you'
+    assert entry['transaction_id'] is None
+    assert entry['outstanding_paise'] == 12500
+    participant_id = entry['participants'][0]['id']
+
+    paid = await client.post(
+        f"/api/v1/splits/{entry['id']}/participants/{participant_id}/pay",
+        headers=headers, json={'account_id': account_id},
+    )
+    assert paid.status_code == 200, paid.text
+    assert paid.json()['outstanding_paise'] == 0
+    participant = paid.json()['participants'][0]
+    assert participant['settled_paise'] == 12500
+    repayment_id = participant['repayment_transaction_id']
+    transaction = await client.get(f'/api/v1/transactions/{repayment_id}', headers=headers)
+    assert transaction.status_code == 200
+    assert transaction.json()['type'] == 'expense'
+    assert transaction.json()['amount_paise'] == 12500
+    categories = await client.get('/api/v1/categories', headers=headers)
+    assert categories.status_code == 200
+    category = next(item for item in categories.json() if item['id'] == transaction.json()['category_id'])
+    assert category['name'] == 'Split'
+    assert category['type'] == 'expense'
+    balance = await client.get(f'/api/v1/accounts/{account_id}', headers=headers)
+    assert balance.json()['balance_paise'] == 6500
+    duplicate = await client.post(
+        f"/api/v1/splits/{entry['id']}/participants/{participant_id}/pay",
+        headers=headers, json={'account_id': account_id},
+    )
+    assert duplicate.status_code == 422
+
+
 async def test_standalone_money_owed_rejects_owner_as_debtor(client: AsyncClient) -> None:
     token = await register_and_get_token(client, 'standalone-owed-owner-alias@example.com')
     response = await client.post('/api/v1/splits/owed', headers=auth_headers(token), json={
@@ -260,7 +301,7 @@ async def test_mark_repaid_creates_and_links_a_single_categorized_transaction(
     assert repayment['account_id'] == account_id
     categories = (await client.get('/api/v1/categories', headers=headers)).json()
     repayment_category = next(category for category in categories if category['id'] == repayment['category_id'])
-    assert repayment_category['name'] == 'Split repayment'
+    assert repayment_category['name'] == 'Split'
     assert repayment_category['type'] == 'income'
     assert (await client.get(f'/api/v1/accounts/{account_id}', headers=headers)).json()['balance_paise'] == (
         initial_balance + 800
@@ -314,7 +355,7 @@ async def test_mark_settlement_transfer_repaid_records_exact_plan_amount(
     assert repayment['amount_paise'] == 1250
     categories = (await client.get('/api/v1/categories', headers=headers)).json()
     repayment_category = next(category for category in categories if category['id'] == repayment['category_id'])
-    assert repayment_category['name'] == 'Split repayment'
+    assert repayment_category['name'] == 'Split'
     assert (await client.get(f'/api/v1/accounts/{account_id}', headers=headers)).json()['balance_paise'] == 20250
     duplicate = await client.post(path, headers=headers, json={'debtor': 'A', 'account_id': account_id})
     assert duplicate.status_code == 422
