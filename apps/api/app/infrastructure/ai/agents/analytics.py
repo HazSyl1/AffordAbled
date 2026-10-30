@@ -68,6 +68,7 @@ class AnalyticsToolset:
         expense_split_outstanding = 0
         money_owed_outstanding = 0
         money_owed_by_you = 0
+        person_balances: dict[str, dict[str, Any]] = {}
         for split in splits:
             outstanding = sum(person.share_paise - person.settled_paise for person in split.participants)
             if split.transaction_id is None:
@@ -88,10 +89,46 @@ class AnalyticsToolset:
                 "created_at": split.created_at.isoformat() if getattr(split, 'created_at', None) else None,
                 "participants": [
                     {"name": person.name, "share_paise": person.share_paise,
-                     "settled_paise": person.settled_paise}
+                     "settled_paise": person.settled_paise,
+                     "remaining_paise": person.share_paise - person.settled_paise,
+                     "payments": [
+                         {
+                             "amount_paise": payment.amount_paise,
+                             "transaction_id": str(payment.transaction_id) if payment.transaction_id else None,
+                             "created_at": payment.created_at.isoformat() if payment.created_at else None,
+                         }
+                         for payment in getattr(person, 'payments', [])
+                     ]}
                     for person in split.participants
                 ],
             })
+            for person in split.participants:
+                remaining = max(0, person.share_paise - person.settled_paise)
+                if remaining == 0:
+                    continue
+                effective_direction = 'to_you' if split.transaction_id is not None else getattr(
+                    split, 'direction', 'to_you'
+                )
+                key = person.name.strip().casefold()
+                balance = person_balances.setdefault(key, {
+                    'person': person.name,
+                    'they_owe_you_paise': 0,
+                    'you_owe_them_paise': 0,
+                    'net_outstanding_paise': 0,
+                    'records': [],
+                })
+                inbound = effective_direction == 'to_you'
+                balance['they_owe_you_paise' if inbound else 'you_owe_them_paise'] += remaining
+                balance['net_outstanding_paise'] += remaining if inbound else -remaining
+                balance['records'].append({
+                    'split_id': str(split.id), 'title': split.title,
+                    'kind': 'expense_split' if split.transaction_id else 'money_owed',
+                    'transaction_id': str(split.transaction_id) if split.transaction_id else None,
+                    'direction': effective_direction,
+                    'amount_paise': person.share_paise,
+                    'paid_paise': person.settled_paise,
+                    'remaining_paise': remaining,
+                })
         kind = str(args.get('kind') or 'all')
         direction = str(args.get('direction') or 'all')
         status = str(args.get('status') or 'all')
@@ -139,6 +176,9 @@ class AnalyticsToolset:
             "expense_split_outstanding_paise": expense_split_outstanding,
             "money_owed_outstanding_paise": money_owed_outstanding,
             "money_owed_by_you_paise": money_owed_by_you,
+            "person_balances": sorted(
+                person_balances.values(), key=lambda item: abs(item['net_outstanding_paise']),
+            ),
             "matching_split_count": total_matching_count,
             "truncated_split_count": max(0, total_matching_count - len(summaries)),
             "splits": summaries,

@@ -90,6 +90,54 @@ async def test_equal_split_remainder_settlement_and_balance(client: AsyncClient)
     assert (await client.get(f'/api/v1/transactions/{transaction_id}', headers=headers)).status_code == 200
 
 
+async def test_settle_balance_offsets_open_split_and_records_net_cash(client: AsyncClient) -> None:
+    token = await register_and_get_token(client, 'balance-settlement@example.com')
+    headers = auth_headers(token)
+    account_id, transaction_id = await _expense(client, token, amount=10000)
+    split_response = await client.post('/api/v1/splits', json={
+        'transaction_id': transaction_id, 'title': 'Dinner', 'amount_paise': 10000,
+        'mode': 'equal', 'participants': [{'name': 'A'}],
+    }, headers=headers)
+    assert split_response.status_code == 201, split_response.text
+    expense_split = split_response.json()
+    owed_response = await client.post('/api/v1/splits/owed', json={
+        'title': 'Tickets', 'name': 'A', 'amount_paise': 1000, 'direction': 'by_you',
+    }, headers=headers)
+    assert owed_response.status_code == 201, owed_response.text
+    owed_split = owed_response.json()
+
+    partial = await client.post(
+        f"/api/v1/splits/{expense_split['id']}/participants/{expense_split['participants'][0]['id']}/payments",
+        json={'account_id': account_id, 'amount_paise': 2000}, headers=headers,
+    )
+    assert partial.status_code == 200, partial.text
+    preview = await client.get('/api/v1/splits/balances', headers=headers)
+    assert preview.status_code == 200, preview.text
+    person = next(row for row in preview.json() if row['person'] == 'A')
+    assert person['owed_to_you_paise'] == 3000
+    assert person['you_owe_paise'] == 1000
+    assert person['net_paise'] == 2000
+
+    settled = await client.post('/api/v1/splits/balances/settle', json={
+        'person_name': 'A', 'account_id': account_id,
+        'expected_owed_to_you_paise': 3000, 'expected_you_owe_paise': 1000,
+    }, headers=headers)
+    assert settled.status_code == 200, settled.text
+    result = settled.json()
+    assert result['offset_paise'] == 1000
+    assert result['cash_direction'] == 'to_you'
+    assert result['cash_paise'] == 2000
+    assert result['net_after_paise'] == 0
+    assert sum(transaction['amount_paise'] for transaction in result['transactions']) == 2000
+
+    updated_expense = await client.get(f"/api/v1/splits/{expense_split['id']}", headers=headers)
+    updated_owed = await client.get(f"/api/v1/splits/{owed_split['id']}", headers=headers)
+    assert updated_expense.json()['participants'][0]['settled_paise'] == 5000
+    assert updated_owed.json()['participants'][0]['settled_paise'] == 1000
+    assert any(payment['transaction_id'] is None for payment in updated_owed.json()['participants'][0]['payments'])
+    assert (await client.get('/api/v1/splits/balances', headers=headers)).json() == []
+
+
 async def test_custom_split_validation_and_owner_isolation(client: AsyncClient) -> None:
     owner = await register_and_get_token(client, 'split-private@example.com')
     other = await register_and_get_token(client, 'split-outsider@example.com')
@@ -179,6 +227,76 @@ async def test_money_user_owes_is_payable_and_payment_creates_expense(client: As
         headers=headers, json={'account_id': account_id},
     )
     assert duplicate.status_code == 422
+
+
+async def test_partial_iou_payments_update_balance_and_keep_linked_history(client: AsyncClient) -> None:
+    token = await register_and_get_token(client, 'partial-iou@example.com')
+    headers = auth_headers(token)
+    account_id, _ = await _expense(client, token, amount=5000)
+    created = await client.post('/api/v1/splits/owed', headers=headers, json={
+        'title': 'Shared hotel', 'name': 'Isha', 'amount_paise': 10000, 'direction': 'by_you',
+    })
+    assert created.status_code == 201, created.text
+    split = created.json()
+    person = split['participants'][0]
+    payment_path = f"/api/v1/splits/{split['id']}/participants/{person['id']}/payments"
+
+    too_small = await client.post(payment_path, headers=headers, json={
+        'account_id': account_id, 'amount_paise': 100,
+    })
+    assert too_small.status_code == 422
+    too_large = await client.post(payment_path, headers=headers, json={
+        'account_id': account_id, 'amount_paise': 10001,
+    })
+    assert too_large.status_code == 422
+
+    partial = await client.post(payment_path, headers=headers, json={
+        'account_id': account_id, 'amount_paise': 4000,
+    })
+    assert partial.status_code == 200, partial.text
+    partial_person = partial.json()['participants'][0]
+    assert partial.json()['outstanding_paise'] == 6000
+    assert partial_person['settled_paise'] == 4000
+    assert partial_person['repayment_transaction_id'] is None
+    assert len(partial_person['payments']) == 1
+    expense_id = partial_person['payments'][0]['transaction_id']
+    expense = await client.get(f'/api/v1/transactions/{expense_id}', headers=headers)
+    assert expense.json()['type'] == 'expense'
+    assert expense.json()['amount_paise'] == 4000
+
+    completed = await client.post(payment_path, headers=headers, json={'account_id': account_id})
+    assert completed.status_code == 200, completed.text
+    completed_person = completed.json()['participants'][0]
+    assert completed.json()['outstanding_paise'] == 0
+    assert completed_person['settled_paise'] == 10000
+    assert completed_person['repayment_transaction_id'] == completed_person['payments'][-1]['transaction_id']
+    assert len(completed_person['payments']) == 2
+    account = await client.get(f'/api/v1/accounts/{account_id}', headers=headers)
+    assert account.json()['balance_paise'] == 5000
+
+
+async def test_partial_repayment_income_is_recorded_for_money_owed_to_user(client: AsyncClient) -> None:
+    token = await register_and_get_token(client, 'partial-receivable@example.com')
+    headers = auth_headers(token)
+    account_id, _ = await _expense(client, token, amount=5000)
+    created = await client.post('/api/v1/splits/owed', headers=headers, json={
+        'title': 'Borrowed cash', 'name': 'A', 'amount_paise': 15000, 'direction': 'to_you',
+    })
+    assert created.status_code == 201, created.text
+    split = created.json()
+    person = split['participants'][0]
+    partial = await client.post(
+        f"/api/v1/splits/{split['id']}/participants/{person['id']}/payments",
+        headers=headers, json={'account_id': account_id, 'amount_paise': 7500},
+    )
+    assert partial.status_code == 200, partial.text
+    assert partial.json()['outstanding_paise'] == 7500
+    payment = partial.json()['participants'][0]['payments'][0]
+    transaction = await client.get(f"/api/v1/transactions/{payment['transaction_id']}", headers=headers)
+    assert transaction.json()['type'] == 'income'
+    assert transaction.json()['amount_paise'] == 7500
+    account = await client.get(f'/api/v1/accounts/{account_id}', headers=headers)
+    assert account.json()['balance_paise'] == 22500
 
 
 async def test_standalone_money_owed_rejects_owner_as_debtor(client: AsyncClient) -> None:
@@ -361,3 +479,73 @@ async def test_mark_settlement_transfer_repaid_records_exact_plan_amount(
     assert duplicate.status_code == 422
     assert (await client.delete(f'/api/v1/transactions/{repayment_id}', headers=headers)).status_code == 400
     assert len((await client.get('/api/v1/transactions', headers=headers)).json()) == 2
+
+
+async def test_settle_balance_updates_partial_group_transfer_and_older_ioU_atomically(
+    client: AsyncClient, db_session: AsyncSession,
+) -> None:
+    token = await register_and_get_token(client, 'settle-partial-group@example.com')
+    headers = auth_headers(token)
+    account_id, transaction_id = await _expense(client, token, amount=1000)
+    created = await client.post('/api/v1/splits', headers=headers, json={
+        'transaction_id': transaction_id, 'title': 'Group dinner', 'amount_paise': 1000,
+        'mode': 'custom', 'owner_share_paise': 200,
+        'participants': [{'name': 'A', 'share_paise': 800}],
+    })
+    assert created.status_code == 201, created.text
+    group_split = await db_session.scalar(select(SplitModel).where(
+        SplitModel.id == uuid.UUID(created.json()['id']),
+    ))
+    assert group_split is not None
+    group_split.settlement_breakdown = {'transfers': [
+        {'debtor': 'A', 'creditor': 'You', 'amount_paise': 800, 'settled_paise': 100},
+    ]}
+    owed = await client.post('/api/v1/splits/owed', headers=headers, json={
+        'title': 'Old loan', 'name': 'A', 'amount_paise': 300, 'direction': 'by_you',
+    })
+    assert owed.status_code == 201, owed.text
+    await db_session.commit()
+
+    preview = (await client.get('/api/v1/splits/balances', headers=headers)).json()
+    a_balance = next(item for item in preview if item['person'] == 'A')
+    assert a_balance['owed_to_you_paise'] == 700
+    assert a_balance['you_owe_paise'] == 300
+    assert a_balance['net_paise'] == 400
+
+    settled = await client.post('/api/v1/splits/balances/settle', headers=headers, json={
+        'person_name': 'A', 'account_id': account_id, 'amount_paise': 200,
+        'expected_owed_to_you_paise': 700, 'expected_you_owe_paise': 300,
+    })
+    assert settled.status_code == 200, settled.text
+    assert settled.json()['offset_paise'] == 300
+    assert settled.json()['cash_paise'] == 200
+    assert settled.json()['net_after_paise'] == 200
+    stale_confirmation = await client.post('/api/v1/splits/balances/settle', headers=headers, json={
+        'person_name': 'A', 'account_id': account_id, 'amount_paise': 200,
+        'expected_owed_to_you_paise': 700, 'expected_you_owe_paise': 300,
+    })
+    assert stale_confirmation.status_code == 422
+    assert 'out of date' in stale_confirmation.json()['detail']
+
+    refreshed = (await client.get('/api/v1/splits/balances', headers=headers)).json()
+    a_balance = next(item for item in refreshed if item['person'] == 'A')
+    assert a_balance['owed_to_you_paise'] == 200
+    assert a_balance['you_owe_paise'] == 0
+    group_after = (await client.get('/api/v1/splits', headers=headers)).json()
+    group_after = next(item for item in group_after if item['id'] == created.json()['id'])
+    assert group_after['outstanding_paise'] == 200
+    transfer = group_after['settlement_breakdown']['transfers'][0]
+    assert transfer['settled_paise'] == 600
+    transactions = (await client.get('/api/v1/transactions', headers=headers)).json()
+    settlement_transactions = [item for item in transactions if item['note'] == 'Balance settlement: Group dinner']
+    assert len(settlement_transactions) == 1
+    assert settlement_transactions[0]['type'] == 'income'
+    assert settlement_transactions[0]['amount_paise'] == 200
+
+    remaining_transfer = await client.post(
+        f"/api/v1/splits/{created.json()['id']}/settlement-transfers/repay",
+        headers=headers, json={'debtor': 'A', 'account_id': account_id},
+    )
+    assert remaining_transfer.status_code == 200, remaining_transfer.text
+    assert remaining_transfer.json()['outstanding_paise'] == 0
+    assert remaining_transfer.json()['settlement_breakdown']['transfers'][0]['settled_paise'] == 800

@@ -67,7 +67,7 @@ def test_every_registered_specialist_tool_has_a_schema_and_description() -> None
         'rename_account', 'activate_account', 'deactivate_account', 'list_categories', 'create_category',
         'update_category', 'delete_category', 'extract_transaction', 'list_transactions', 'create_transaction',
         'update_transaction', 'delete_transaction', 'restore_transaction', 'create_transaction_batch',
-        'list_split_contacts', 'set_split_contact_preference', 'create_split', 'create_owed',
+        'list_split_contacts', 'set_split_contact_preference', 'create_split', 'create_owed', 'record_owed_payment',
         'create_settlement_draft', 'get_split_summary', 'get_account_balances', 'get_transactions',
         'get_current_datetime', 'get_spending_summary', 'get_spending_by_account', 'get_spending_comparison',
         'create_transaction_report',
@@ -129,6 +129,10 @@ async def test_split_summary_limit_keeps_totals_for_all_matching_rows() -> None:
     assert result['matching_split_count'] == 2
     assert result['truncated_split_count'] == 1
     assert [item['title'] for item in result['splits']] == ['Large']
+    balances = {item['person']: item for item in result['person_balances']}
+    assert balances['A']['net_outstanding_paise'] == 900
+    assert balances['B']['net_outstanding_paise'] == 300
+    assert balances['A']['records'][0]['title'] == 'Large'
 
 
 @pytest.mark.asyncio

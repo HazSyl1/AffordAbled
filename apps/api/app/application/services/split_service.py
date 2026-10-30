@@ -51,6 +51,11 @@ class SplitStore(Protocol):
 
     async def list_for_user(self, user_id: uuid.UUID): ...
 
+    async def settle_balance(
+        self, user_id: uuid.UUID, person_name: str, account_id: uuid.UUID | None,
+        amount_paise: int | None, expected_owed_to_you_paise: int, expected_you_owe_paise: int,
+    ): ...
+
     async def get_for_user(self, user_id: uuid.UUID, split_id: uuid.UUID): ...
 
     async def update(
@@ -71,6 +76,11 @@ class SplitStore(Protocol):
     async def pay_owed(
         self, user_id: uuid.UUID, split_id: uuid.UUID,
         participant_id: uuid.UUID, account_id: uuid.UUID,
+    ): ...
+
+    async def record_payment(
+        self, user_id: uuid.UUID, split_id: uuid.UUID, participant_id: uuid.UUID,
+        account_id: uuid.UUID, amount_paise: int | None,
     ): ...
 
     async def repay_settlement_transfer(
@@ -216,6 +226,89 @@ class SplitService:
     async def list_for_user(self, user_id: uuid.UUID):
         return await self.store.list_for_user(user_id)
 
+    async def balances_by_person(self, user_id: uuid.UUID) -> list[dict]:
+        """Summarize each person's remaining receivables and payables, after partial payments."""
+        splits = await self.store.list_for_user(user_id)
+        balances: dict[str, dict] = {}
+        for split in splits:
+            if split.settlement_breakdown is not None:
+                for transfer_index, transfer in enumerate(split.settlement_breakdown.get('transfers', [])):
+                    debtor = str(transfer.get('debtor') or '').strip()
+                    creditor = str(transfer.get('creditor') or '').strip()
+                    if creditor.casefold() == 'you':
+                        name, direction = debtor, 'to_you'
+                    elif debtor.casefold() == 'you':
+                        name, direction = creditor, 'by_you'
+                    else:
+                        continue
+                    amount = int(transfer.get('amount_paise') or 0)
+                    settled = int(transfer.get('settled_paise') or 0)
+                    if transfer.get('repayment_transaction_id'):
+                        settled = amount
+                    remaining = max(0, amount - settled)
+                    if remaining == 0 or not name:
+                        continue
+                    participant = next(
+                        (person for person in split.participants if person.name.casefold() == name.casefold()), None,
+                    )
+                    if participant is None:
+                        continue
+                    key = participant.name.casefold()
+                    balance = balances.setdefault(key, {
+                        'person': participant.name, 'owed_to_you_paise': 0,
+                        'you_owe_paise': 0, 'entries': [],
+                    })
+                    field = 'owed_to_you_paise' if direction == 'to_you' else 'you_owe_paise'
+                    balance[field] += remaining
+                    balance['entries'].append({
+                        'split_id': str(split.id), 'participant_id': str(participant.id), 'title': split.title,
+                        'direction': direction, 'remaining_paise': remaining, 'created_at': split.created_at,
+                        'transfer_index': transfer_index,
+                    })
+                continue
+            direction = 'to_you' if split.transaction_id is not None else split.direction
+            for participant in split.participants:
+                remaining = max(0, participant.share_paise - participant.settled_paise)
+                if remaining == 0:
+                    continue
+                key = participant.name.strip().casefold()
+                balance = balances.setdefault(key, {
+                    'person': participant.name,
+                    'owed_to_you_paise': 0,
+                    'you_owe_paise': 0,
+                    'entries': [],
+                })
+                field = 'owed_to_you_paise' if direction == 'to_you' else 'you_owe_paise'
+                balance[field] += remaining
+                balance['entries'].append({
+                    'split_id': str(split.id),
+                    'participant_id': str(participant.id),
+                    'title': split.title,
+                    'direction': direction,
+                    'remaining_paise': remaining,
+                    'created_at': split.created_at,
+                })
+        result = []
+        for balance in balances.values():
+            balance['net_paise'] = balance['owed_to_you_paise'] - balance['you_owe_paise']
+            balance['entries'].sort(key=lambda entry: (entry['remaining_paise'], entry['created_at']))
+            result.append(balance)
+        return sorted(result, key=lambda balance: (abs(balance['net_paise']), balance['person'].casefold()))
+
+    async def settle_balance(
+        self, user_id: uuid.UUID, person_name: str, account_id: uuid.UUID | None = None,
+        amount_paise: int | None = None, expected_owed_to_you_paise: int | None = None,
+        expected_you_owe_paise: int | None = None,
+    ):
+        if amount_paise is not None and amount_paise <= 100:
+            raise ValueError('Enter a settlement amount greater than one rupee.')
+        if expected_owed_to_you_paise is None or expected_you_owe_paise is None:
+            raise ValueError('Refresh the balance preview and confirm the amounts before settling.')
+        return await self.store.settle_balance(
+            user_id, person_name, account_id, amount_paise,
+            expected_owed_to_you_paise, expected_you_owe_paise,
+        )
+
     async def get_for_user(self, user_id: uuid.UUID, split_id: uuid.UUID):
         return await self.store.get_for_user(user_id, split_id)
 
@@ -284,6 +377,16 @@ class SplitService:
         participant_id: uuid.UUID, account_id: uuid.UUID,
     ):
         return await self.store.pay_owed(user_id, split_id, participant_id, account_id)
+
+    async def record_payment(
+        self, user_id: uuid.UUID, split_id: uuid.UUID, participant_id: uuid.UUID,
+        account_id: uuid.UUID, amount_paise: int | None = None,
+    ):
+        if amount_paise is not None and amount_paise <= 100:
+            raise ValueError('Enter a payment greater than one rupee.')
+        return await self.store.record_payment(
+            user_id, split_id, participant_id, account_id, amount_paise,
+        )
 
     async def repay_settlement_transfer(
         self, user_id: uuid.UUID, split_id: uuid.UUID, debtor: str, account_id: uuid.UUID,

@@ -7,6 +7,7 @@ import uuid
 from collections import Counter
 from collections.abc import Mapping
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from typing import Annotated, Any, Literal, TypedDict
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -79,7 +80,10 @@ _TOOL_EVIDENCE_PATHS: dict[str, tuple[str, ...]] = {
     "set_default_account": ("account.id",),
     "create_split": ("split.id",),
     "create_owed": ("receivable.id", "payable.id"),
-    "create_owed_batch": ("payables",),
+    "create_owed_batch": ("payables", "receivables"),
+    "record_owed_payment": ("payment.transaction_id", "payment.remaining_paise"),
+    "list_person_split_balances": ("balances",),
+    "settle_person_balance": ("settlement.status", "settlement.person"),
     "create_settlement_draft": ("settlement_draft.id",),
     "set_split_contact_preference": ("contact.id", "contact.name"),
     "create_transaction_report": ("export_id",),
@@ -342,6 +346,25 @@ def _is_standalone_owed_request(task: str) -> bool:
     )
 
 
+def _is_owed_payment_request(task: str) -> bool:
+    """Recognize a statement that settles an existing IOU, not a new purchase."""
+    text = task.casefold().replace('\u2019', "'")
+    return bool(
+        re.search(
+            r"\b(?:(?:i|we)\s+(?:have\s+)?)?paid\s+(?:\u20b9|rs\.?\s*)?"
+            r"[\d,]+(?:\.\d{1,2})?(?:\s*(?:rupees?|inr))?\s+to\s+[a-z]", text,
+        )
+        or re.search(r"\b(?:(?:i|we)\s+(?:have\s+)?)?paid\s+[a-z][\w'-]*(?:'s)?\s+(?:split|iou|debt)\b", text)
+        or re.search(
+            r"\b(?:(?:i|we)\s+(?:have\s+)?)?(?:paid|repaid)\s+[a-z][\w'-]*(?:'s)?\s+"
+            r"(?:\u20b9|rs\.?\s*)?[\d,]+(?:\.\d{1,2})?(?:\s*(?:rupees?|inr))?\b",
+            text,
+        )
+        or re.search(r"\b[a-z][\w'-]*\s+(?:has\s+)?paid\s+(?:me|us)\b", text)
+        or re.search(r"\b(?:paid|repaid)\s+(?:the\s+)?(?:iou|owed amount|money owed)\b", text)
+    )
+
+
 def _owed_entries_from_text(task: str) -> list[tuple[str, str]]:
     """Extract name/amount pairs conservatively; arithmetic is handled separately."""
     pattern = re.compile(
@@ -355,6 +378,27 @@ def _owed_entries_from_text(task: str) -> list[tuple[str, str]]:
         for match in pattern.finditer(task)
         if match.group("name").casefold() not in excluded
     ]
+
+
+def _outstanding_owed_entries(task: str) -> list[tuple[str, str]]:
+    """Keep historical, fully paid debts out of new-IOU completion requirements.
+
+    Deliberately accept only an explicit first-person payment statement without
+    a partial amount or qualifier. A payment promise or an ambiguous/partial
+    payment must not let the verifier silently drop an outstanding obligation.
+    """
+    text = task.replace('\u2019', "'")
+    outstanding = []
+    for name, amount in _owed_entries_from_text(task):
+        paid_statement = re.search(
+            rf"\b(?:i|we)(?:'ve|\s+have)?\s+(?:already\s+)?(?:fully\s+)?"
+            rf"(?:paid|repaid)\s+{re.escape(name)}\b(?:\s+in\s+full)?\s*[.!]?\s*$",
+            text,
+            re.IGNORECASE,
+        )
+        if paid_statement is None:
+            outstanding.append((name, amount))
+    return outstanding
 
 
 def _matches_observed_action(task: str, action: dict[str, Any]) -> bool:
@@ -496,9 +540,46 @@ def _matches_observed_action(task: str, action: dict[str, Any]) -> bool:
         )
     if tool == "create_owed_batch":
         entries = data.get("payables") or data.get("receivables") or []
-        expected_names = {name.casefold() for name, _ in _owed_entries_from_text(task)}
-        saved = {str(item.get("person") or "").casefold() for item in entries if isinstance(item, Mapping)}
-        return bool(expected_names) and expected_names.issubset(saved)
+        expected: dict[str, int] = {}
+        try:
+            for name, raw_amount in _outstanding_owed_entries(task):
+                numerator, *denominator = raw_amount.replace(",", "").split("/")
+                amount = Decimal(numerator) / Decimal(denominator[0]) if denominator else Decimal(numerator)
+                paise = amount * 100
+                if not paise.is_finite() or paise <= 0 or paise != paise.to_integral_value():
+                    return False
+                expected[name.casefold()] = int(paise)
+        except (InvalidOperation, ZeroDivisionError):
+            return False
+        direction = "by_you" if data.get("payables") else "to_you"
+        saved = {
+            str(item.get("person") or "").casefold(): item.get("amount_paise")
+            for item in entries if isinstance(item, Mapping) and item.get("direction") == direction
+        }
+        requested_direction = None
+        if re.search(r"\b(?:i|we)\s+(?:still\s+)?owe\b|\b(?:i|we)(?:'ve|\s+have)?\s+to\s+give\b",
+                     task, re.IGNORECASE):
+            requested_direction = "by_you"
+        elif re.search(r"\b[A-Za-z][\w'-]*\s+(?:owes|owed)\s+me\b", task, re.IGNORECASE):
+            requested_direction = "to_you"
+        return (
+            action.get("ok") is not False
+            and _action_has_entity_evidence(action)
+            and (requested_direction is None or direction == requested_direction)
+            and bool(expected)
+            and len(entries) == len(expected)
+            and expected == saved
+        )
+    if tool == "record_owed_payment":
+        payment = data.get('payment') or {}
+        return bool(payment.get('transaction_id')) and (
+            _is_owed_payment_request(task) or _mentions(task, str(payment.get('person') or ''))
+        )
+    if tool == 'settle_person_balance':
+        settlement = data.get('settlement') or {}
+        return settlement.get('status') in {'settled', 'cancelled'} and _mentions(
+            task, str(settlement.get('person') or ''),
+        )
     if tool == "get_account_balances":
         return any(_mentions(task, word) for word in ("balance", "balances", "afford", "budget", "enough"))
     if tool == "get_current_datetime":
@@ -637,6 +718,7 @@ def _action_has_entity_evidence(action: dict[str, Any]) -> bool:
         "set_default_account": "account",
         "create_split": "split",
         "create_owed": "receivable",
+        "record_owed_payment": "payment",
     }
     if tool in entity_fields:
         entity = data.get(entity_fields[tool]) or (data.get("payable") if tool == "create_owed" else None) or {}
@@ -644,6 +726,9 @@ def _action_has_entity_evidence(action: dict[str, Any]) -> bool:
     if tool == "create_owed_batch":
         entries = data.get("payables") or data.get("receivables") or []
         return bool(entries) and all(isinstance(item, Mapping) and bool(item.get("id")) for item in entries)
+    if tool == "record_owed_payment":
+        payment = data.get('payment') or {}
+        return bool(payment.get('transaction_id')) and isinstance(payment.get('remaining_paise'), int)
     if tool == "delete_transaction":
         return bool(data.get("deleted_transaction_id") or (data.get("transaction") or {}).get("id"))
     if tool == "restore_transaction":
@@ -748,6 +833,10 @@ def _required_tools(task: str, specialist: str | None) -> set[str] | None:
     if specialist == "split":
         if _is_complex_settlement_request(task):
             return {"create_settlement_draft"}
+        if re.search(r"\bsettle\b.{0,40}\b(?:balance|balances|up|with)\b", task, re.IGNORECASE):
+            return {"settle_person_balance"}
+        if _is_owed_payment_request(task):
+            return {"record_owed_payment"}
         if _is_standalone_owed_request(task):
             return {"create_owed_batch" if len(_owed_entries_from_text(task)) > 1 else "create_owed"}
         if (
@@ -799,6 +888,8 @@ def _task_intent(task: str, specialist: str | None, required_tools: set[str]) ->
     """Create a stable intent label without asking the LLM to judge completion."""
     canonical_mutations = (
         "create_transaction",
+        "record_owed_payment",
+        "settle_person_balance",
         "update_transaction",
         "delete_transaction",
         "restore_transaction",
@@ -1049,6 +1140,10 @@ def _obvious_specialist(task: str) -> str | None:
     """Keep an actionable first turn from being finished before any tool runs."""
     normalized = task.casefold()
     if _is_complex_settlement_request(task):
+        return 'split'
+    if re.search(r"\bsettle\b.{0,40}\b(?:balance|balances|up|with)\b", task, re.IGNORECASE):
+        return 'split'
+    if _is_owed_payment_request(task):
         return 'split'
     if _is_standalone_owed_request(task):
         return 'split'
@@ -2305,6 +2400,10 @@ class AgenticSupervisorGraph:
                     if not remaining_tasks or len(satisfied_tasks) == 1
                     else "Completed: " + "; ".join(satisfied_tasks)
                 )
+                if latest_result.get("specialist") == "split" and any(
+                    action.get("tool") == "record_owed_payment" for action in observed_actions
+                ) and "settle balance" not in summary.casefold():
+                    summary += " You can review and offset any remaining mutual IOUs from Splits → Settle balance."
                 if latest_result.get("specialist") == "category" and not remaining_tasks:
                     summary = _category_completion_summary(
                         task_request, state.get("tool_event_history") or [], available_categories,

@@ -19,8 +19,10 @@ from app.presentation.schemas.split import (
     ItemizedSplitPreviewResponse,
     ItemizedSplitRequest,
     PayOwedRequest,
+    RecordSplitPaymentRequest,
     RepayParticipantRequest,
     RepaySettlementTransferRequest,
+    SettleBalanceRequest,
     SettleParticipantRequest,
     SplitContactPreferenceRequest,
     SplitContactPreferenceResponse,
@@ -33,6 +35,29 @@ router = APIRouter(prefix='/splits', tags=['splits'])
 
 def get_split_service(db: AsyncSession = Depends(get_db)) -> SplitService:
     return SplitService(SqlAlchemySplitRepository(db), SqlAlchemyMemoryRepository(db))
+
+
+@router.get('/balances', response_model=list[dict])
+async def list_balances_by_person(
+    current_user: User = Depends(get_current_user), service: SplitService = Depends(get_split_service),
+) -> list[dict]:
+    return await service.balances_by_person(current_user.id)
+
+
+@router.post('/balances/settle', response_model=dict)
+async def settle_person_balance(
+    payload: SettleBalanceRequest,
+    current_user: User = Depends(get_current_user), service: SplitService = Depends(get_split_service),
+) -> dict:
+    try:
+        return await service.settle_balance(
+            current_user.id, payload.person_name, payload.account_id, payload.amount_paise,
+            payload.expected_owed_to_you_paise, payload.expected_you_owe_paise,
+        )
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
 
 
 @router.get('', response_model=list[SplitResponse])
@@ -236,6 +261,24 @@ async def repay_split_participant(
 ) -> SplitResponse:
     try:
         split = await service.repay(current_user.id, split_id, participant_id, payload.account_id)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    if split is None:
+        raise HTTPException(status_code=404, detail='Split participant not found.')
+    return SplitResponse.from_model(split)
+
+
+@router.post('/{split_id}/participants/{participant_id}/payments', response_model=SplitResponse)
+async def record_split_payment(
+    split_id: uuid.UUID, participant_id: uuid.UUID, payload: RecordSplitPaymentRequest,
+    current_user: User = Depends(get_current_user), service: SplitService = Depends(get_split_service),
+) -> SplitResponse:
+    try:
+        split = await service.record_payment(
+            current_user.id, split_id, participant_id, payload.account_id, payload.amount_paise,
+        )
     except LookupError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     except ValueError as error:
