@@ -341,10 +341,130 @@ class SplitToolset:
             "create_split": self.create_split,
             "create_owed": self.create_owed,
             "create_owed_batch": self.create_owed_batch,
+            "record_owed_payment": self.record_owed_payment,
+            "list_person_split_balances": self.list_person_split_balances,
+            "settle_person_balance": self.settle_person_balance,
         }
         if self._complex_settlements is not None:
             tools['create_settlement_draft'] = self.create_settlement_draft
         return tools
+
+    async def list_person_split_balances(self, context: HandoffContext, _args: dict[str, Any]) -> dict[str, Any]:
+        """Return current receivable/payable totals by person, including partial repayments."""
+        return {'balances': await self._splits.balances_by_person(context.user_id)}
+
+    async def settle_person_balance(self, context: HandoffContext, args: dict[str, Any]) -> dict[str, Any]:
+        """Review mutual debts, require explicit confirmation, and settle against the underlying split records."""
+        person_name = str(args.get('person_name') or '').strip()
+        if not person_name or is_owner_participant_label(person_name):
+            raise ValueError('Name the other person whose balance should be settled.')
+        balances = await self._splits.balances_by_person(context.user_id)
+        matches = [balance for balance in balances if balance['person'].casefold() == person_name.casefold()]
+        if len(matches) != 1:
+            if not matches:
+                raise LookupError(f'No outstanding split or IOU balance was found for {person_name}.')
+            raise ValueError('That name matches multiple saved people. Use the exact saved contact name.')
+        balance = matches[0]
+        offset_paise = min(balance['owed_to_you_paise'], balance['you_owe_paise'])
+        net_paise = balance['net_paise']
+        amount_paise: int | None = None
+        if args.get('amount_rupees') is not None:
+            try:
+                amount_rupees = Decimal(str(args['amount_rupees']))
+                amount_value = amount_rupees * 100
+                if not amount_rupees.is_finite() or amount_value != amount_value.to_integral_value():
+                    raise ValueError
+                amount_paise = int(amount_value)
+            except (ArithmeticError, TypeError, ValueError):
+                raise ValueError('Use an amount with no more than two decimal places.') from None
+            if amount_paise <= 100:
+                raise ValueError('Enter a partial cash payment greater than one rupee.')
+            if amount_paise > abs(net_paise):
+                raise ValueError('Cash settlement cannot exceed the net amount after offsetting mutual debts.')
+        cash_paise = abs(net_paise) if amount_paise is None else amount_paise
+        direction = 'to_you' if net_paise > 0 else 'by_you'
+
+        def money(amount: int) -> str:
+            return f'₹{Decimal(amount) / 100:,.2f}'
+
+        account = None
+        if cash_paise:
+            accounts = context.constraints.get('available_accounts') or []
+            requested_account = str(args.get('account_name') or '').strip().casefold()
+            if requested_account:
+                account = next((item for item in accounts if str(item.get('name', '')).casefold() == requested_account
+                                and item.get('is_active', True)), None)
+                if account is None:
+                    raise LookupError(f'Active wallet account "{args.get("account_name")}" was not found.')
+            else:
+                account = next(
+                    (item for item in accounts if item.get('is_active', True) and item.get('is_default')), None,
+                )
+                if account is None:
+                    active_accounts = [item for item in accounts if item.get('is_active', True)]
+                    account = active_accounts[0] if len(active_accounts) == 1 else None
+            if account is None:
+                raise ValueError('Choose an active wallet account for the cash settlement.')
+
+        def entry_key(entry: dict[str, Any]) -> tuple[str, str, int | None]:
+            return (entry['split_id'], entry['participant_id'], entry.get('transfer_index'))
+
+        offset_allocations: dict[str, list[tuple[tuple[str, str, int | None], int]]] = {
+            'to_you': [], 'by_you': [],
+        }
+        for entry_direction in ('to_you', 'by_you'):
+            remaining_offset = offset_paise
+            for entry in balance['entries']:
+                if entry['direction'] != entry_direction or remaining_offset <= 0:
+                    continue
+                applied = min(entry['remaining_paise'], remaining_offset)
+                offset_allocations[entry_direction].append((entry_key(entry), applied))
+                remaining_offset -= applied
+
+        payment_allocations: list[tuple[str, int]] = []
+        remaining_cash = cash_paise
+        for entry in balance['entries']:
+            if entry['direction'] != direction or remaining_cash <= 0:
+                continue
+            already_offset = sum(amount for key, amount in offset_allocations[direction]
+                                 if key == entry_key(entry))
+            available = max(0, entry['remaining_paise'] - already_offset)
+            applied = min(available, remaining_cash)
+            if applied:
+                payment_allocations.append((entry['title'], applied))
+                remaining_cash -= applied
+
+        detail = (
+            f'Balance with {balance["person"]}: they owe you {money(balance["owed_to_you_paise"])}; '
+            f'you owe them {money(balance["you_owe_paise"])}. Offset {money(offset_paise)} across both sides. '
+        )
+        if cash_paise:
+            cash_action = 'receive from them' if direction == 'to_you' else 'pay them'
+            allocation_text = '; '.join(f'{title}: {money(amount)}' for title, amount in payment_allocations)
+            detail += (
+                f'After offset, {cash_action} {money(cash_paise)}'
+                f'{" (partial)" if cash_paise < abs(net_paise) else ""}. '
+                f'Apply the cash amount to the smallest open split entries first: {allocation_text}. '
+                f'Wallet account: {account.get("name")}. This creates Split-category wallet transaction(s).'
+            )
+        else:
+            detail += 'The balances cancel exactly, so no cash transaction is created.'
+        answer = interrupt({
+            'agent': 'split',
+            'question': f'{detail} Confirm this settlement?'
+        })
+        if str(answer).strip().casefold() not in {'yes', 'y', 'confirm', 'confirmed', 'proceed'}:
+            return {'settlement': {
+                'status': 'cancelled', 'person': balance['person'], 'offset_paise': offset_paise,
+                'cash_paise': cash_paise,
+            }}
+
+        result = await self._splits.settle_balance(
+            context.user_id, balance['person'],
+            uuid.UUID(str(account['id'])) if account else None,
+            amount_paise, balance['owed_to_you_paise'], balance['you_owe_paise'],
+        )
+        return {'settlement': {'status': 'settled', **result}}
 
     async def create_settlement_draft(self, context: HandoffContext, args: dict[str, Any]) -> dict[str, Any]:
         """Save only a preview; the user confirms and commits the wallet changes in the planner."""
@@ -415,6 +535,83 @@ class SplitToolset:
             }
             for split in splits for person in split.participants
         ]}
+
+    async def record_owed_payment(self, context: HandoffContext, args: dict[str, Any]) -> dict[str, Any]:
+        person_name = str(args.get('person_name') or '').strip()
+        if not person_name:
+            raise ValueError('Name the person whose IOU you paid or received.')
+        direction = str(args.get('direction') or '')
+        if direction not in {'to_you', 'by_you'}:
+            raise ValueError('Choose whether you paid the person or they paid you.')
+        if is_owner_participant_label(person_name):
+            raise ValueError('Name the other person in the IOU, not yourself.')
+
+        splits = await self._splits.list_for_user(context.user_id)
+        matches = []
+        title = str(args.get('title') or '').strip().casefold()
+        for split in splits:
+            split_direction = 'to_you' if split.transaction_id is not None else split.direction
+            if split_direction != direction or (title and title not in split.title.casefold()):
+                continue
+            for participant in split.participants:
+                if participant.name.casefold() != person_name.casefold():
+                    continue
+                remaining = participant.share_paise - participant.settled_paise
+                if remaining > 0:
+                    matches.append((split, participant, remaining))
+        if not matches:
+            raise LookupError(f'No outstanding {direction} split or IOU was found for {person_name}.')
+        if len(matches) > 1:
+            options = '; '.join(
+                f'"{split.title}" ({remaining} paise remaining)' for split, _, remaining in matches[:5]
+            )
+            raise ValueError(
+                f'Multiple open IOUs match {person_name}: {options}. Ask which one before recording payment.'
+            )
+
+        accounts = context.constraints.get('available_accounts') or []
+        requested_account = str(args.get('account_name') or '').strip().casefold()
+        if requested_account:
+            account = next((item for item in accounts if str(item.get('name', '')).casefold() == requested_account
+                            and item.get('is_active', True)), None)
+        else:
+            account = next((item for item in accounts if item.get('is_active', True) and item.get('is_default')), None)
+            if account is None:
+                active_accounts = [item for item in accounts if item.get('is_active', True)]
+                account = active_accounts[0] if len(active_accounts) == 1 else None
+        if account is None:
+            if requested_account:
+                raise LookupError(f'Active wallet account "{args.get("account_name")}" was not found.')
+            raise ValueError('Choose which wallet account was used for this payment.')
+
+        amount_paise = None
+        if args.get('amount_rupees') is not None:
+            try:
+                amount_rupees = Decimal(str(args['amount_rupees']))
+                amount_paise_decimal = amount_rupees * 100
+                if not amount_rupees.is_finite() or amount_paise_decimal != amount_paise_decimal.to_integral_value():
+                    raise ValueError
+                amount_paise = int(amount_paise_decimal)
+            except (ArithmeticError, TypeError, ValueError):
+                raise ValueError('Enter a payment amount with no more than two decimal places.') from None
+
+        split, participant, _ = matches[0]
+        previous_payment_ids = {payment.id for payment in participant.payments}
+        updated = await self._splits.record_payment(
+            context.user_id, split.id, participant.id, uuid.UUID(str(account['id'])), amount_paise,
+        )
+        if updated is None:
+            raise LookupError('The IOU changed while recording payment. Refresh the splits list and retry.')
+        updated_participant = next(item for item in updated.participants if item.id == participant.id)
+        payment = next(item for item in updated_participant.payments if item.id not in previous_payment_ids)
+        return {'payment': {
+            'split_id': str(updated.id), 'title': updated.title, 'person': participant.name,
+            'direction': direction, 'amount_paise': payment.amount_paise,
+            'remaining_paise': updated_participant.share_paise - updated_participant.settled_paise,
+            'fully_settled': updated_participant.settled_paise == updated_participant.share_paise,
+            'transaction_id': str(payment.transaction_id) if payment.transaction_id else None,
+            'account_name': account.get('name'),
+        }}
 
     async def list_split_contacts(self, context: HandoffContext, _args: dict[str, Any]) -> dict[str, Any]:
         preferences = await self._splits.list_contact_preferences(context.user_id)

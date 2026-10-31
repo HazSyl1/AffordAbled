@@ -42,3 +42,23 @@ class SplitParticipantModel(Base):
         ForeignKey('transactions.id', ondelete='SET NULL'), nullable=True, unique=True
     )
     split: Mapped[SplitModel] = relationship(back_populates='participants')
+    payments: Mapped[list[SplitPaymentModel]] = relationship(
+        back_populates='participant', cascade='all, delete-orphan', lazy='selectin',
+        order_by='SplitPaymentModel.created_at',
+    )
+
+
+class SplitPaymentModel(Base):
+    __tablename__ = 'split_payments'
+    __table_args__ = (UniqueConstraint('transaction_id', name='uq_split_payment_transaction'),)
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    participant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey('split_participants.id', ondelete='CASCADE'), index=True,
+    )
+    amount_paise: Mapped[int] = mapped_column(BigInteger)
+    transaction_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey('transactions.id', ondelete='SET NULL'), nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    participant: Mapped[SplitParticipantModel] = relationship(back_populates='payments')

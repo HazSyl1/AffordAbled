@@ -8,9 +8,11 @@ import { useListAccountsQuery } from '../../features/accounts/accountsApi';
 import {
   useCreateSplitMutation, useListSplitContactsQuery, useListSplitsQuery,
   useCreateOwedMutation,
-  useRepaySplitParticipantMutation, useRepaySettlementTransferMutation, usePayMoneyOwedMutation,
+  useRepaySplitParticipantMutation, useRepaySettlementTransferMutation,
+  useRecordSplitPaymentMutation,
   useDeleteSplitMutation, useUpdateSplitMutation,
-  type CreateSplitRequest, type Split,
+  useListPersonSplitBalancesQuery, useSettlePersonSplitBalanceMutation,
+  type CreateSplitRequest, type PersonSplitBalance, type Split,
 } from '../../features/splits/splitsApi';
 import { useListSettlementPlansQuery, useSettleSettlementPlanTransferMutation,
   type SettlementPlan } from '../../features/splits/settlementPlansApi';
@@ -46,7 +48,8 @@ function detail(error: unknown): string {
 function unpaidCount(split: Split): number {
   return split.settlement_breakdown
     ? split.settlement_breakdown.transfers.filter((transfer) =>
-      transfer.creditor.trim().toLowerCase() === 'you' && !transfer.repayment_transaction_id).length
+      transfer.creditor.trim().toLowerCase() === 'you' && !transfer.repayment_transaction_id &&
+      transfer.amount_paise > (transfer.settled_paise ?? 0)).length
     : split.participants.filter((person) =>
       person.settled_paise < person.share_paise && !person.repayment_transaction_id).length;
 }
@@ -143,6 +146,7 @@ function EditSplitForm({ split, onCancel }: { split: Split; onCancel: () => void
       <p className={`font-semibold ${invalidAmounts ? 'text-red-400' : ''}`}>Remaining: {formatPaiseAsInr(remainingPaise)}</p>
       {invalidAmounts && <p className='mt-1 text-xs text-red-400'>Enter valid shares that add up to the total.</p>}
     </div>
+
     {error && <p role='alert' className='text-sm text-red-400'>{error}</p>}
     <div className='grid grid-cols-1 gap-2 sm:grid-cols-2'><Button type='submit' isLoading={saving}>Save split</Button>
       <Button type='button' variant='secondary' onClick={onCancel}>Cancel</Button></div>
@@ -156,6 +160,7 @@ export function SplitsPage() {
   const focusedSplitId = searchParams.get('splitId');
   const focusedPlanId = searchParams.get('planId');
   const { data: splits = [], isLoading } = useListSplitsQuery();
+  const { data: personBalances = [], isLoading: loadingPersonBalances } = useListPersonSplitBalancesQuery();
   const { data: settlementPlans = [], isLoading: loadingSettlementPlans,
     isError: settlementPlansError } = useListSettlementPlansQuery();
   const { data: transactions = [] } = useListTransactionsQuery();
@@ -164,7 +169,8 @@ export function SplitsPage() {
   const [createSplit, { isLoading: creating }] = useCreateSplitMutation();
   const [createOwed, { isLoading: creatingOwed }] = useCreateOwedMutation();
   const [repay, { isLoading: repaying }] = useRepaySplitParticipantMutation();
-  const [payMoneyOwed, { isLoading: payingOwed }] = usePayMoneyOwedMutation();
+  const [recordSplitPayment, { isLoading: recordingSplitPayment }] = useRecordSplitPaymentMutation();
+  const [settlePersonBalance, { isLoading: settlingPersonBalance }] = useSettlePersonSplitBalanceMutation();
   const [repaySettlementTransfer, { isLoading: repayingTransfer }] = useRepaySettlementTransferMutation();
   const [settlePlanTransfer] = useSettleSettlementPlanTransferMutation();
   const [deleteSplit, { isLoading: deleting }] = useDeleteSplitMutation();
@@ -179,6 +185,8 @@ export function SplitsPage() {
   const [error, setError] = useState('');
   const [showValidation, setShowValidation] = useState(false);
   const [repaymentAccounts, setRepaymentAccounts] = useState<Record<string, string>>({});
+  const [paymentAmounts, setPaymentAmounts] = useState<Record<string, string>>({});
+  const [partialPaymentOpen, setPartialPaymentOpen] = useState<Record<string, boolean>>({});
   const [settlementAccounts, setSettlementAccounts] = useState<Record<string, string>>({});
   const [settlingPlanTransferId, setSettlingPlanTransferId] = useState<string | null>(null);
   const [settlementFeedback, setSettlementFeedback] = useState<Record<string, string>>({});
@@ -191,6 +199,9 @@ export function SplitsPage() {
   const [owedAmount, setOwedAmount] = useState('');
   const [owedTitle, setOwedTitle] = useState('');
   const [owedDirection, setOwedDirection] = useState<'to_you' | 'by_you'>('to_you');
+  const [balanceReview, setBalanceReview] = useState<PersonSplitBalance | null>(null);
+  const [balanceSettlementAmount, setBalanceSettlementAmount] = useState('');
+  const [balanceSettlementAccountId, setBalanceSettlementAccountId] = useState('');
   const expenseSplitOwedPaise = splits.filter((split) => split.kind === 'expense_split')
     .reduce((total, split) => total + split.outstanding_paise, 0);
   const standaloneOwedPaise = splits.filter((split) => split.kind === 'money_owed' && split.direction === 'to_you')
@@ -201,6 +212,39 @@ export function SplitsPage() {
   const orderedSplits = [...splits].sort((a, b) => Number(b.outstanding_paise > 0) - Number(a.outstanding_paise > 0));
   const activeAccounts = accounts.filter((account) => account.is_active);
   const defaultAccountId = activeAccounts.find((account) => account.is_default)?.id ?? activeAccounts[0]?.id ?? '';
+  const confirmBalanceSettlement = async () => {
+    if (!balanceReview) return;
+    const netPaise = balanceReview.net_paise;
+    const fullCashAmount = Math.abs(netPaise);
+    let amountPaise: number | undefined;
+    if (fullCashAmount > 0) {
+      const parsedAmount = paise(balanceSettlementAmount);
+      if (parsedAmount === null || parsedAmount <= 100 || parsedAmount > fullCashAmount) {
+        setError(`Enter an amount greater than ₹1.00 and no more than ${formatPaiseAsInr(fullCashAmount)}.`);
+        return;
+      }
+      amountPaise = parsedAmount;
+    }
+    if ((amountPaise ?? 0) > 0 && !activeAccounts.some((account) => account.id === balanceSettlementAccountId)) {
+      setError('Add or activate a wallet account before recording the cash settlement.');
+      return;
+    }
+    setError('');
+    try {
+      await settlePersonBalance({
+        person_name: balanceReview.person,
+        expected_owed_to_you_paise: balanceReview.owed_to_you_paise,
+        expected_you_owe_paise: balanceReview.you_owe_paise,
+        ...(amountPaise === undefined ? {} : { amount_paise: amountPaise }),
+        ...((amountPaise ?? 0) > 0 ? { account_id: balanceSettlementAccountId } : {}),
+      }).unwrap();
+      setBalanceReview(null);
+      setBalanceSettlementAmount('');
+      setBalanceSettlementAccountId('');
+    } catch (failure) {
+      setError(detail(failure));
+    }
+  };
 
   useEffect(() => {
     if (focusedSplitId && splits.some((split) => split.id === focusedSplitId)) {
@@ -313,19 +357,23 @@ export function SplitsPage() {
     } catch (failure) { setError(detail(failure)); }
   }
 
-  async function markRepaid(splitId: string, participantId: string) {
-    const accountId = repaymentAccounts[participantId] ?? defaultAccountId;
-    if (!accountId) { setError('Choose the account that received the repayment.'); return; }
+  async function recordParticipantPayment(split: Split, person: Split['participants'][number], amountInput?: string) {
+    const accountId = repaymentAccounts[person.id] ?? defaultAccountId;
+    if (!accountId) { setError(split.direction === 'by_you' ? 'Choose the account you will pay from.' : 'Choose the account that received the repayment.'); return; }
+    const remaining = Math.max(0, person.share_paise - person.settled_paise);
+    let amountPaise: number | undefined;
+    if (amountInput !== undefined) {
+      const parsed = paise(amountInput);
+      if (parsed === null || parsed <= 100) { setError('Enter a payment greater than ₹1.00.'); return; }
+      if (parsed > remaining) { setError(`Payment cannot be more than the remaining ${formatPaiseAsInr(remaining)}.`); return; }
+      amountPaise = parsed;
+    }
     setError('');
-    try { await repay({ splitId, participantId, accountId }).unwrap(); }
-    catch (failure) { setError(detail(failure)); }
-  }
-
-  async function markOwedPaid(splitId: string, participantId: string) {
-    const accountId = repaymentAccounts[participantId] ?? defaultAccountId;
-    if (!accountId) { setError('Choose the account you will pay from.'); return; }
-    setError('');
-    try { await payMoneyOwed({ splitId, participantId, accountId }).unwrap(); }
+    try {
+      await recordSplitPayment({ splitId: split.id, participantId: person.id, accountId, amountPaise }).unwrap();
+      setPaymentAmounts((current) => ({ ...current, [person.id]: '' }));
+      setPartialPaymentOpen((current) => ({ ...current, [person.id]: false }));
+    }
     catch (failure) { setError(detail(failure)); }
   }
 
@@ -340,14 +388,15 @@ export function SplitsPage() {
   async function markAllRepaid(split: Split) {
     const targets = split.settlement_breakdown
       ? split.settlement_breakdown.transfers.filter((transfer) =>
-        transfer.creditor.trim().toLowerCase() === 'you' && !transfer.repayment_transaction_id)
+        transfer.creditor.trim().toLowerCase() === 'you' && !transfer.repayment_transaction_id &&
+        transfer.amount_paise > (transfer.settled_paise ?? 0))
         .map((transfer) => ({ id: transfer.debtor, name: transfer.debtor,
           accountId: repaymentAccounts[`${split.id}:${transfer.debtor}`] ?? defaultAccountId,
           amountPaise: transfer.amount_paise }))
       : split.participants.filter((person) => person.settled_paise < person.share_paise && !person.repayment_transaction_id)
         .map((person) => ({ id: person.id, name: person.name,
           accountId: repaymentAccounts[person.id] ?? defaultAccountId,
-          amountPaise: person.share_paise }));
+          amountPaise: person.share_paise - person.settled_paise }));
     if (targets.length === 0) return;
     if (targets.some((target) => !activeAccounts.some((account) => account.id === target.accountId))) {
       setError('Choose an active receiving account for every unpaid person.');
@@ -472,96 +521,6 @@ export function SplitsPage() {
           <Button type='button' variant='secondary' onClick={() => setOwedOpen(false)}>Cancel</Button></div>
       </form>
     </Card>}
-    {error && <p role='alert' className='rounded-xl bg-red-500/10 p-3 text-sm text-red-300'>{error}</p>}
-    <section className='space-y-3' aria-labelledby='group-settlements-heading'>
-      <div>
-        <h2 id='group-settlements-heading' className='font-semibold text-[var(--text-primary)]'>Group settlements</h2>
-        <p className='text-xs text-[var(--text-muted)]'>Confirmed plans stay here. Only payments you made or received appear in Transactions.</p>
-      </div>
-      {loadingSettlementPlans ? <p className='text-sm text-[var(--text-muted)]'>Loading group settlements…</p>
-        : settlementPlansError ? <p role='alert' className='text-sm text-red-400'>Could not load group settlements. Try refreshing this page.</p>
-          : settlementPlans.length === 0 ? <Card className='p-4 text-sm text-[var(--text-muted)]'>
-            No saved group settlements yet. Review a plan, then select “Save plan and wallet expenses” to add it here.
-          </Card> : settlementPlans.map((plan) => {
-            const incoming = plan.transfers.filter((transfer) => transfer.creditor === 'You');
-            const dueToYou = incoming.reduce((total, transfer) => total + transfer.amount_paise, 0);
-            const received = incoming.filter((transfer) => transfer.settled_at)
-              .reduce((total, transfer) => total + transfer.amount_paise, 0);
-            const remaining = dueToYou - received;
-            const status = dueToYou === 0 ? 'No repayments due to you'
-              : remaining === 0 ? 'Received in full'
-                : received > 0 ? 'Partially received' : 'Awaiting repayments';
-            return <Card key={plan.id} id={`group-settlement-${plan.id}`}
-              className={`min-w-0 scroll-mt-6 space-y-3 p-4 ${focusedPlanId === plan.id ? 'ring-2 ring-[var(--brand-primary)]' : ''}`}>
-              <div className='flex min-w-0 flex-col gap-1 sm:flex-row sm:items-start sm:justify-between'>
-                <h3 className='min-w-0 break-words font-semibold text-[var(--text-primary)]'>{plan.title}</h3>
-                <span className='text-xs font-semibold text-[var(--brand-primary)]'>{status}</span>
-              </div>
-              <div className='grid grid-cols-2 gap-2 text-sm sm:grid-cols-4'>
-                <div className='min-w-0 rounded-lg bg-[var(--bg-elevated)] p-2'><p className='text-xs text-[var(--text-muted)]'>Total plan</p>
-                  <p className='break-words font-semibold text-[var(--text-primary)]'>{formatPaiseAsInr(plan.total_paise)}</p></div>
-                <div className='min-w-0 rounded-lg bg-[var(--bg-elevated)] p-2'><p className='text-xs text-[var(--text-muted)]'>Due to you</p>
-                  <p className='break-words font-semibold text-[var(--text-primary)]'>{formatPaiseAsInr(dueToYou)}</p></div>
-                <div className='min-w-0 rounded-lg bg-[var(--bg-elevated)] p-2'><p className='text-xs text-[var(--text-muted)]'>Received</p>
-                  <p className='break-words font-semibold text-[var(--positive)]'>{formatPaiseAsInr(received)}</p></div>
-                <div className='min-w-0 rounded-lg bg-[var(--bg-elevated)] p-2'><p className='text-xs text-[var(--text-muted)]'>Left to receive</p>
-                  <p className='break-words font-semibold text-[var(--text-primary)]'>{formatPaiseAsInr(remaining)}</p></div>
-              </div>
-              <p className='text-xs text-[var(--text-muted)]'>Total plan includes all bills. Repayment amounts include only transfers payable to you.</p>
-              <details className='rounded-lg border border-[var(--bg-border)] p-3'>
-                <summary className='cursor-pointer text-sm font-semibold text-[var(--brand-primary)]'>Repayments</summary>
-                <div className='mt-3 space-y-3'>
-                  {plan.transfers.length === 0 ? <p className='text-xs text-[var(--text-muted)]'>No repayments are needed.</p> : <>
-                    {[...plan.transfers].sort((a, b) => Number(Boolean(a.settled_at)) - Number(Boolean(b.settled_at)))
-                      .map((transfer) => <div key={transfer.id} className='flex min-w-0 flex-col gap-2 border-t border-[var(--bg-border)] pt-2 text-xs sm:flex-row sm:items-center sm:justify-between'>
-                        <span className='min-w-0 break-words text-[var(--text-primary)]'>{transfer.debtor} pays {transfer.creditor} · {formatPaiseAsInr(transfer.amount_paise)}</span>
-                        <div className='flex flex-col items-start gap-1 sm:items-end'>
-                          {transfer.settled_at ? <span className='text-[var(--positive)]'>Repaid</span> : <>
-                            {(transfer.creditor === 'You' || transfer.debtor === 'You') &&
-                              <label className='space-y-1 text-xs text-[var(--text-muted)]'>
-                                {transfer.creditor === 'You' ? 'Received in' : 'Paid from'}
-                                <select aria-label={`Account for repayment from ${transfer.debtor} to ${transfer.creditor}`}
-                                  className='block w-full max-w-40 rounded-lg border border-[var(--bg-border)] bg-[var(--bg-elevated)] p-1 text-xs text-[var(--text-primary)]'
-                                  value={settlementAccounts[transfer.id] ?? defaultAccountId}
-                                  onChange={(event) => setSettlementAccounts((current) => ({
-                                    ...current, [transfer.id]: event.target.value,
-                                  }))}>
-                                  {activeAccounts.length === 0 && <option value=''>Choose account</option>}
-                                  {activeAccounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}
-                                </select>
-                              </label>}
-                            <button type='button' disabled={settlingPlanTransferId !== null ||
-                              ((transfer.creditor === 'You' || transfer.debtor === 'You') &&
-                                !(settlementAccounts[transfer.id] ?? defaultAccountId))}
-                              className='rounded-lg bg-[var(--brand-primary)] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[var(--brand-hover)] disabled:opacity-50'
-                              onClick={() => void markPlanTransferSettled(plan.id, transfer)}>
-                              {settlingPlanTransferId === transfer.id ? 'Recording…' : 'Mark repaid'}
-                            </button>
-                          </>}
-                          {settlementFeedback[transfer.id] && <p
-                            role={settlementFeedback[transfer.id] === 'Repayment recorded.' ? 'status' : 'alert'}
-                            className={`max-w-64 text-xs ${settlementFeedback[transfer.id] === 'Repayment recorded.'
-                              ? 'text-[var(--positive)]' : 'text-red-400'}`}>
-                            {settlementFeedback[transfer.id]}
-                          </p>}
-                        </div>
-                      </div>)}
-                  </>}
-                </div>
-              </details>
-              {plan.transaction_ids.length > 0 && <div className='flex flex-wrap gap-2'>
-                {plan.transaction_ids.map((id, index) => {
-                  const transaction = transactions.find((item) => item.id === id);
-                  return <button key={id} type='button'
-                    className='max-w-full rounded-lg border border-[var(--bg-border)] px-3 py-2 text-left text-xs text-[var(--brand-primary)]'
-                    onClick={() => navigate(`/transactions?transactionId=${id}`)}>
-                    View {transaction?.merchant || `wallet expense ${index + 1}`}
-                  </button>;
-                })}
-              </div>}
-            </Card>;
-          })}
-    </section>
     {open && <Card className='space-y-4 p-5'>
       <h2 className='font-semibold text-[var(--text-primary)]'>
         {expense ? `Create a split for ${expenseLabel}` : 'Share a recorded expense'}
@@ -661,6 +620,140 @@ export function SplitsPage() {
         <Button isLoading={creating} onClick={confirm}>Create split</Button>
       </div>}
     </Card>}
+    {error && <p role='alert' className='text-sm text-red-400'>{error}</p>}
+    {error && <p role='alert' className='rounded-xl bg-red-500/10 p-3 text-sm text-red-300'>{error}</p>}
+    {personBalances.length > 0 && <details className='space-y-3'>
+      <summary className='cursor-pointer list-none rounded-xl border border-[var(--bg-border)] bg-[var(--bg-surface)] p-4'>
+        <h2 className='font-semibold text-[var(--text-primary)]'>Balances by person</h2>
+        <p className='mt-1 text-xs text-[var(--text-muted)]'>Expand to review mutual balances and settle them. Smaller balances are listed first.</p>
+      </summary>
+      <Card className='space-y-3 p-4'>
+        <p className='text-xs text-[var(--text-muted)]'>Matching amounts in both directions are offset before any cash repayment. Review the details before confirming.</p>
+      <ul className='grid grid-cols-2 gap-2'>
+        {personBalances.map((balance) => <li key={balance.person.toLocaleLowerCase()} className='min-w-0 rounded-xl border border-[var(--bg-border)] p-3'>
+          <div className='flex flex-wrap items-center justify-between gap-2'>
+            <span className='font-medium text-[var(--text-primary)]'>{balance.person}</span>
+            <span className={`font-semibold tabular-nums ${balance.net_paise < 0 ? 'text-red-400' : 'text-[var(--positive)]'}`}>
+              {balance.net_paise < 0 ? '−' : '+'}{formatPaiseAsInr(Math.abs(balance.net_paise))}</span>
+          </div>
+          <p className='mt-1 text-xs text-[var(--text-muted)]'>Owes you {formatPaiseAsInr(balance.owed_to_you_paise)} · You owe {formatPaiseAsInr(balance.you_owe_paise)}</p>
+          <details className='mt-2 text-xs text-[var(--text-secondary)]'>
+            <summary className='cursor-pointer text-[var(--brand-primary)]'>View records ({balance.entries.length})</summary>
+            <ul className='mt-2 space-y-2'>
+              {balance.entries.map((record, index) => <li key={`${record.split_id}-${index}`} className='flex flex-wrap items-center justify-between gap-2'>
+                <span>{record.title} · {record.direction === 'to_you' ? 'owes you' : 'you owe'} {formatPaiseAsInr(record.remaining_paise)}</span>
+                <span className='flex gap-3'>
+                  <button type='button' className='text-[var(--brand-primary)]' onClick={() => navigate(`/splits?splitId=${record.split_id}`)}>View split</button>
+                  {splits.find((split) => split.id === record.split_id)?.transaction_id && <button type='button' className='text-[var(--brand-primary)]'
+                    onClick={() => navigate(`/transactions?transactionId=${splits.find((split) => split.id === record.split_id)?.transaction_id}`)}>View transaction</button>}
+                </span>
+              </li>)}
+            </ul>
+          </details>
+          <button type='button' disabled={settlingPersonBalance} className='mt-2 w-full rounded-lg border border-[var(--brand-primary)]/40 px-3 py-1.5 text-xs font-semibold text-[var(--brand-primary)] disabled:opacity-50'
+            onClick={() => {
+              setError('');
+              setBalanceReview(balance);
+              setBalanceSettlementAmount(balance.net_paise === 0 ? '' : (Math.abs(balance.net_paise) / 100).toFixed(2));
+              setBalanceSettlementAccountId(defaultAccountId);
+            }}>{balance.net_paise === 0 ? 'Review offset' : 'Settle balance'}</button>
+        </li>)}
+      </ul>
+      </Card>
+    </details>}
+    {loadingPersonBalances && <p className='text-xs text-[var(--text-muted)]'>Loading balances by person…</p>}
+    <details className='space-y-3'>
+      <summary className='cursor-pointer list-none rounded-xl border border-[var(--bg-border)] bg-[var(--bg-surface)] p-4'>
+        <h2 id='group-settlements-heading' className='font-semibold text-[var(--text-primary)]'>Group settlements</h2>
+        <p className='mt-1 text-xs text-[var(--text-muted)]'>Expand to review saved plans and repayments.</p>
+      </summary>
+      <section className='space-y-3' aria-labelledby='group-settlements-heading'>
+        <p className='text-xs text-[var(--text-muted)]'>Confirmed plans stay here. Only payments you made or received appear in Transactions.</p>
+      {loadingSettlementPlans ? <p className='text-sm text-[var(--text-muted)]'>Loading group settlements…</p>
+        : settlementPlansError ? <p role='alert' className='text-sm text-red-400'>Could not load group settlements. Try refreshing this page.</p>
+          : settlementPlans.length === 0 ? <Card className='p-4 text-sm text-[var(--text-muted)]'>
+            No saved group settlements yet. Review a plan, then select “Save plan and wallet expenses” to add it here.
+          </Card> : settlementPlans.map((plan) => {
+            const incoming = plan.transfers.filter((transfer) => transfer.creditor === 'You');
+            const dueToYou = incoming.reduce((total, transfer) => total + transfer.amount_paise, 0);
+            const received = incoming.filter((transfer) => transfer.settled_at)
+              .reduce((total, transfer) => total + transfer.amount_paise, 0);
+            const remaining = dueToYou - received;
+            const status = dueToYou === 0 ? 'No repayments due to you'
+              : remaining === 0 ? 'Received in full'
+                : received > 0 ? 'Partially received' : 'Awaiting repayments';
+            return <Card key={plan.id} id={`group-settlement-${plan.id}`}
+              className={`min-w-0 scroll-mt-6 space-y-3 p-4 ${focusedPlanId === plan.id ? 'ring-2 ring-[var(--brand-primary)]' : ''}`}>
+              <div className='flex min-w-0 flex-col gap-1 sm:flex-row sm:items-start sm:justify-between'>
+                <h3 className='min-w-0 break-words font-semibold text-[var(--text-primary)]'>{plan.title}</h3>
+                <span className='text-xs font-semibold text-[var(--brand-primary)]'>{status}</span>
+              </div>
+              <div className='grid grid-cols-2 gap-2 text-sm sm:grid-cols-4'>
+                <div className='min-w-0 rounded-lg bg-[var(--bg-elevated)] p-2'><p className='text-xs text-[var(--text-muted)]'>Total plan</p>
+                  <p className='break-words font-semibold text-[var(--text-primary)]'>{formatPaiseAsInr(plan.total_paise)}</p></div>
+                <div className='min-w-0 rounded-lg bg-[var(--bg-elevated)] p-2'><p className='text-xs text-[var(--text-muted)]'>Due to you</p>
+                  <p className='break-words font-semibold text-[var(--text-primary)]'>{formatPaiseAsInr(dueToYou)}</p></div>
+                <div className='min-w-0 rounded-lg bg-[var(--bg-elevated)] p-2'><p className='text-xs text-[var(--text-muted)]'>Received</p>
+                  <p className='break-words font-semibold text-[var(--positive)]'>{formatPaiseAsInr(received)}</p></div>
+                <div className='min-w-0 rounded-lg bg-[var(--bg-elevated)] p-2'><p className='text-xs text-[var(--text-muted)]'>Left to receive</p>
+                  <p className='break-words font-semibold text-[var(--text-primary)]'>{formatPaiseAsInr(remaining)}</p></div>
+              </div>
+              <p className='text-xs text-[var(--text-muted)]'>Total plan includes all bills. Repayment amounts include only transfers payable to you.</p>
+              <details className='rounded-lg border border-[var(--bg-border)] p-3'>
+                <summary className='cursor-pointer text-sm font-semibold text-[var(--brand-primary)]'>Repayments</summary>
+                <div className='mt-3 space-y-3'>
+                  {plan.transfers.length === 0 ? <p className='text-xs text-[var(--text-muted)]'>No repayments are needed.</p> : <>
+                    {[...plan.transfers].sort((a, b) => Number(Boolean(a.settled_at)) - Number(Boolean(b.settled_at)))
+                      .map((transfer) => <div key={transfer.id} className='flex min-w-0 flex-col gap-2 border-t border-[var(--bg-border)] pt-2 text-xs sm:flex-row sm:items-center sm:justify-between'>
+                        <span className='min-w-0 break-words text-[var(--text-primary)]'>{transfer.debtor} pays {transfer.creditor} · {formatPaiseAsInr(transfer.amount_paise)}</span>
+                        <div className='flex flex-col items-start gap-1 sm:items-end'>
+                          {transfer.settled_at ? <span className='text-[var(--positive)]'>Repaid</span> : <>
+                            {(transfer.creditor === 'You' || transfer.debtor === 'You') &&
+                              <label className='space-y-1 text-xs text-[var(--text-muted)]'>
+                                {transfer.creditor === 'You' ? 'Received in' : 'Paid from'}
+                                <select aria-label={`Account for repayment from ${transfer.debtor} to ${transfer.creditor}`}
+                                  className='block w-full max-w-40 rounded-lg border border-[var(--bg-border)] bg-[var(--bg-elevated)] p-1 text-xs text-[var(--text-primary)]'
+                                  value={settlementAccounts[transfer.id] ?? defaultAccountId}
+                                  onChange={(event) => setSettlementAccounts((current) => ({
+                                    ...current, [transfer.id]: event.target.value,
+                                  }))}>
+                                  {activeAccounts.length === 0 && <option value=''>Choose account</option>}
+                                  {activeAccounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}
+                                </select>
+                              </label>}
+                            <button type='button' disabled={settlingPlanTransferId !== null ||
+                              ((transfer.creditor === 'You' || transfer.debtor === 'You') &&
+                                !(settlementAccounts[transfer.id] ?? defaultAccountId))}
+                              className='rounded-lg bg-[var(--brand-primary)] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[var(--brand-hover)] disabled:opacity-50'
+                              onClick={() => void markPlanTransferSettled(plan.id, transfer)}>
+                              {settlingPlanTransferId === transfer.id ? 'Recording…' : 'Mark repaid'}
+                            </button>
+                          </>}
+                          {settlementFeedback[transfer.id] && <p
+                            role={settlementFeedback[transfer.id] === 'Repayment recorded.' ? 'status' : 'alert'}
+                            className={`max-w-64 text-xs ${settlementFeedback[transfer.id] === 'Repayment recorded.'
+                              ? 'text-[var(--positive)]' : 'text-red-400'}`}>
+                            {settlementFeedback[transfer.id]}
+                          </p>}
+                        </div>
+                      </div>)}
+                  </>}
+                </div>
+              </details>
+              {plan.transaction_ids.length > 0 && <div className='flex flex-wrap gap-2'>
+                {plan.transaction_ids.map((id, index) => {
+                  const transaction = transactions.find((item) => item.id === id);
+                  return <button key={id} type='button'
+                    className='max-w-full rounded-lg border border-[var(--bg-border)] px-3 py-2 text-left text-xs text-[var(--brand-primary)]'
+                    onClick={() => navigate(`/transactions?transactionId=${id}`)}>
+                    View {transaction?.merchant || `wallet expense ${index + 1}`}
+                  </button>;
+                })}
+              </div>}
+            </Card>;
+          })}
+      </section>
+    </details>
     <section className='space-y-3'><h2 className='font-semibold text-[var(--text-primary)]'>Your split and IOU tracker</h2>
       {isLoading ? <p className='text-sm text-[var(--text-muted)]'>Loading splits…</p> : splits.length === 0 ?
         <Card className='p-5 text-sm text-[var(--text-muted)]'>No splits yet.</Card> : orderedSplits.map((split) =>
@@ -722,17 +815,20 @@ export function SplitsPage() {
               </ul>
             </details>}
             {split.settlement_breakdown ? (split.settlement_breakdown.transfers.filter((transfer) =>
-              transfer.creditor.trim().toLocaleLowerCase() === 'you').length > 0 ?
+              transfer.creditor.trim().toLocaleLowerCase() === 'you' && transfer.amount_paise >
+                (transfer.settled_paise ?? 0)).length > 0 ?
               split.settlement_breakdown.transfers.filter((transfer) =>
-                transfer.creditor.trim().toLocaleLowerCase() === 'you')
-                .sort((a, b) => Number(Boolean(a.repayment_transaction_id)) - Number(Boolean(b.repayment_transaction_id)))
+                transfer.creditor.trim().toLocaleLowerCase() === 'you' && transfer.amount_paise >
+                  (transfer.settled_paise ?? 0))
+                .sort((a, b) => Number(Boolean(a.repayment_transaction_id) || a.amount_paise <= (a.settled_paise ?? 0)) -
+                  Number(Boolean(b.repayment_transaction_id) || b.amount_paise <= (b.settled_paise ?? 0)))
                 .map((transfer, index) =>
                 <div key={`${transfer.debtor}-${index}`} className='flex min-w-0 flex-col gap-3 border-t border-[var(--bg-border)] pt-2 text-sm sm:flex-row sm:items-center sm:justify-between'>
-                  <span className='min-w-0 break-words text-[var(--text-primary)]'>{transfer.debtor} · {formatPaiseAsInr(transfer.amount_paise)} {transfer.repayment_transaction_id ? 'repaid' : 'due to you'}</span>
-                  {transfer.repayment_transaction_id ? <div className='flex flex-col items-end gap-1'>
-                    <span className='text-xs text-green-400'>Repaid</span>
-                    <button type='button' className='text-xs text-[var(--brand-primary)]'
-                      onClick={() => navigate(`/transactions?transactionId=${transfer.repayment_transaction_id}`)}>View repayment</button>
+                  <span className='min-w-0 break-words text-[var(--text-primary)]'>{transfer.debtor} · {formatPaiseAsInr(Math.max(0, transfer.amount_paise - (transfer.settled_paise ?? 0)))} {transfer.repayment_transaction_id ? 'repaid' : transfer.settled_paise ? 'partially repaid · remaining' : 'due to you'}</span>
+                  {transfer.repayment_transaction_id || transfer.amount_paise <= (transfer.settled_paise ?? 0) ? <div className='flex flex-col items-end gap-1'>
+                    <span className='text-xs text-green-400'>{transfer.repayment_transaction_id ? 'Repaid' : 'Settled by offset'}</span>
+                    {transfer.repayment_transaction_id && <button type='button' className='text-xs text-[var(--brand-primary)]'
+                      onClick={() => navigate(`/transactions?transactionId=${transfer.repayment_transaction_id}`)}>View repayment</button>}
                   </div> : <div className='flex flex-col items-end gap-1'>
                     <label className='space-y-1 text-xs text-[var(--text-muted)]'>Received in
                       <select aria-label={`Account receiving repayment from ${transfer.debtor}`}
@@ -753,40 +849,114 @@ export function SplitsPage() {
                 </div>) : <p className='border-t border-[var(--bg-border)] pt-2 text-xs text-[var(--text-muted)]'>No settlement amount is due to you.</p>) :
             [...split.participants].sort((a, b) =>
               Number(a.settled_paise >= a.share_paise) - Number(b.settled_paise >= b.share_paise))
-              .map((person) => <div key={person.id} className='flex min-w-0 flex-col gap-3 border-t border-[var(--bg-border)] pt-2 text-sm sm:flex-row sm:items-center sm:justify-between'>
-              <span className={`min-w-0 break-words ${split.kind === 'money_owed' && split.direction === 'by_you' ? 'text-red-400' : 'text-[var(--text-primary)]'}`}>
-                {split.kind === 'money_owed' && split.direction === 'by_you'
-                  ? `You owe ${person.name} · ${person.share_paise > person.settled_paise ? '−' : ''}${formatPaiseAsInr(person.share_paise - person.settled_paise)}`
-                  : `${person.name} · ${formatPaiseAsInr(person.share_paise)}`}</span>
-              {!split.settlement_breakdown && (person.settled_paise === person.share_paise ? <div className='flex flex-col items-end gap-1'>
-                <span className='text-green-400'>{split.kind === 'money_owed' && split.direction === 'by_you' ? 'Paid' : 'Repaid'}</span>
-                {person.repayment_transaction_id && <button type='button' className='text-xs text-[var(--brand-primary)]'
-                  onClick={() => navigate(`/transactions?transactionId=${person.repayment_transaction_id}`)}>View repayment</button>}
-              </div> :
-                <div className='flex flex-col items-end gap-1'>
-                  <label className='space-y-1 text-xs text-[var(--text-muted)]'>{split.kind === 'money_owed' && split.direction === 'by_you' ? 'Paid from' : 'Received in'}
-                    <select aria-label={`Account receiving repayment from ${person.name}`}
-                      className='block w-full max-w-40 rounded-lg border border-[var(--bg-border)] bg-[var(--bg-elevated)] p-1 text-xs text-[var(--text-primary)]'
-                      value={repaymentAccounts[person.id] ?? defaultAccountId}
-                      onChange={(event) => setRepaymentAccounts((current) => ({ ...current, [person.id]: event.target.value }))}>
-                      {activeAccounts.length === 0 && <option value=''>Choose account</option>}
-                      {activeAccounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}
-                    </select>
-                  </label>
-                  <button type='button' disabled={repaying || payingOwed || repayingAllSplitId !== null ||
-                    !(repaymentAccounts[person.id] ?? defaultAccountId)}
-                    className='rounded-lg bg-[var(--brand-primary)] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[var(--brand-hover)] disabled:opacity-50'
-                    onClick={() => split.kind === 'money_owed' && split.direction === 'by_you'
-                      ? markOwedPaid(split.id, person.id) : markRepaid(split.id, person.id)}>
-                    {split.kind === 'money_owed' && split.direction === 'by_you' ? 'Mark paid' : 'Mark repaid'}</button>
-                </div>)}
-            </div>)}
-            {!split.settlement_breakdown && split.outstanding_paise > 0 && <p className='text-xs text-[var(--text-muted)]'>
+              .map((person) => {
+                const remaining = Math.max(0, person.share_paise - person.settled_paise);
+                const ownerPays = split.kind === 'money_owed' && split.direction === 'by_you';
+                const amountText = paymentAmounts[person.id] ?? '';
+                const amountPaise = amountText ? paise(amountText) : null;
+                return <div key={person.id} className='space-y-2 border-t border-[var(--bg-border)] pt-2'>
+                  <div className='flex min-w-0 flex-col gap-3 text-sm sm:flex-row sm:items-start sm:justify-between'>
+                    <div className='min-w-0'>
+                      <p className={`break-words font-medium ${ownerPays ? 'text-red-400' : 'text-[var(--text-primary)]'}`}>
+                        {ownerPays ? `You owe ${person.name}` : `${person.name} owes you`}: {formatPaiseAsInr(remaining)} remaining
+                      </p>
+                      <p className='text-xs text-[var(--text-muted)]'>Original {formatPaiseAsInr(person.share_paise)} · Paid {formatPaiseAsInr(person.settled_paise)}</p>
+                    </div>
+                    {remaining > 0 ? <div className='flex w-full min-w-0 flex-col gap-2 sm:w-56 sm:shrink-0 sm:items-end'>
+                      <label className='w-full space-y-1 text-xs text-[var(--text-muted)]'>
+                        {ownerPays ? 'Pay from' : 'Received in'}
+                        <select aria-label={`Account for payment with ${person.name}`}
+                          className='block w-full rounded-lg border border-[var(--bg-border)] bg-[var(--bg-elevated)] p-2 text-xs text-[var(--text-primary)]'
+                          value={repaymentAccounts[person.id] ?? defaultAccountId}
+                          onChange={(event) => setRepaymentAccounts((current) => ({ ...current, [person.id]: event.target.value }))}>
+                          {activeAccounts.length === 0 && <option value=''>Choose account</option>}
+                          {activeAccounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}
+                        </select>
+                      </label>
+                      {partialPaymentOpen[person.id] && <label className='w-full space-y-1 text-xs text-[var(--text-muted)]'>
+                        Partial amount (greater than ₹1.00)
+                        <input className={inputClass} inputMode='decimal' placeholder={(remaining / 100).toFixed(2)}
+                          aria-label={`Partial payment amount for ${person.name}`} max={remaining / 100}
+                          value={amountText} onChange={(event) => setPaymentAmounts((current) => ({ ...current, [person.id]: event.target.value }))} />
+                      </label>}
+                      <div className='flex w-full flex-wrap justify-end gap-2'>
+                        <button type='button' disabled={recordingSplitPayment || repayingAllSplitId !== null}
+                          className='rounded-lg border border-[var(--brand-primary)]/40 px-3 py-1.5 text-xs font-semibold text-[var(--brand-primary)] disabled:opacity-50'
+                          onClick={() => {
+                            setPartialPaymentOpen((current) => ({ ...current, [person.id]: !current[person.id] }));
+                            setPaymentAmounts((current) => ({ ...current, [person.id]: '' }));
+                            setError('');
+                          }}>{partialPaymentOpen[person.id] ? 'Cancel' : 'Partial Payment'}</button>
+                        <button type='button' disabled={recordingSplitPayment || repayingAllSplitId !== null ||
+                          (partialPaymentOpen[person.id] && (!amountText || amountPaise === null || amountPaise <= 100 || amountPaise > remaining)) ||
+                          !activeAccounts.some((account) => account.id === (repaymentAccounts[person.id] ?? defaultAccountId))}
+                          className='rounded-lg bg-[var(--brand-primary)] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[var(--brand-hover)] disabled:opacity-50'
+                          onClick={() => void recordParticipantPayment(split, person, partialPaymentOpen[person.id] ? amountText : undefined)}>
+                          {partialPaymentOpen[person.id] ? 'Mark Partial Payment' : ownerPays ? 'Mark paid' : 'Mark repaid'}
+                        </button>
+                      </div>
+                    </div> : <span className='text-xs font-medium text-green-400'>Fully paid</span>}
+                  </div>
+                  {person.payments?.length > 0 && <details className='text-xs text-[var(--text-secondary)]'>
+                    <summary className='cursor-pointer text-[var(--brand-primary)]'>Payment history ({person.payments.length})</summary>
+                    <ul className='mt-2 space-y-1'>
+                      {[...person.payments].sort((a, b) => b.created_at.localeCompare(a.created_at)).map((payment) => <li key={payment.id} className='flex flex-wrap justify-between gap-2'>
+                        <span>{new Date(payment.created_at).toLocaleString()} · {formatPaiseAsInr(payment.amount_paise)}
+                          {!payment.transaction_id && ' (balance offset)'}</span>
+                        {payment.transaction_id && <button type='button' className='text-[var(--brand-primary)]'
+                          onClick={() => navigate(`/transactions?transactionId=${payment.transaction_id}`)}>View transaction</button>}
+                      </li>)}
+                    </ul>
+                  </details>}
+                </div>;
+              })}            {!split.settlement_breakdown && split.outstanding_paise > 0 && <p className='text-xs text-[var(--text-muted)]'>
               {split.kind === 'money_owed' && split.direction === 'by_you'
                 ? 'Mark paid records an expense in the Split category and deducts it from the selected account.'
                 : 'Mark repaid records income in the Split category in the selected account.'}</p>}
             </>}
           </Card>)}
     </section>
+    {balanceReview && <div className='fixed inset-0 z-[100] flex items-center justify-center overflow-y-auto bg-black/70 p-4' role='presentation'
+      onMouseDown={(event) => { if (event.target === event.currentTarget && !settlingPersonBalance) setBalanceReview(null); }}>
+      <Card role='dialog' aria-modal='true' aria-labelledby='settle-balance-title' className='my-auto w-full max-w-lg space-y-4 p-5'>
+        <div>
+          <h2 id='settle-balance-title' className='text-lg font-semibold text-[var(--text-primary)]'>Review balance with {balanceReview.person}</h2>
+          <p className='mt-1 text-sm text-[var(--text-muted)]'>The app first cancels out what you owe each other. It then applies any cash payment to the smallest outstanding split entries first.</p>
+        </div>
+        <div className='grid grid-cols-2 gap-2 text-sm'>
+          <div className='rounded-lg bg-[var(--bg-elevated)] p-3'><p className='text-xs text-[var(--text-muted)]'>They owe you</p>
+            <p className='font-semibold text-[var(--text-primary)]'>{formatPaiseAsInr(balanceReview.owed_to_you_paise)}</p></div>
+          <div className='rounded-lg bg-[var(--bg-elevated)] p-3'><p className='text-xs text-[var(--text-muted)]'>You owe them</p>
+            <p className='font-semibold text-[var(--text-primary)]'>{formatPaiseAsInr(balanceReview.you_owe_paise)}</p></div>
+          <div className='rounded-lg bg-[var(--bg-elevated)] p-3'><p className='text-xs text-[var(--text-muted)]'>Canceled out</p>
+            <p className='font-semibold text-[var(--text-primary)]'>{formatPaiseAsInr(Math.min(balanceReview.owed_to_you_paise, balanceReview.you_owe_paise))}</p></div>
+          <div className='rounded-lg bg-[var(--bg-elevated)] p-3'><p className='text-xs text-[var(--text-muted)]'>Net balance</p>
+            <p className={`font-semibold ${balanceReview.net_paise < 0 ? 'text-red-400' : 'text-[var(--positive)]'}`}>
+              {balanceReview.net_paise === 0 ? 'Settled by offset' : `${balanceReview.net_paise < 0 ? 'You pay' : 'They pay'} ${formatPaiseAsInr(Math.abs(balanceReview.net_paise))}`}</p></div>
+        </div>
+        {balanceReview.net_paise !== 0 && <>
+          <label className='block space-y-1 text-sm text-[var(--text-secondary)]'>Cash amount to record (₹)
+            <input className={inputClass} inputMode='decimal' value={balanceSettlementAmount}
+              max={(Math.abs(balanceReview.net_paise) / 100).toFixed(2)}
+              onChange={(event) => setBalanceSettlementAmount(event.target.value)} />
+          </label>
+          <label className='block space-y-1 text-sm text-[var(--text-secondary)]'>Wallet account for this payment
+            <select className={inputClass} value={balanceSettlementAccountId}
+              onChange={(event) => setBalanceSettlementAccountId(event.target.value)}>
+              {activeAccounts.length === 0 && <option value=''>No active account</option>}
+              {activeAccounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}
+            </select>
+          </label>
+        </>}
+        <p className='rounded-lg border border-[var(--bg-border)] p-3 text-xs text-[var(--text-muted)]'>Confirming updates the existing split and IOU records. Only the cash amount creates wallet transactions; an offset alone does not.</p>
+        {error && <p role='alert' className='text-sm text-red-400'>{error}</p>}
+        <div className='grid grid-cols-2 gap-2'>
+          <Button type='button' variant='secondary' disabled={settlingPersonBalance} onClick={() => setBalanceReview(null)}>Cancel</Button>
+          <Button type='button' isLoading={settlingPersonBalance} onClick={() => void confirmBalanceSettlement()}>
+            {balanceReview.net_paise === 0 ? 'Confirm offset' : 'Confirm settlement'}
+          </Button>
+        </div>
+      </Card>
+    </div>}
   </div>;
 }

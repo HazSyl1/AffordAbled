@@ -10,6 +10,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableLambda
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import END, START, StateGraph
 
 from app.domain.ports import GuardrailAssessment, GuardrailDecision
 from app.infrastructure.ai.agents.contracts import (
@@ -21,6 +22,7 @@ from app.infrastructure.ai.agents.contracts import (
 )
 from app.infrastructure.ai.agents.runtime import SpecialistRuntime
 from app.infrastructure.ai.agents.supervisor_graph import (
+    AgentGraphState,
     AgenticSupervisorGraph,
     _append_conversation_history,
     _category_creation_satisfied,
@@ -28,7 +30,9 @@ from app.infrastructure.ai.agents.supervisor_graph import (
     _explicit_action_clauses,
     _is_account_creation_reply,
     _is_complex_settlement_request,
+    _is_owed_payment_request,
     _is_receipt_upload_request,
+    _latest_current_datetime,
     _matches_observed_action,
     _obvious_specialist,
     _pending_itemized_split_followup,
@@ -42,6 +46,65 @@ from app.infrastructure.ai.agents.supervisor_graph import (
     _sync_task_contracts,
     _verify_task_contract,
 )
+
+
+@pytest.mark.parametrize('user_text', [
+    'I paid 500 to Piyush',
+    'I paid ₹500 to Piyush',
+    'Paid 500 rupees to Piyush',
+    'I paid Rujul 1000',
+    "Paid Piyush's split",
+    'Paid 500 to Piyush for his IOU',
+    'Piyush paid me',
+])
+def test_existing_iou_payment_routes_to_split_payment_tool(user_text: str) -> None:
+    assert _is_owed_payment_request(user_text)
+    assert _obvious_specialist(user_text) == 'split'
+    assert _required_tools(user_text, 'split') == {'record_owed_payment'}
+
+
+@pytest.mark.parametrize('user_text', ['I owe A ₹1,000', 'A owes me 1000'])
+def test_new_iou_statement_routes_to_owed_creation(user_text: str) -> None:
+    assert _obvious_specialist(user_text) == 'split'
+    assert _required_tools(user_text, 'split') == {'create_owed'}
+
+
+@pytest.mark.parametrize('user_text', [
+    'Settle balance with A', 'Settle up with Piyush', 'Settle with A',
+])
+def test_balance_settlement_routes_to_confirmed_split_balance_tool(user_text: str) -> None:
+    assert _obvious_specialist(user_text) == 'split'
+    assert _required_tools(user_text, 'split') == {'settle_person_balance'}
+
+
+def test_current_datetime_reducer_keeps_latest_trusted_clock() -> None:
+    assert _latest_current_datetime(
+        "2026-10-25T01:00:00+05:30",
+        "2026-10-25T01:01:00+05:30",
+    ) == "2026-10-25T01:01:00+05:30"
+
+
+@pytest.mark.asyncio
+async def test_current_datetime_accepts_parallel_graph_updates() -> None:
+    graph_builder = StateGraph(AgentGraphState)
+    graph_builder.add_node(
+        "older_clock",
+        lambda _state: {"current_datetime": "2026-10-25T01:01:00+05:30"},
+    )
+    graph_builder.add_node(
+        "newer_clock",
+        lambda _state: {"current_datetime": "2026-10-25T01:02:00+05:30"},
+    )
+    graph_builder.add_edge(START, "older_clock")
+    graph_builder.add_edge(START, "newer_clock")
+    graph_builder.add_edge("older_clock", END)
+    graph_builder.add_edge("newer_clock", END)
+
+    result = await graph_builder.compile().ainvoke({
+        "current_datetime": "2026-10-25T01:00:00+05:30",
+    })
+
+    assert result["current_datetime"] == "2026-10-25T01:02:00+05:30"
 
 
 def test_complex_group_bill_routes_to_review_before_transaction() -> None:
@@ -154,6 +217,103 @@ def test_task_verifier_accepts_partial_result_after_required_tool_recovers() -> 
             "tool_observations": [failed_observation],
         },
     )
+
+
+@pytest.mark.asyncio
+async def test_paid_historical_iou_does_not_block_verified_batch_completion() -> None:
+    task = "I owe Piyush 8000, Isha 222 Sarthak 12989 and Rujul 1555, out of this I've already paid Rujul"
+    graph = _graph()
+    supervisor = ScriptedSupervisor([])
+    graph._supervisor = supervisor  # type: ignore[assignment]
+    contract = TaskContract.model_validate(_sync_task_contracts([task], None, original_request=task)[0])
+    saved = [
+        {"id": str(uuid.uuid4()), "person": name, "amount_paise": amount, "direction": "by_you"}
+        for name, amount in (("Piyush", 800000), ("Isha", 22200), ("Sarthak", 1298900))
+    ]
+    observation = {
+        "task_id": contract.id, "tool": "create_owed_batch", "ok": True,
+        "data": {"payables": saved},
+    }
+    result = {
+        "specialist": "split", "task_id": contract.id, "status": "success",
+        "summary": "Recorded three outstanding debts; Rujul was already paid.",
+        "tool_observations": [observation],
+        "data": {"observed_actions": [observation]},
+    }
+
+    assert _verify_task_contract(contract, result)
+    update = await graph._supervise({
+        "messages": [HumanMessage(content=task)], "user_id": str(uuid.uuid4()),
+        "task_request": task, "task_queue": [task], "task_contracts": [contract.model_dump()],
+        "results": [result],
+    })
+
+    assert update["tasks_completed"] is True
+    assert update["task_queue"] == []
+    assert update["final_response"] == result["summary"]
+    assert TaskContract.model_validate(update["task_contracts"][0]).status == "completed"
+    assert supervisor.calls == []
+
+
+@pytest.mark.parametrize("change", [
+    "missing_unpaid", "wrong_amount", "wrong_direction", "saved_paid", "missing_id",
+])
+def test_owed_batch_contract_rejects_incorrect_saved_obligations(change: str) -> None:
+    task = "I owe Piyush 8000, Isha 222 and Rujul 1555; I've already paid Rujul"
+    contract = TaskContract.model_validate(_sync_task_contracts([task], None, original_request=task)[0])
+    saved = [
+        {"id": str(uuid.uuid4()), "person": "Piyush", "amount_paise": 800000, "direction": "by_you"},
+        {"id": str(uuid.uuid4()), "person": "Isha", "amount_paise": 22200, "direction": "by_you"},
+    ]
+    if change == "missing_unpaid":
+        saved.pop()
+    elif change == "wrong_amount":
+        saved[1]["amount_paise"] = 22300
+    elif change == "wrong_direction":
+        saved[0]["direction"] = "to_you"
+    elif change == "saved_paid":
+        saved.append({"id": str(uuid.uuid4()), "person": "Rujul", "amount_paise": 155500, "direction": "by_you"})
+    else:
+        saved[0].pop("id")
+
+    assert not _verify_task_contract(contract, {
+        "specialist": "split", "task_id": contract.id, "status": "success",
+        "tool_observations": [{
+            "task_id": contract.id, "tool": "create_owed_batch", "ok": True,
+            "data": {"payables": saved},
+        }],
+    })
+
+
+def test_partially_paid_iou_remains_in_batch_verification() -> None:
+    task = "I owe Piyush 8000 and Rujul 1555, I've already paid Rujul 500"
+    action = {"tool": "create_owed_batch", "ok": True, "data": {"payables": [
+        {"id": str(uuid.uuid4()), "person": "Piyush", "amount_paise": 800000, "direction": "by_you"},
+    ]}}
+    assert not _matches_observed_action(task, action)
+
+
+def test_batch_iou_verification_supports_fraction_amounts_and_receivables() -> None:
+    payable_task = "I owe Piyush 3814.17 and Ruzul 3120/5"
+    payable_action = {"tool": "create_owed_batch", "ok": True, "data": {"payables": [
+        {"id": str(uuid.uuid4()), "person": "Piyush", "amount_paise": 381417, "direction": "by_you"},
+        {"id": str(uuid.uuid4()), "person": "Ruzul", "amount_paise": 62400, "direction": "by_you"},
+    ]}}
+    assert _matches_observed_action(payable_task, payable_action)
+
+    receivable_task = "Piyush owes me 1000, Isha 222"
+    receivable_action = {"tool": "create_owed_batch", "ok": True, "data": {"receivables": [
+        {"id": str(uuid.uuid4()), "person": "Piyush", "amount_paise": 100000, "direction": "to_you"},
+        {"id": str(uuid.uuid4()), "person": "Isha", "amount_paise": 22200, "direction": "to_you"},
+    ]}}
+    contract = TaskContract.model_validate(
+        _sync_task_contracts([receivable_task], None, original_request=receivable_task)[0]
+    )
+    assert _verify_task_contract(contract, {
+        "specialist": "split", "task_id": contract.id, "status": "success",
+        "tool_observations": [{"task_id": contract.id, **receivable_action}],
+    })
+    assert not _matches_observed_action(receivable_task, payable_action)
 
 
 def test_recovered_custom_split_summary_uses_saved_shares_instead_of_model_math() -> None:

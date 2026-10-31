@@ -364,6 +364,36 @@ class CreateOwedBatchToolInput(BaseModel):
     arguments: CreateOwedBatchArguments
 
 
+class RecordOwedPaymentArguments(BaseModel):
+    person_name: str = Field(min_length=1, max_length=100, description='Name of the other person in the IOU.')
+    direction: Literal['to_you', 'by_you'] = Field(
+        description='by_you when the user pays the person; to_you when the person pays the user.'
+    )
+    amount_rupees: Decimal | None = Field(
+        default=None, gt=0, description='Partial payment in rupees; omit to pay the full remaining balance.'
+    )
+    title: str | None = Field(default=None, max_length=255, description='Optional IOU title to disambiguate records.')
+    account_name: str | None = Field(default=None, description='Wallet account name; omit to use the active default.')
+
+
+class RecordOwedPaymentToolInput(BaseModel):
+    arguments: RecordOwedPaymentArguments
+
+
+class SettlePersonBalanceArguments(BaseModel):
+    person_name: str = Field(min_length=1, max_length=100, description='Exact saved person name to settle with.')
+    amount_rupees: Decimal | None = Field(
+        default=None, gt=0, description='Optional partial cash settlement after mutual balances are offset.'
+    )
+    account_name: str | None = Field(
+        default=None, description='Wallet account for cash; omit to use the active default.',
+    )
+
+
+class SettlePersonBalanceToolInput(BaseModel):
+    arguments: SettlePersonBalanceArguments
+
+
 class CreateSettlementDraftArguments(BaseModel):
     data: SettlementInput = Field(description='Complete verified bills, charges, discounts, fees, payments, and debts.')
 
@@ -518,6 +548,7 @@ _TOOL_SCHEMAS: dict[str, type[BaseModel]] = {
     "list_categories": EmptyArgumentsToolInput,
     "list_transactions": EmptyArgumentsToolInput,
     "list_split_contacts": EmptyArgumentsToolInput,
+    "list_person_split_balances": EmptyArgumentsToolInput,
     "extract_transaction": EmptyArgumentsToolInput,
     "delete_account": EmptyArgumentsToolInput,
     "get_current_datetime": EmptyArgumentsToolInput,
@@ -539,6 +570,8 @@ _TOOL_SCHEMAS: dict[str, type[BaseModel]] = {
     "create_split": CreateSplitToolInput,
     "create_owed": CreateOwedToolInput,
     "create_owed_batch": CreateOwedBatchToolInput,
+    "record_owed_payment": RecordOwedPaymentToolInput,
+    "settle_person_balance": SettlePersonBalanceToolInput,
     "create_settlement_draft": CreateSettlementDraftToolInput,
     "set_split_contact_preference": SetSplitContactPreferenceToolInput,
     "get_transactions": GetTransactionsToolInput,
@@ -600,8 +633,9 @@ _TOOL_DESCRIPTIONS = {
         "optional exact category_name limits both windows consistently."
     ),
     "get_split_summary": (
-        "Read split and standalone receivable balances. Filter by kind, settled status, or participant; rank by "
-        "outstanding amount, creation time, or title and set a bounded limit."
+        "Read expense splits and standalone IOUs, including amounts owed in either direction, partial payments, "
+        "linked transactions, and net signed balances by person. Filter by kind, direction, settled status, or "
+        "participant; rank by outstanding amount, creation time, or title and set a bounded limit."
     ),
     "list_split_contacts": (
         "Read prior split names and explicitly confirmed dietary preferences. Preferences guide suggestions "
@@ -634,6 +668,23 @@ _TOOL_DESCRIPTIONS = {
         "Pass the quoted rupee amount and explicit divided_by separately (e.g. 3120/5 -> amount_rupees=3120, "
         "divided_by=5); the tool performs exact decimal arithmetic and converts to paise. Do not include the owner; "
         "ask if a listed name matches the owner's profile. Use only when each person and amount is clear."
+    ),
+    "record_owed_payment": (
+        "Record a payment against an existing split or standalone IOU. Use direction=by_you for the user's outgoing "
+        "payment and direction=to_you when the other person paid the user. amount_rupees is the exact partial "
+        "payment; omit it only when the user explicitly says they paid the full remaining amount. Resolve the active "
+        "default account if account_id is omitted. If multiple open records match, ask which record before paying. "
+        "This creates a linked Split-category expense/income transaction and updates the IOU balance atomically."
+    ),
+    "list_person_split_balances": (
+        "Read current per-person balances across expense splits and standalone IOUs, including partial payments. "
+        "Balances are ranked smallest absolute net amount first; mutual incoming/outgoing amounts are both shown."
+    ),
+    "settle_person_balance": (
+        "Review and settle all mutual split/IOU balances with one person. It offsets what each side owes, then "
+        "records an optional partial or full cash remainder against existing splits, smallest split first. "
+        "This tool always shows a review and requires explicit user confirmation before changing balances or "
+        "wallet accounts."
     ),
     "create_settlement_draft": (
         "Calculate and save a review-only draft for a complex group settlement. Provide every bill and who paid it. "
@@ -958,6 +1009,7 @@ class ToolBoundSpecialistRuntime:
                 "create_split",
                 "create_owed",
                 "create_owed_batch",
+                "record_owed_payment",
                 "create_settlement_draft",
                 "set_split_contact_preference",
                 "get_account_balances",

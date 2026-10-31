@@ -6,6 +6,7 @@ export interface SplitParticipant {
   share_paise: number;
   settled_paise: number;
   repayment_transaction_id: string | null;
+  payments: { id: string; amount_paise: number; transaction_id: string | null; created_at: string }[];
 }
 
 export interface Split {
@@ -26,7 +27,10 @@ export interface Split {
     remainder_paise: number;
     contributions: { person: string; amount_paise: number }[];
     debts: { debtor: string; creditor: string; amount_paise: number }[];
-    transfers: { debtor: string; creditor: string; amount_paise: number; repayment_transaction_id?: string | null }[];
+    transfers: {
+      debtor: string; creditor: string; amount_paise: number; settled_paise?: number;
+      repayment_transaction_id?: string | null;
+    }[];
     quantity_allocations: {
       item_name: string; people: string[]; quantity_per_person: number;
       unit_price_paise: number; total_paise: number;
@@ -45,6 +49,21 @@ export interface SplitPreferenceSuggestion {
   name: string;
   suggested_preference: 'vegetarian';
   evidence_splits: number;
+}
+
+export interface PersonSplitBalance {
+  person: string;
+  owed_to_you_paise: number;
+  you_owe_paise: number;
+  net_paise: number;
+  entries: {
+    split_id: string;
+    participant_id: string;
+    title: string;
+    direction: 'to_you' | 'by_you';
+    remaining_paise: number;
+    created_at: string;
+  }[];
 }
 
 export interface CreateSplitRequest {
@@ -72,6 +91,20 @@ export interface UpdateSplitRequest {
 const splitsApi = apiClient.injectEndpoints({
   endpoints: (builder) => ({
     listSplits: builder.query<Split[], void>({ query: () => '/splits', providesTags: ['Split'] }),
+    listPersonSplitBalances: builder.query<PersonSplitBalance[], void>({
+      query: () => '/splits/balances', providesTags: ['Split'],
+    }),
+    settlePersonSplitBalance: builder.mutation<{
+      person: string; offset_paise: number; cash_direction: 'to_you' | 'by_you' | null;
+      cash_paise: number; net_before_paise: number; net_after_paise: number;
+      split_ids: string[]; transactions: { id: string; split_id: string; amount_paise: number }[];
+    }, {
+      person_name: string; account_id?: string; amount_paise?: number;
+      expected_owed_to_you_paise: number; expected_you_owe_paise: number;
+    }>({
+      query: (body) => ({ url: '/splits/balances/settle', method: 'POST', body }),
+      invalidatesTags: ['Split', 'Transaction', 'Account', 'Category'],
+    }),
     listSplitContacts: builder.query<string[], void>({ query: () => '/splits/contacts', providesTags: ['Split'] }),
     listSplitContactPreferences: builder.query<SplitContactPreference[], void>({
       query: () => '/splits/contacts/preferences', providesTags: ['Split'],
@@ -119,6 +152,15 @@ const splitsApi = apiClient.injectEndpoints({
       }),
       invalidatesTags: ['Split', 'Transaction', 'Account', 'Category'],
     }),
+    recordSplitPayment: builder.mutation<Split, {
+      splitId: string; participantId: string; accountId: string; amountPaise?: number;
+    }>({
+      query: ({ splitId, participantId, accountId, amountPaise }) => ({
+        url: `/splits/${splitId}/participants/${participantId}/payments`, method: 'POST',
+        body: { account_id: accountId, ...(amountPaise === undefined ? {} : { amount_paise: amountPaise }) },
+      }),
+      invalidatesTags: ['Split', 'Transaction', 'Account', 'Category'],
+    }),
     repaySettlementTransfer: builder.mutation<Split, { splitId: string; debtor: string; accountId: string }>({
       query: ({ splitId, debtor, accountId }) => ({
         url: `/splits/${splitId}/settlement-transfers/repay`, method: 'POST',
@@ -134,10 +176,12 @@ const splitsApi = apiClient.injectEndpoints({
 });
 
 export const {
-  useListSplitsQuery, useListSplitContactsQuery, useCreateSplitMutation, useCreateOwedMutation,
+  useListSplitsQuery, useListPersonSplitBalancesQuery, useSettlePersonSplitBalanceMutation,
+  useListSplitContactsQuery, useCreateSplitMutation, useCreateOwedMutation,
   useSettleSplitParticipantMutation,
   useDeleteSplitMutation, useUpdateSplitMutation, useRepaySplitParticipantMutation,
   useRepaySettlementTransferMutation,
+  useRecordSplitPaymentMutation,
   usePayMoneyOwedMutation,
   useListSplitContactPreferencesQuery, useSetSplitContactPreferenceMutation,
   useListSplitPreferenceSuggestionsQuery,

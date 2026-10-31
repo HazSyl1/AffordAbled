@@ -4,15 +4,21 @@ from app.infrastructure.database.models.category import CategoryModel
 from app.infrastructure.database.models.chat_message import ChatMessageModel
 from app.infrastructure.database.models.chat_thread import ChatThreadModel
 from app.infrastructure.database.models.complex_settlement import (
-    SettlementDraftModel, SettlementPlanModel, SettlementPlanTransactionModel, SettlementPlanTransferModel,
+    SettlementDraftModel,
+    SettlementPlanModel,
+    SettlementPlanTransactionModel,
+    SettlementPlanTransferModel,
 )
 from app.infrastructure.database.models.export_artifact import ExportArtifactModel
 from app.infrastructure.database.models.guardrail_log import GuardrailLogModel
 from app.infrastructure.database.models.memory import (
-    MemoryAnalysisOutboxModel, MemoryModel, MemoryOutboxModel, MemoryReviewEventModel,
+    MemoryAnalysisOutboxModel,
+    MemoryModel,
+    MemoryOutboxModel,
+    MemoryReviewEventModel,
 )
 from app.infrastructure.database.models.refresh_session import RefreshSessionModel
-from app.infrastructure.database.models.split import SplitModel, SplitParticipantModel
+from app.infrastructure.database.models.split import SplitModel, SplitParticipantModel, SplitPaymentModel
 from app.infrastructure.database.models.split_contact import SplitContactModel
 from app.infrastructure.database.models.transaction import TransactionModel
 from app.infrastructure.database.models.transaction_import import TransactionImportModel
@@ -33,6 +39,7 @@ __all__ = [
     'RefreshSessionModel',
     'SplitModel',
     'SplitParticipantModel',
+    'SplitPaymentModel',
     'SplitContactModel',
     'MemoryModel',
     'MemoryOutboxModel',

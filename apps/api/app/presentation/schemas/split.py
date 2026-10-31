@@ -42,12 +42,20 @@ class UpdateSplitRequest(BaseModel):
     participants: list[UpdateParticipantRequest] = Field(min_length=1, max_length=20)
 
 
+class SplitPaymentResponse(BaseModel):
+    id: uuid.UUID
+    amount_paise: int
+    transaction_id: uuid.UUID | None
+    created_at: datetime
+
+
 class ParticipantResponse(BaseModel):
     id: uuid.UUID
     name: str
     share_paise: int
     settled_paise: int
     repayment_transaction_id: uuid.UUID | None
+    payments: list[SplitPaymentResponse] = Field(default_factory=list)
 
 
 class SettleParticipantRequest(BaseModel):
@@ -60,6 +68,19 @@ class RepayParticipantRequest(BaseModel):
 
 class PayOwedRequest(BaseModel):
     account_id: uuid.UUID
+
+
+class RecordSplitPaymentRequest(BaseModel):
+    account_id: uuid.UUID
+    amount_paise: int | None = Field(default=None, gt=100)
+
+
+class SettleBalanceRequest(BaseModel):
+    person_name: str = Field(min_length=1, max_length=100)
+    account_id: uuid.UUID | None = None
+    amount_paise: int | None = Field(default=None, gt=100)
+    expected_owed_to_you_paise: int = Field(ge=0)
+    expected_you_owe_paise: int = Field(ge=0)
 
 
 class RepaySettlementTransferRequest(BaseModel):
@@ -131,9 +152,17 @@ class SplitResponse(BaseModel):
             total_paise=split.owner_share_paise + sum(person.share_paise for person in people),
             outstanding_paise=(
                 sum(
-                    int(transfer.get('amount_paise') or 0)
+                    max(
+                        0,
+                        int(transfer.get('amount_paise') or 0)
+                        - (
+                            int(transfer.get('amount_paise') or 0)
+                            if transfer.get('repayment_transaction_id')
+                            else int(transfer.get('settled_paise') or 0)
+                        ),
+                    )
                     for transfer in (split.settlement_breakdown or {}).get('transfers', [])
-                    if transfer.get('creditor') == 'You' and not transfer.get('repayment_transaction_id')
+                    if str(transfer.get('creditor') or '').strip().casefold() == 'you'
                 )
                 if split.settlement_breakdown is not None
                 else sum(person.share_paise - person.settled_paise for person in people)
@@ -144,6 +173,12 @@ class SplitResponse(BaseModel):
                     id=person.id, name=person.name,
                     share_paise=person.share_paise, settled_paise=person.settled_paise,
                     repayment_transaction_id=person.repayment_transaction_id,
+                    payments=[
+                        SplitPaymentResponse(
+                            id=payment.id, amount_paise=payment.amount_paise,
+                            transaction_id=payment.transaction_id, created_at=payment.created_at,
+                        ) for payment in person.payments
+                    ],
                 ) for person in people
             ],
             item_breakdown=split.item_breakdown,
