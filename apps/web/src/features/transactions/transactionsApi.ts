@@ -15,6 +15,8 @@ export interface Transaction {
   deleted_at: string | null;
   created_at: string;
   updated_at: string;
+  recurring_rule_id: string | null;
+  scheduled_for: string | null;
 }
 
 export interface CreateTransactionRequest {
@@ -26,6 +28,7 @@ export interface CreateTransactionRequest {
   merchant?: string;
   note?: string;
   occurred_at: string;
+  timezone?: string;
   review_event?: {
     action: 'accepted' | 'edited' | 'rejected' | 'discarded';
     source: string;

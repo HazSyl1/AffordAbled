@@ -33,6 +33,23 @@ logger = logging.getLogger(__name__)
 ToolHandler = Callable[[HandoffContext, dict[str, Any]], Awaitable[dict[str, Any]]]
 
 
+def _confirmation_question(tool_name: str, arguments: dict[str, Any]) -> str:
+    if tool_name == 'create_recurring_transaction':
+        amount = arguments.get('amount_rupees')
+        cadence = str(arguments.get('recurrence_unit') or 'scheduled')
+        interval = int(arguments.get('interval_count') or 1)
+        cadence_label = cadence if interval == 1 else f'every {interval} weeks'
+        start = arguments.get('anchor_at') or 'now'
+        end = arguments.get('end_at') or (
+            f"after {arguments['max_occurrences']} occurrences" if arguments.get('max_occurrences') else 'no end date'
+        )
+        return (
+            f"Please confirm this recurring {arguments.get('type', 'transaction')}: ₹{amount}, "
+            f"{cadence_label}, starting {start}, {end}. It will post automatically."
+        )
+    return f"Please confirm that you want to {tool_name.replace('_', ' ')}."
+
+
 def merge_verified_transaction_references(
     existing: list[dict[str, Any]] | None, events: list[dict[str, Any]] | None,
 ) -> list[dict[str, Any]]:
@@ -220,6 +237,52 @@ class CreateTransactionArguments(BaseModel):
 
 class CreateTransactionToolInput(BaseModel):
     arguments: CreateTransactionArguments
+
+
+class CreateRecurringTransactionArguments(BaseModel):
+    account_id: str = Field(min_length=1, description='ID returned by list_accounts.')
+    category_id: str = Field(min_length=1, description='ID returned by list_categories.')
+    type: Literal['expense', 'income']
+    amount_rupees: Decimal = Field(gt=0)
+    recurrence_unit: Literal['daily', 'weekly', 'monthly', 'yearly']
+    interval_count: int = Field(default=1, ge=1, le=52)
+    anchor_at: str | None = Field(default=None, description='ISO timestamp; omit to start now.')
+    end_at: str | None = None
+    max_occurrences: int | None = Field(default=None, ge=1, le=10000)
+    merchant: str | None = None
+    note: str | None = None
+    create_initial_transaction: bool = True
+    confirmed: bool = False
+
+
+class CreateRecurringTransactionToolInput(BaseModel):
+    arguments: CreateRecurringTransactionArguments
+
+
+class RecurringRuleIdArguments(BaseModel):
+    rule_id: str = Field(min_length=1, description='ID returned by list_recurring_transactions.')
+    confirmed: bool = False
+
+
+class RecurringRuleIdToolInput(BaseModel):
+    arguments: RecurringRuleIdArguments
+
+
+class UpdateRecurringTransactionArguments(RecurringRuleIdArguments):
+    account_id: str | None = None
+    category_id: str | None = None
+    amount_rupees: Decimal | None = Field(default=None, gt=0)
+    recurrence_unit: Literal['daily', 'weekly', 'monthly', 'yearly'] | None = None
+    interval_count: int | None = Field(default=None, ge=1, le=52)
+    anchor_at: str | None = None
+    end_at: str | None = None
+    max_occurrences: int | None = Field(default=None, ge=1, le=10000)
+    merchant: str | None = None
+    note: str | None = None
+
+
+class UpdateRecurringTransactionToolInput(BaseModel):
+    arguments: UpdateRecurringTransactionArguments
 
 
 class CreateTransactionBatchArguments(BaseModel):
@@ -564,6 +627,12 @@ _TOOL_SCHEMAS: dict[str, type[BaseModel]] = {
     "update_category": UpdateCategoryToolInput,
     "delete_category": DeleteCategoryToolInput,
     "create_transaction": CreateTransactionToolInput,
+    "create_recurring_transaction": CreateRecurringTransactionToolInput,
+    "list_recurring_transactions": EmptyArgumentsToolInput,
+    "pause_recurring_transaction": RecurringRuleIdToolInput,
+    "resume_recurring_transaction": RecurringRuleIdToolInput,
+    "update_recurring_transaction": UpdateRecurringTransactionToolInput,
+    "cancel_recurring_transaction": RecurringRuleIdToolInput,
     "create_transaction_batch": CreateTransactionBatchToolInput,
     "update_transaction": UpdateTransactionToolInput,
     "delete_transaction": TransactionIdToolInput,
@@ -603,6 +672,14 @@ _TOOL_DESCRIPTIONS = {
     "extract_transaction": "Extract fields from ambiguous transaction text or receipts; skip for clear requests.",
     "list_transactions": "Read user transactions for lookup requests; do not use to create or edit records.",
     "create_transaction": "Create one user transaction after resolving IDs; amount_rupees is in rupees.",
+    "create_recurring_transaction": (
+        "After explicit confirmation, create a fixed recurring expense or income and optionally today's first entry."
+    ),
+    "list_recurring_transactions": "List the user's recurring transaction rules and their IDs and statuses.",
+    "pause_recurring_transaction": "Pause a recurring rule; paused dates are intentionally skipped.",
+    "resume_recurring_transaction": "Resume a paused or attention-required rule at its next future occurrence.",
+    "update_recurring_transaction": "After confirmation, edit the future template or schedule of a recurring rule.",
+    "cancel_recurring_transaction": "Cancel a recurring rule after explicit confirmation; history remains unchanged.",
     "create_transaction_batch": (
         "Create multiple independent transactions only when the user explicitly requested them. Never use this to "
         "turn receipt line items into transactions; one receipt is one transaction for its grand total."
@@ -803,7 +880,7 @@ class SpecialistRuntime:
                 answer = interrupt(
                     {
                         "agent": self.name,
-                        "question": f"Please confirm that you want to {decision.tool.name.replace('_', ' ')}.",
+                        "question": _confirmation_question(decision.tool.name, tool_arguments),
                     }
                 )
                 if str(answer).strip().casefold() not in {"yes", "y", "confirm", "confirmed", "proceed"}:
@@ -1007,6 +1084,12 @@ class ToolBoundSpecialistRuntime:
                 "list_transactions",
                 "delete_transaction",
                 "restore_transaction",
+                "create_recurring_transaction",
+                "list_recurring_transactions",
+                "pause_recurring_transaction",
+                "resume_recurring_transaction",
+                "update_recurring_transaction",
+                "cancel_recurring_transaction",
                 "create_split",
                 "create_owed",
                 "create_owed_batch",
@@ -1224,7 +1307,7 @@ class ToolBoundSpecialistRuntime:
             }
             if name in self.destructive_tools and values.get("confirmed") is not True:
                 answer = interrupt(
-                    {"agent": self.name, "question": f"Please confirm that you want to {name.replace('_', ' ')}."}
+                    {"agent": self.name, "question": _confirmation_question(name, values)}
                 )
                 if str(answer).strip().casefold() not in {"yes", "y", "confirm", "confirmed", "proceed"}:
                     return json.dumps({"ok": False, "error": "destructive_action_not_confirmed"})

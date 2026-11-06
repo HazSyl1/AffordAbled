@@ -19,6 +19,7 @@ class CreateTransactionRequest(BaseModel):
     merchant: str | None = Field(default=None, max_length=255)
     note: str | None = None
     review_event: dict[str, Any] | None = None
+    timezone: str = Field(default='UTC', min_length=1, max_length=64)
 
 
 class UpdateTransactionRequest(BaseModel):
@@ -46,6 +47,8 @@ class TransactionResponse(BaseModel):
     deleted_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    recurring_rule_id: str | None = None
+    scheduled_for: datetime | None = None
 
     @classmethod
     def from_entity(cls, transaction: Transaction) -> Self:
@@ -62,4 +65,6 @@ class TransactionResponse(BaseModel):
             deleted_at=transaction.deleted_at,
             created_at=transaction.created_at,
             updated_at=transaction.updated_at,
+            recurring_rule_id=str(transaction.recurring_rule_id) if transaction.recurring_rule_id else None,
+            scheduled_for=transaction.scheduled_for,
         )

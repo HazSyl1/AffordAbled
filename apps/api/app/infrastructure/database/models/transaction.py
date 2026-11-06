@@ -16,6 +16,7 @@ class TransactionModel(Base):
             'user_id', 'source_turn_id', 'source_task_id', 'source_item_index',
             name='uq_transactions_chat_source',
         ),
+        UniqueConstraint('recurring_rule_id', 'scheduled_for', name='uq_transactions_recurring_occurrence'),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
@@ -46,6 +47,10 @@ class TransactionModel(Base):
     source_turn_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True, index=True)
     source_task_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
     source_item_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    recurring_rule_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey('recurring_transaction_rules.id', ondelete='SET NULL'), nullable=True, index=True,
+    )
+    scheduled_for: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

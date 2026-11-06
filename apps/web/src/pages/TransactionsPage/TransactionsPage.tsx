@@ -9,6 +9,7 @@ import { ThemedSelect } from '../../components/molecules/ThemedSelect';
 import { CreateTransactionForm } from '../../components/organisms/CreateTransactionForm';
 import type { CreateTransactionFormValues } from '../../components/organisms/CreateTransactionForm/CreateTransactionForm.schema';
 import { TransactionList } from '../../components/organisms/TransactionList';
+import { RecurringTransactionsPanel } from '../../components/organisms/RecurringTransactionsPanel';
 import { useListTransactionsQuery } from '../../features/transactions/transactionsApi';
 import type { Transaction } from '../../features/transactions/transactionsApi';
 import {
@@ -47,6 +48,7 @@ const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
 export function TransactionsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedTransactionId = searchParams.get('transactionId');
+  const activeTab = searchParams.get('tab') === 'recurring' ? 'recurring' : 'transactions';
   const { data: transactions } = useListTransactionsQuery();
   const [isAddTransactionSheetOpen, setIsAddTransactionSheetOpen] = useState(false);
   const [selectedTransaction, setSelectedTransaction] = useState<Transaction | null>(null);
@@ -217,6 +219,14 @@ export function TransactionsPage() {
         </div>
       </section>
 
+      <div className='mb-4 flex gap-2' role='tablist' aria-label='Transaction views'>
+        <Button type='button' variant={activeTab === 'transactions' ? 'primary' : 'secondary'} className='w-auto'
+          onClick={() => setSearchParams({})}>Transactions</Button>
+        <Button type='button' variant={activeTab === 'recurring' ? 'primary' : 'secondary'} className='w-auto'
+          onClick={() => setSearchParams({ tab: 'recurring' })}>Recurring</Button>
+      </div>
+
+      {activeTab === 'recurring' ? <RecurringTransactionsPanel /> : (
       <div className='grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_380px] lg:items-start'>
         <section>
           <Card className='p-4 md:p-5'>
@@ -230,6 +240,7 @@ export function TransactionsPage() {
           </Card>
         </section>
       </div>
+      )}
 
       <BottomSheet
         isOpen={isExportOpen}

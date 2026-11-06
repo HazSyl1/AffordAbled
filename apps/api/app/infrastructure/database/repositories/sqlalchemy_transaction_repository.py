@@ -29,6 +29,8 @@ class SqlAlchemyTransactionRepository:
             source_turn_id=transaction.source_turn_id,
             source_task_id=transaction.source_task_id,
             source_item_index=transaction.source_item_index,
+            recurring_rule_id=transaction.recurring_rule_id,
+            scheduled_for=transaction.scheduled_for,
             occurred_at=transaction.occurred_at,
             deleted_at=transaction.deleted_at,
             created_at=transaction.created_at,
@@ -79,6 +81,16 @@ class SqlAlchemyTransactionRepository:
             )
         )
         model = result.scalar_one_or_none()
+        return self._to_entity(model) if model else None
+
+    async def get_by_recurring_source(
+        self, user_id: uuid.UUID, rule_id: uuid.UUID, scheduled_for: datetime,
+    ) -> Transaction | None:
+        model = await self._session.scalar(select(TransactionModel).where(
+            TransactionModel.user_id == user_id,
+            TransactionModel.recurring_rule_id == rule_id,
+            TransactionModel.scheduled_for == scheduled_for,
+        ))
         return self._to_entity(model) if model else None
 
     async def list_for_user(self, user_id: uuid.UUID, *, include_deleted: bool = False) -> list[Transaction]:
@@ -299,4 +311,6 @@ class SqlAlchemyTransactionRepository:
             source_turn_id=model.source_turn_id,
             source_task_id=model.source_task_id,
             source_item_index=model.source_item_index,
+            recurring_rule_id=model.recurring_rule_id,
+            scheduled_for=model.scheduled_for,
         )

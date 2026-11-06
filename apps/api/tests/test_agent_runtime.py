@@ -23,11 +23,22 @@ from app.infrastructure.ai.agents.runtime import (
     _TOOL_SCHEMAS,
     SpecialistRuntime,
     ToolBoundSpecialistRuntime,
+    _confirmation_question,
     _persistent_tool_context,
     _tool_error_message,
     merge_verified_transaction_references,
 )
 from app.infrastructure.ai.tools.transaction_query_tools import TransactionQueryTools
+
+
+def test_recurring_confirmation_question_contains_schedule_and_auto_post_warning() -> None:
+    question = _confirmation_question('create_recurring_transaction', {
+        'type': 'income', 'amount_rupees': 50000, 'recurrence_unit': 'monthly',
+        'anchor_at': '2026-11-07T09:00:00+05:30',
+    })
+    assert '₹50000' in question
+    assert 'monthly' in question
+    assert 'post automatically' in question
 
 
 class ScriptedBrain:

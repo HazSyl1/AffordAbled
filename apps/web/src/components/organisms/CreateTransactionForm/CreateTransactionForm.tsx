@@ -20,6 +20,10 @@ import {
   useUpdateTransactionMutation,
 } from '../../../features/transactions/transactionsApi';
 import type { Transaction, TransactionType } from '../../../features/transactions/transactionsApi';
+import {
+  type RecurrenceUnit,
+  useCreateRecurringTransactionMutation,
+} from '../../../features/transactions/recurringTransactionsApi';
 import { useListSplitsQuery } from '../../../features/splits/splitsApi';
 import { DASHBOARD_CHAT_UI_TEXT } from '../../../constants';
 import { Badge } from '../../atoms/Badge';
@@ -125,8 +129,13 @@ export function CreateTransactionForm({
   const isEditing = Boolean(transactionId);
   const [splitAfterSave, setSplitAfterSave] = useState(false);
   const [isSplitPromptOpen, setIsSplitPromptOpen] = useState(false);
+  const [repeatTransaction, setRepeatTransaction] = useState(false);
+  const [recurrenceUnit, setRecurrenceUnit] = useState<RecurrenceUnit>('monthly');
+  const [weeklyInterval, setWeeklyInterval] = useState('1');
+  const [recurrenceEndDate, setRecurrenceEndDate] = useState('');
   const formRef = useRef<HTMLFormElement>(null);
   const [createTransaction] = useCreateTransactionMutation();
+  const [createRecurringTransaction] = useCreateRecurringTransactionMutation();
   const [updateTransaction] = useUpdateTransactionMutation();
   const [createAccount, { isLoading: isCreatingAccount }] = useCreateAccountMutation();
   const [createCategory, { isLoading: isCreatingCategory }] = useCreateCategoryMutation();
@@ -229,6 +238,7 @@ export function CreateTransactionForm({
       type: values.type,
       amount_paise: Math.round(Number(values.amountRupees) * 100),
       occurred_at: new Date(values.occurredAt).toISOString(),
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
       category_id: values.type === 'transfer' ? undefined : values.categoryId || undefined,
       to_account_id: values.type === 'transfer' ? values.toAccountId || undefined : undefined,
       merchant: values.merchant?.trim() || undefined,
@@ -271,6 +281,23 @@ export function CreateTransactionForm({
           transactionId,
           body: payload,
         }).unwrap();
+      } else if (repeatTransaction && (values.type === 'expense' || values.type === 'income')) {
+        const result = await createRecurringTransaction({
+          account_id: values.accountId,
+          category_id: values.categoryId || '',
+          type: values.type,
+          amount_paise: Math.round(Number(values.amountRupees) * 100),
+          anchor_at: new Date(values.occurredAt).toISOString(),
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+          recurrence_unit: recurrenceUnit,
+          interval_count: recurrenceUnit === 'weekly' ? Number(weeklyInterval) : 1,
+          end_at: recurrenceEndDate ? new Date(`${recurrenceEndDate}T23:59:59`).toISOString() : undefined,
+          create_initial_transaction: true,
+          merchant: values.merchant?.trim() || undefined,
+          note: values.note?.trim() || undefined,
+        }).unwrap();
+        if (!result.initial_transaction) throw new Error('Initial transaction was not created.');
+        savedTransaction = result.initial_transaction;
       } else {
         savedTransaction = await createTransaction(payload).unwrap();
       }
@@ -287,6 +314,7 @@ export function CreateTransactionForm({
       setQuickAccountTarget('source');
       reset(resolveInitialValues(isEditing ? values : initialValues));
       setSplitAfterSave(false);
+      setRepeatTransaction(false);
       onSuccess?.(savedTransaction, openSplit);
       if (openSplit) {
         navigate(`/splits/new?transactionId=${savedTransaction.id}`);
@@ -617,6 +645,61 @@ export function CreateTransactionForm({
         <Input id='transaction-note' placeholder='Add context' {...register('note')} />
       </FormField>
 
+      {!isEditing && (transactionType === 'expense' || transactionType === 'income') ? (
+        <div className='mb-4 rounded-xl border border-[var(--bg-border)] bg-[var(--bg-elevated)] p-3'>
+          <label className='flex cursor-pointer items-start gap-3 text-sm text-[var(--text-primary)]'>
+            <input
+              type='checkbox'
+              className='mt-0.5 h-5 w-5 accent-[var(--brand-primary)]'
+              checked={repeatTransaction}
+              onChange={(event) => setRepeatTransaction(event.target.checked)}
+            />
+            <span>
+              <span className='block font-semibold'>Repeat this transaction</span>
+              <span className='block text-xs text-[var(--text-muted)]'>
+                Save this entry now and post future entries automatically.
+              </span>
+            </span>
+          </label>
+          {repeatTransaction ? (
+            <div className='mt-3 grid grid-cols-1 gap-3 md:grid-cols-3'>
+              <label className='text-xs text-[var(--text-secondary)]'>Frequency
+                <ThemedSelect
+                  id='recurrence-unit'
+                  value={recurrenceUnit}
+                  placeholder='Frequency'
+                  options={[
+                    { label: 'Daily', value: 'daily' },
+                    { label: 'Weekly', value: 'weekly' },
+                    { label: 'Monthly', value: 'monthly' },
+                    { label: 'Yearly', value: 'yearly' },
+                  ]}
+                  onChange={(value) => setRecurrenceUnit(value as RecurrenceUnit)}
+                />
+              </label>
+              {recurrenceUnit === 'weekly' ? (
+                <label className='text-xs text-[var(--text-secondary)]'>Every N weeks
+                  <Input
+                    type='number'
+                    min='1'
+                    max='52'
+                    value={weeklyInterval}
+                    onChange={(event) => setWeeklyInterval(event.target.value)}
+                  />
+                </label>
+              ) : null}
+              <label className='text-xs text-[var(--text-secondary)]'>End date (optional)
+                <Input
+                  type='date'
+                  value={recurrenceEndDate}
+                  onChange={(event) => setRecurrenceEndDate(event.target.value)}
+                />
+              </label>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
       {formError ? (
         <p className='mb-4 text-sm text-[var(--negative)]' role='alert'>
           {formError}
@@ -653,7 +736,9 @@ export function CreateTransactionForm({
         isLoading={isSubmitting}
         disabled={isEditing && !isDirty && !splitAfterSave}
       >
-        {splitAfterSave && transactionType === 'expense' ? 'Save and set up split' : submitLabel}
+        {splitAfterSave && transactionType === 'expense'
+          ? 'Save and set up split'
+          : repeatTransaction ? 'Save and schedule' : submitLabel}
       </Button>
       {isSplitPromptOpen ? createPortal(
         <div className='fixed inset-0 z-[100] flex items-end justify-center bg-black/65 p-0 backdrop-blur-sm sm:items-center sm:p-4'>

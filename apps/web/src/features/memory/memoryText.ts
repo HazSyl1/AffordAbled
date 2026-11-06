@@ -8,6 +8,14 @@ export function describeMemory(
   const subject = (memory.subject_key.trim() || 'this item').replace(/\b\w/g, (letter) => letter.toUpperCase());
   const value = memory.value;
 
+  if (memory.memory_type === 'recurring_transaction') {
+    const amount = typeof value.amount_paise === 'number'
+      ? new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format(value.amount_paise / 100)
+      : 'the same amount';
+    const frequency = typeof value.recurrence_unit === 'string' ? value.recurrence_unit : 'regularly';
+    return `${subject} appears to be a ${frequency} transaction for ${amount}.`;
+  }
+
   if (memory.memory_type === 'category_mapping' && typeof value.category_id === 'string') {
     return `You often classify ${subject} as ${categoryNames.get(value.category_id) ?? 'a saved category'}.`;
   }

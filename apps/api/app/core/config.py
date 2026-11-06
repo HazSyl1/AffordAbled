@@ -65,6 +65,11 @@ class Settings(BaseSettings):
     chat_turn_stale_after_seconds: int = 600
     chat_turn_max_attempts: int = 3
     chat_turn_retention_days: int = 7
+    recurring_transaction_worker_enabled: bool = True
+    recurring_transaction_stale_after_seconds: int = 300
+    recurring_transaction_max_attempts: int = 8
+    recurring_transaction_batch_size: int = 50
+    recurring_transaction_max_sleep_seconds: int = 300
 
     langsmith_api_key: str = ''
     langsmith_tracing: bool = False

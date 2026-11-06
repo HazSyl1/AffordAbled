@@ -28,6 +28,7 @@ class MemoryEventWriter(Protocol):
     async def add_chat_analysis(self, **kwargs) -> None: ...
     async def commit(self) -> None: ...
     async def rollback(self) -> None: ...
+    async def add_recurring_evidence(self, *, transaction: Transaction, timezone: str) -> None: ...
 
 
 @dataclass
@@ -45,6 +46,12 @@ class TransactionService:
                 data.source_turn_id,
                 data.source_task_id,
                 data.source_item_index,
+            )
+            if existing is not None:
+                return existing
+        if data.recurring_rule_id is not None and data.scheduled_for is not None:
+            existing = await self.transaction_repository.get_by_recurring_source(
+                data.user_id, data.recurring_rule_id, data.scheduled_for,
             )
             if existing is not None:
                 return existing
@@ -76,11 +83,15 @@ class TransactionService:
             source_turn_id=data.source_turn_id,
             source_task_id=data.source_task_id,
             source_item_index=data.source_item_index,
+            recurring_rule_id=data.recurring_rule_id,
+            scheduled_for=data.scheduled_for,
         )
 
         await self._apply_balance_effect(transaction)
         created = await self.transaction_repository.create(transaction)
-        if self.memory_event_writer is not None and (data.review_event or data.memory_review_context):
+        if self.memory_event_writer is not None and (
+            data.review_event or data.memory_review_context or data.recurring_rule_id is None
+        ):
             # Transaction, explicit review evidence, and opt-in conversation
             # analysis job share one commit. The worker cannot see a job for a
             # transaction that was not saved.
@@ -101,6 +112,10 @@ class TransactionService:
                         signal_type=data.memory_review_context['signal_type'],
                         payload=data.memory_review_context['payload'],
                     )
+                if data.recurring_rule_id is None:
+                    await self.memory_event_writer.add_recurring_evidence(
+                        transaction=transaction, timezone=data.timezone,
+                    )
                 await self.memory_event_writer.commit()
             except Exception:  # noqa: BLE001 - transaction is already committed
                 await self.memory_event_writer.rollback()
@@ -119,6 +134,15 @@ class TransactionService:
             if commit is not None:
                 await commit()
         return created
+
+    async def validate_transaction_template(
+        self, *, user_id: uuid.UUID, account_id: uuid.UUID, transaction_type: TransactionType,
+        amount_paise: int, category_id: uuid.UUID | None, to_account_id: uuid.UUID | None,
+    ) -> None:
+        await self._validate_transaction(
+            user_id=user_id, account_id=account_id, transaction_type=transaction_type,
+            amount_paise=amount_paise, category_id=category_id, to_account_id=to_account_id,
+        )
 
     async def list_transactions(self, user_id: uuid.UUID) -> list[Transaction]:
         return await self.transaction_repository.list_for_user(user_id, include_deleted=False)

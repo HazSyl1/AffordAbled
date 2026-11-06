@@ -21,6 +21,7 @@ from app.application.services.account_service import AccountService
 from app.application.services.category_service import CategoryService
 from app.application.services.complex_settlement_service import ComplexSettlementService
 from app.application.services.export_service import ExportService
+from app.application.services.recurring_transaction_service import RecurringTransactionService
 from app.application.services.split_service import SplitService
 from app.application.services.transaction_service import TransactionService
 from app.domain.ports import ChatTurnResult, GuardrailDecision, SemanticGuardrail
@@ -49,6 +50,9 @@ from app.infrastructure.database.repositories.sqlalchemy_complex_settlement_repo
     SqlAlchemyComplexSettlementRepository,
 )
 from app.infrastructure.database.repositories.sqlalchemy_memory_repository import SqlAlchemyMemoryRepository
+from app.infrastructure.database.repositories.sqlalchemy_recurring_transaction_repository import (
+    SqlAlchemyRecurringTransactionRepository,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +69,12 @@ _ANALYTICS_READ_TOOLS = {
 _TASK_NAMESPACE = uuid.UUID("8866db9e-f379-44de-bd26-b1f154ee0bad")
 _TOOL_EVIDENCE_PATHS: dict[str, tuple[str, ...]] = {
     "create_transaction": ("transaction.id",),
+    "create_recurring_transaction": ("recurring_rule.id",),
+    "list_recurring_transactions": ("recurring_rules",),
+    "pause_recurring_transaction": ("recurring_rule.id", "recurring_rule.status"),
+    "resume_recurring_transaction": ("recurring_rule.id", "recurring_rule.status"),
+    "update_recurring_transaction": ("recurring_rule.id", "recurring_rule.status"),
+    "cancel_recurring_transaction": ("recurring_rule.id", "recurring_rule.status"),
     "create_transaction_batch": ("transactions.*.id",),
     "update_transaction": ("transaction.id",),
     "delete_transaction": ("deleted_transaction_id", "transaction.id"),
@@ -141,6 +151,11 @@ _MUTATION_TOOLS = {
     "deactivate_account",
     "set_default_account",
     "create_transaction",
+    "create_recurring_transaction",
+    "pause_recurring_transaction",
+    "resume_recurring_transaction",
+    "update_recurring_transaction",
+    "cancel_recurring_transaction",
     "update_transaction",
     "delete_transaction",
     "restore_transaction",
@@ -465,6 +480,18 @@ def _matches_observed_action(task: str, action: dict[str, Any]) -> bool:
         )
     if tool == "restore_transaction":
         return _mentions(task, "restore") and _mentions(task, str(data.get("restored_transaction_id") or ""))
+    if tool in {
+        'create_recurring_transaction', 'pause_recurring_transaction',
+        'resume_recurring_transaction', 'update_recurring_transaction', 'cancel_recurring_transaction',
+    }:
+        rule = data.get('recurring_rule') or {}
+        if not isinstance(rule, Mapping) or not rule.get('id'):
+            return False
+        return bool(re.search(
+            r'\b(?:recurr(?:ing|ence)?|repeat|daily|weekly|monthly|yearly|every|pause|resume|cancel)\b',
+            task,
+            re.IGNORECASE,
+        ))
     if tool in {"create_transaction", "update_transaction", "delete_transaction"}:
         transaction = data.get("transaction") or {}
         normalized_numeric_task = normalized_task.replace(",", "")
@@ -708,6 +735,10 @@ def _action_has_entity_evidence(action: dict[str, Any]) -> bool:
     entity_fields = {
         "create_transaction": "transaction",
         "update_transaction": "transaction",
+        "create_recurring_transaction": "recurring_rule",
+        "pause_recurring_transaction": "recurring_rule",
+        "resume_recurring_transaction": "recurring_rule",
+        "cancel_recurring_transaction": "recurring_rule",
         "create_category": "category",
         "update_category": "category",
         "create_account": "account",
@@ -805,6 +836,24 @@ def _required_tools(task: str, specialist: str | None) -> set[str] | None:
         if says("delete", "remove"):
             return {"delete_account"}
     if specialist == "transaction":
+        recurring = re.search(
+            r"\b(?:recurr(?:ing|ence)?|repeat(?:ing|ed)?|every\s+(?:day|week|month|year)|"
+            r"daily|weekly|monthly|yearly)\b",
+            task,
+            re.IGNORECASE,
+        )
+        if recurring:
+            if says('list', 'show', 'view', 'which', 'what'):
+                return {'list_recurring_transactions'}
+            if says('pause', 'stop temporarily'):
+                return {'pause_recurring_transaction'}
+            if says('resume', 'restart'):
+                return {'resume_recurring_transaction'}
+            if says('update', 'edit', 'change'):
+                return {'update_recurring_transaction'}
+            if says('cancel', 'delete', 'remove', 'stop'):
+                return {'cancel_recurring_transaction'}
+            return {'create_recurring_transaction'}
         if says("delete", "remove"):
             return {"delete_transaction"}
         if says("restore"):
@@ -888,6 +937,11 @@ def _task_intent(task: str, specialist: str | None, required_tools: set[str]) ->
     """Create a stable intent label without asking the LLM to judge completion."""
     canonical_mutations = (
         "create_transaction",
+        "create_recurring_transaction",
+        "pause_recurring_transaction",
+        "resume_recurring_transaction",
+        "update_recurring_transaction",
+        "cancel_recurring_transaction",
         "record_owed_payment",
         "settle_person_balance",
         "update_transaction",
@@ -1682,7 +1736,13 @@ class AgenticSupervisorGraph:
         extraction_agent = TransactionExtractionAgent(transaction_llm)
         category_tools = CategoryToolset(category_service).registry()
         account_tools = AccountToolset(account_service).registry()
-        transaction_tools = TransactionToolset(transaction_service, extraction_agent=extraction_agent).registry()
+        recurring_service = (
+            RecurringTransactionService(SqlAlchemyRecurringTransactionRepository(db_session), transaction_service)
+            if db_session is not None else None
+        )
+        transaction_tools = TransactionToolset(
+            transaction_service, extraction_agent=extraction_agent, recurring_service=recurring_service,
+        ).registry()
         analytics_tools = AnalyticsToolset(query_tools, split_service=split_service).registry()
         export_tools = ExportToolset(export_service).registry() if export_service else {}
         complex_settlements = (
@@ -1717,7 +1777,10 @@ class AgenticSupervisorGraph:
                 llm=transaction_llm,
                 system_prompt=TRANSACTION_PROMPT,
                 tools=transaction_tools,
-                destructive_tools={"delete_transaction"},
+                destructive_tools={
+                    "delete_transaction", "create_recurring_transaction", "update_recurring_transaction",
+                    "cancel_recurring_transaction",
+                },
                 db_session=db_session,
                 tool_lock=tool_lock,
             ),

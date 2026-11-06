@@ -21,6 +21,7 @@ from app.application.services.chat_service import ChatService
 from app.application.services.export_service import ExportService
 from app.application.services.image_service import ImageService
 from app.application.services.profile_summary_service import ProfileSummaryService
+from app.application.services.recurring_transaction_service import RecurringTransactionService
 from app.application.services.speech_service import SpeechService
 from app.application.services.split_service import SplitService
 from app.application.services.thread_service import ThreadService
@@ -57,6 +58,9 @@ from app.infrastructure.database.repositories.sqlalchemy_guardrail_log_repositor
     SqlAlchemyGuardrailLogRepository,
 )
 from app.infrastructure.database.repositories.sqlalchemy_memory_repository import SqlAlchemyMemoryRepository
+from app.infrastructure.database.repositories.sqlalchemy_recurring_transaction_repository import (
+    SqlAlchemyRecurringTransactionRepository,
+)
 from app.infrastructure.database.repositories.sqlalchemy_refresh_session_repository import (
     SqlAlchemyRefreshSessionRepository,
 )
@@ -277,6 +281,13 @@ def get_transaction_service(
         split_repository=SqlAlchemySplitRepository(db),
         memory_event_writer=SqlAlchemyMemoryRepository(db),
     )
+
+
+def get_recurring_transaction_service(
+    db: AsyncSession = Depends(get_db),
+    transaction_service: TransactionService = Depends(get_transaction_service),
+) -> RecurringTransactionService:
+    return RecurringTransactionService(SqlAlchemyRecurringTransactionRepository(db), transaction_service)
 
 
 def get_thread_service(

@@ -77,6 +77,21 @@ def test_balance_settlement_routes_to_confirmed_split_balance_tool(user_text: st
     assert _required_tools(user_text, 'split') == {'settle_person_balance'}
 
 
+@pytest.mark.parametrize('user_text', [
+    'I got 50000 salary today and I get it every month',
+    'Create a recurring expense for rent',
+    'Repeat this income yearly',
+])
+def test_explicit_recurring_transaction_routes_to_recurring_tool(user_text: str) -> None:
+    assert _required_tools(user_text, 'transaction') == {'create_recurring_transaction'}
+
+
+def test_recurring_transaction_edit_routes_to_update_tool() -> None:
+    assert _required_tools('Change my recurring rent to 20000 monthly', 'transaction') == {
+        'update_recurring_transaction',
+    }
+
+
 def test_current_datetime_reducer_keeps_latest_trusted_clock() -> None:
     assert _latest_current_datetime(
         "2026-10-25T01:00:00+05:30",
