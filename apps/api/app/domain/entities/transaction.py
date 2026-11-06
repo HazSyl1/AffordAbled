@@ -31,3 +31,5 @@ class Transaction:
     source_turn_id: uuid.UUID | None = None
     source_task_id: str | None = None
     source_item_index: int | None = None
+    recurring_rule_id: uuid.UUID | None = None
+    scheduled_for: datetime | None = None

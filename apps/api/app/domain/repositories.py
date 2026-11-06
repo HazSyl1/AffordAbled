@@ -55,6 +55,9 @@ class TransactionRepository(Protocol):
     async def get_by_chat_source(
         self, user_id: uuid.UUID, turn_id: uuid.UUID, task_id: str, item_index: int,
     ) -> Transaction | None: ...
+    async def get_by_recurring_source(
+        self, user_id: uuid.UUID, rule_id: uuid.UUID, scheduled_for: datetime,
+    ) -> Transaction | None: ...
     async def list_for_user(self, user_id: uuid.UUID, *, include_deleted: bool = False) -> list[Transaction]: ...
     async def list_for_export(
         self, user_id: uuid.UUID, *, date_from: datetime | None, date_to: datetime | None, limit: int

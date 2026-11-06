@@ -229,6 +229,12 @@ export function TransactionList({ onTransactionSelect }: TransactionListProps) {
                       </div>
                     </div>
                     <div className='mt-3 flex flex-wrap items-center justify-end gap-2'>
+                      {transaction.recurring_rule_id ? <Link
+                        to='/transactions?tab=recurring'
+                        className='inline-flex items-center rounded-full border border-[var(--info)]/50 px-2.5 py-1 text-xs font-semibold text-[var(--info)]'
+                        onClick={(event) => event.stopPropagation()}
+                        onKeyDown={(event) => event.stopPropagation()}
+                      >Recurring</Link> : null}
                       {onTransactionSelect && <span className='inline-flex items-center rounded-full border border-[color:rgba(168,85,247,0.7)] bg-[color:rgba(168,85,247,0.2)] px-2.5 py-1 text-[11px] font-semibold text-[var(--brand-primary)] shadow-[0_3px_12px_rgba(168,85,247,0.2)] transition-colors group-hover:bg-[color:rgba(168,85,247,0.3)]'>
                         {split ? 'Click to edit' : TRANSACTION_UI_TEXT.editHintLabel}
                       </span>}

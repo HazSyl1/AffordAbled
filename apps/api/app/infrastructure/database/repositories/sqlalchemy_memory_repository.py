@@ -1,19 +1,23 @@
 from __future__ import annotations
 
+import calendar
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import or_, select
 from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.services.memory_service import candidates_for_event, fingerprint, is_self_split_subject
+from app.domain.entities import Transaction
 from app.infrastructure.database.models import (
     MemoryAnalysisOutboxModel,
     MemoryModel,
     MemoryOutboxModel,
     MemoryReviewEventModel,
+    TransactionModel,
 )
 
 
@@ -26,6 +30,87 @@ class SqlAlchemyMemoryRepository:
 
     async def rollback(self) -> None:
         await self.session.rollback()
+
+    async def add_recurring_evidence(self, *, transaction: Transaction, timezone: str) -> None:
+        """Create a reviewable fixed-amount recurrence suggestion after three exact matches."""
+        merchant_key = ' '.join((transaction.merchant or '').strip().casefold().split())
+        if not merchant_key or transaction.type.value not in {'expense', 'income'}:
+            return
+        try:
+            local_timezone = ZoneInfo(timezone)
+        except ZoneInfoNotFoundError:
+            local_timezone = ZoneInfo('UTC')
+            timezone = 'UTC'
+        rows = list((await self.session.scalars(
+            select(TransactionModel).where(
+                TransactionModel.user_id == transaction.user_id,
+                TransactionModel.type == transaction.type.value,
+                TransactionModel.amount_paise == transaction.amount_paise,
+                TransactionModel.account_id == transaction.account_id,
+                TransactionModel.category_id == transaction.category_id,
+                TransactionModel.deleted_at.is_(None),
+                TransactionModel.recurring_rule_id.is_(None),
+            ).order_by(TransactionModel.occurred_at.desc()).limit(24)
+        )).all())
+        matching = [row for row in rows if ' '.join((row.merchant or '').strip().casefold().split()) == merchant_key]
+        if len(matching) < 3:
+            return
+        latest = sorted(matching, key=lambda row: row.occurred_at)[-3:]
+        dates = [self._aware(row.occurred_at).astimezone(local_timezone).date() for row in latest]
+        recurrence = self._detect_recurrence(dates)
+        if recurrence is None:
+            return
+        recurrence_unit, interval_count = recurrence
+        stable_value = {
+            'type': transaction.type.value, 'amount_paise': transaction.amount_paise,
+            'account_id': str(transaction.account_id), 'category_id': str(transaction.category_id),
+            'merchant': transaction.merchant, 'recurrence_unit': recurrence_unit,
+            'interval_count': interval_count, 'timezone': timezone,
+        }
+        candidate_fingerprint = fingerprint({
+            'scope': 'merchant', 'subject_key': merchant_key,
+            'memory_type': 'recurring_transaction', 'value': stable_value,
+        })
+        memory = await self.session.scalar(select(MemoryModel).where(
+            MemoryModel.user_id == transaction.user_id, MemoryModel.fingerprint == candidate_fingerprint,
+        ))
+        value = {**stable_value, 'anchor_at': self._aware(latest[-1].occurred_at).isoformat()}
+        evidence_ids = [str(row.id) for row in latest]
+        if memory is None:
+            memory = MemoryModel(
+                id=uuid.uuid4(), user_id=transaction.user_id, scope='merchant', subject_key=merchant_key,
+                memory_type='recurring_transaction', value_json=value, fingerprint=candidate_fingerprint,
+                status='suggested', confidence=1.0, evidence_count=3, source_event_ids=evidence_ids,
+            )
+            self.session.add(memory)
+        elif memory.status != 'dismissed':
+            memory.value_json = value
+            memory.evidence_count = max(memory.evidence_count, 3)
+            memory.confidence = 1.0
+            memory.source_event_ids = evidence_ids
+            memory.last_observed_at = datetime.now(UTC)
+
+    @staticmethod
+    def _aware(value: datetime) -> datetime:
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value
+
+    @staticmethod
+    def _detect_recurrence(dates: list) -> tuple[str, int] | None:
+        first, second, third = dates
+        gaps = ((second - first).days, (third - second).days)
+        if gaps == (1, 1):
+            return 'daily', 1
+        if gaps[0] == gaps[1] and gaps[0] % 7 == 0 and first.weekday() == second.weekday() == third.weekday():
+            return 'weekly', gaps[0] // 7
+        month_steps = ((second.year - first.year) * 12 + second.month - first.month,
+                       (third.year - second.year) * 12 + third.month - second.month)
+        month_end = all(day.day == calendar.monthrange(day.year, day.month)[1] for day in dates)
+        if month_steps == (1, 1) and (first.day == second.day == third.day or month_end):
+            return 'monthly', 1
+        if second.year - first.year == third.year - second.year == 1:
+            if (first.month, first.day) == (second.month, second.day) == (third.month, third.day):
+                return 'yearly', 1
+        return None
 
     async def add_chat_analysis(
         self,

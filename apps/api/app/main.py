@@ -23,7 +23,12 @@ from app.core.logging import configure_logging
 from app.core.middleware import register_exception_handlers, register_middleware
 from app.infrastructure.audio.ffmpeg_audio_transcoder import resolve_ffmpeg_binary
 from app.infrastructure.database.session import SessionLocal
-from app.infrastructure.jobs import run_chat_turn_loop, run_memory_outbox_loop, run_retention_cleanup_once
+from app.infrastructure.jobs import (
+    run_chat_turn_loop,
+    run_memory_outbox_loop,
+    run_recurring_transaction_loop,
+    run_retention_cleanup_once,
+)
 from app.presentation.router import api_router
 
 logger = logging.getLogger(__name__)
@@ -246,6 +251,7 @@ def create_app() -> FastAPI:
         retention_cleanup_task: asyncio.Task[None] | None = None
         memory_outbox_task: asyncio.Task[None] | None = None
         chat_turn_task: asyncio.Task[None] | None = None
+        recurring_transaction_task: asyncio.Task[None] | None = None
 
         if settings.retention_cleanup_enabled:
             retention_cleanup_task = asyncio.create_task(_run_retention_cleanup_loop(settings))
@@ -316,6 +322,19 @@ def create_app() -> FastAPI:
                 extra={'poll_interval_seconds': max(1, settings.chat_turn_poll_interval_seconds)},
             )
 
+        if settings.recurring_transaction_worker_enabled:
+            recurring_transaction_task = asyncio.create_task(run_recurring_transaction_loop(
+                stale_after_seconds=settings.recurring_transaction_stale_after_seconds,
+                max_attempts=settings.recurring_transaction_max_attempts,
+                batch_size=settings.recurring_transaction_batch_size,
+                max_sleep_seconds=settings.recurring_transaction_max_sleep_seconds,
+            ))
+            app.state.recurring_transaction_task = recurring_transaction_task
+            logger.info('recurring_transaction.scheduler.started', extra={
+                'batch_size': max(1, settings.recurring_transaction_batch_size),
+                'max_sleep_seconds': max(1, settings.recurring_transaction_max_sleep_seconds),
+            })
+
         try:
             yield
         finally:
@@ -331,6 +350,10 @@ def create_app() -> FastAPI:
                 chat_turn_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await chat_turn_task
+            if recurring_transaction_task is not None:
+                recurring_transaction_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await recurring_transaction_task
 
             if checkpointer_context is not None:
                 await checkpointer_context.__aexit__(None, None, None)
@@ -347,6 +370,7 @@ def create_app() -> FastAPI:
     app.state.chat_orchestrator = None
     app.state.retention_cleanup_task = None
     app.state.chat_turn_task = None
+    app.state.recurring_transaction_task = None
     app.state.ffmpeg_health = {
         'available': False,
         'configured_binary': settings.ffmpeg_binary,

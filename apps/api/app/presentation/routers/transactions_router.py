@@ -35,6 +35,7 @@ async def create_transaction(
             merchant=payload.merchant,
             note=payload.note,
             review_event=payload.review_event,
+            timezone=payload.timezone,
         )
     )
     return TransactionResponse.from_entity(transaction)

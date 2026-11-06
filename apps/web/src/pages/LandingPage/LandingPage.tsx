@@ -1,6 +1,6 @@
 import {
   ArrowDown, ArrowRight, BarChart3, Bot, Camera, Check, CircleHelp, FileDown, Mail, Mic,
-  Plus, ReceiptText, ShieldCheck, Split, Wallet, Users, BadgePercent, Scale, ListChecks,
+  Plus, ReceiptText, ShieldCheck, Split, Wallet, Users, BadgePercent, Scale, ListChecks, Repeat2,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
@@ -19,6 +19,13 @@ const features = [
     title: 'Record everyday money',
     description: 'Add expenses, income, refunds, and transfers. Find, edit, or review past entries in one place.',
     how: 'Open Transactions and tap the + button to enter a transaction yourself.',
+    location: 'Transactions',
+  },
+  {
+    icon: Repeat2,
+    title: 'Stay ahead of recurring money',
+    description: 'Schedule regular expenses and income such as rent, subscriptions, and salary. Transactions are posted at the right time.',
+    how: 'Enable Repeat while adding a transaction, manage schedules in the Recurring tab, or ask Finance Chat.',
     location: 'Transactions',
   },
   {

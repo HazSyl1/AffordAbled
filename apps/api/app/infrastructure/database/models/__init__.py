@@ -18,6 +18,7 @@ from app.infrastructure.database.models.memory import (
     MemoryOutboxModel,
     MemoryReviewEventModel,
 )
+from app.infrastructure.database.models.recurring_transaction import RecurringTransactionRuleModel
 from app.infrastructure.database.models.refresh_session import RefreshSessionModel
 from app.infrastructure.database.models.split import SplitModel, SplitParticipantModel, SplitPaymentModel
 from app.infrastructure.database.models.split_contact import SplitContactModel
@@ -39,6 +40,7 @@ __all__ = [
     'ExportArtifactModel',
     'GuardrailLogModel',
     'RefreshSessionModel',
+    'RecurringTransactionRuleModel',
     'SplitModel',
     'SplitParticipantModel',
     'SplitPaymentModel',
