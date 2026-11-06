@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Annotated, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -13,6 +14,17 @@ from langgraph.prebuilt import InjectedState
 from app.domain.entities import CategoryType, TransactionType
 from app.infrastructure.ai.tools.category_tools import CategoryTools
 from app.infrastructure.ai.tools.transaction_query_tools import TransactionQueryTools
+
+
+def _runtime_now(runtime_state: dict[str, Any]) -> datetime | None:
+    """Read the graph's trusted clock so one turn uses one stable date boundary."""
+    value = runtime_state.get('current_datetime')
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
 
 
 @dataclass
@@ -39,6 +51,7 @@ class LangGraphFinanceTools:
             user_id = uuid.UUID(str(runtime_state['runtime_user_id']))
             date_from, date_to = transaction_query_tools.resolve_date_window(
                 message,
+                now_utc=_runtime_now(runtime_state),
                 timezone_name=timezone_name,
                 date_period=date_period,
                 period_count=period_count,
@@ -156,6 +169,7 @@ class LangGraphFinanceTools:
             user_id = uuid.UUID(str(runtime_state['runtime_user_id']))
             date_from, date_to = transaction_query_tools.resolve_date_window(
                 message,
+                now_utc=_runtime_now(runtime_state),
                 timezone_name=timezone_name,
                 date_period=date_period,
                 period_count=period_count,
@@ -266,6 +280,7 @@ class LangGraphFinanceTools:
                     transaction_query_tools.resolve_spending_comparison_windows(
                         date_period=date_period,
                         comparison_period=comparison_period,
+                        now_utc=_runtime_now(runtime_state),
                         timezone_name=timezone_name,
                     )
                 )
@@ -412,6 +427,7 @@ class LangGraphFinanceTools:
             user_id = uuid.UUID(str(runtime_state['runtime_user_id']))
             date_from, date_to = transaction_query_tools.resolve_date_window(
                 message,
+                now_utc=_runtime_now(runtime_state),
                 timezone_name=timezone_name,
                 date_period=date_period,
                 period_count=period_count,

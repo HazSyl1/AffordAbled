@@ -465,7 +465,10 @@ async def test_registered_transaction_query_caps_rows_and_marks_more_results() -
         date_period='this_month',
         timezone_name='UTC',
         transaction_type='all',
-        state={'runtime_user_id': str(user_id)},
+        state={
+            'runtime_user_id': str(user_id),
+            'current_datetime': '2026-10-14T12:00:00+00:00',
+        },
     )
     payload = json.loads(raw_payload)
 
