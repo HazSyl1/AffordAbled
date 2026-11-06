@@ -1,3 +1,7 @@
+import uuid
+from datetime import datetime
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -36,6 +40,24 @@ class ChatResponse(BaseModel):
     created_transaction_id: str | None = None
     manual_transaction_input_required: bool = False
     insights: list[ChatInsightResponse] | None = None
+
+
+class ChatTurnSubmitRequest(BaseModel):
+    turn_id: uuid.UUID
+    thread_id: str = Field(min_length=1, max_length=120)
+    message: str = Field(min_length=1, max_length=8000)
+    timezone: str = Field(default='UTC', min_length=1, max_length=64)
+
+
+class ChatTurnStatusResponse(BaseModel):
+    turn_id: uuid.UUID
+    thread_id: str
+    status: Literal['queued', 'processing', 'succeeded', 'failed']
+    result: ChatResponse | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+    created_at: datetime
+    updated_at: datetime
 
 
 class VoiceTranscriptionResponse(BaseModel):

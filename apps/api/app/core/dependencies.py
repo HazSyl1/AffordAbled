@@ -47,6 +47,9 @@ from app.infrastructure.database.repositories.sqlalchemy_agent_correction_reposi
 from app.infrastructure.database.repositories.sqlalchemy_category_repository import SqlAlchemyCategoryRepository
 from app.infrastructure.database.repositories.sqlalchemy_chat_message_repository import SqlAlchemyChatMessageRepository
 from app.infrastructure.database.repositories.sqlalchemy_chat_thread_repository import SqlAlchemyChatThreadRepository
+from app.infrastructure.database.repositories.sqlalchemy_chat_turn_job_repository import (
+    SqlAlchemyChatTurnJobRepository,
+)
 from app.infrastructure.database.repositories.sqlalchemy_export_artifact_repository import (
     SqlAlchemyExportArtifactRepository,
 )
@@ -113,6 +116,10 @@ def get_chat_thread_repository(db: AsyncSession = Depends(get_db)) -> SqlAlchemy
 
 def get_chat_message_repository(db: AsyncSession = Depends(get_db)) -> SqlAlchemyChatMessageRepository:
     return SqlAlchemyChatMessageRepository(db)
+
+
+def get_chat_turn_job_repository(db: AsyncSession = Depends(get_db)) -> SqlAlchemyChatTurnJobRepository:
+    return SqlAlchemyChatTurnJobRepository(db)
 
 
 def get_export_artifact_repository(db: AsyncSession = Depends(get_db)) -> SqlAlchemyExportArtifactRepository:
@@ -395,6 +402,63 @@ def get_chat_service(
         chat_message_repository=chat_message_repository,
         agent_correction_repository=agent_correction_repository,
         guardrail_log_repository=guardrail_log_repository,
+        transaction_repository=transaction_repository,
+    )
+
+
+def build_chat_service_for_session(
+    *,
+    db: AsyncSession,
+    checkpointer: Any,
+    settings: Settings,
+    semantic_guardrail: SemanticGuardrail,
+    extraction_llm: Any,
+) -> ChatService:
+    """Build the request-scoped chat stack for a durable background turn."""
+    user_repository = SqlAlchemyUserRepository(db)
+    account_repository = SqlAlchemyAccountRepository(db)
+    category_repository = SqlAlchemyCategoryRepository(db)
+    transaction_repository = SqlAlchemyTransactionRepository(db)
+    memory_repository = SqlAlchemyMemoryRepository(db)
+    transaction_service = TransactionService(
+        transaction_repository=transaction_repository,
+        account_repository=account_repository,
+        category_repository=category_repository,
+        split_repository=SqlAlchemySplitRepository(db),
+        memory_event_writer=memory_repository,
+    )
+    orchestrator = AgenticChatOrchestrator(
+        AgenticSupervisorGraph(
+            checkpointer=checkpointer,
+            llm=extraction_llm,
+            guardrail=semantic_guardrail,
+            category_service=CategoryService(category_repository=category_repository),
+            account_service=AccountService(account_repository=account_repository),
+            transaction_service=transaction_service,
+            split_service=SplitService(SqlAlchemySplitRepository(db), memory_repository),
+            query_tools=TransactionQueryTools(
+                transaction_repository=transaction_repository,
+                account_repository=account_repository,
+                category_repository=category_repository,
+            ),
+            export_service=ExportService(
+                export_artifact_repository=SqlAlchemyExportArtifactRepository(db),
+                transaction_repository=transaction_repository,
+                account_repository=account_repository,
+                category_repository=category_repository,
+                signing_key=settings.jwt_secret_key,
+            ),
+            memory_repository=memory_repository,
+            db_session=db,
+        )
+    )
+    return ChatService(
+        orchestrator=orchestrator,
+        user_repository=user_repository,
+        chat_thread_repository=SqlAlchemyChatThreadRepository(db),
+        chat_message_repository=SqlAlchemyChatMessageRepository(db),
+        agent_correction_repository=SqlAlchemyAgentCorrectionRepository(db),
+        guardrail_log_repository=SqlAlchemyGuardrailLogRepository(db),
         transaction_repository=transaction_repository,
     )
 

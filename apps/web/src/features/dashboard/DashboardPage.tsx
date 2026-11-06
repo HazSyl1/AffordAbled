@@ -20,9 +20,9 @@ import { useListCategoriesQuery } from '../categories/categoriesApi';
 import {
   useAnalyzeImageMutation,
   type ChatTransactionProposal,
-  useSendChatMessageMutation,
   useTranscribeVoiceMutation,
 } from '../chat/chatApi';
+import { useDurableChatTurn } from '../chat/useDurableChatTurn';
 import { mapProposalToCreateTransactionValues } from '../chat/chatProposal';
 import {
   deleteChatDraft,
@@ -89,7 +89,7 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
   const { data: transactions, isLoading: isLoadingTransactions } = useListTransactionsQuery();
   const { data: splits, isLoading: isLoadingSplits } = useListSplitsQuery();
   const { data: categories } = useListCategoriesQuery();
-  const [sendChatMessage, { isLoading: isSendingChatMessage }] = useSendChatMessageMutation();
+  const { runTurn, isProcessingTurn } = useDurableChatTurn();
   const [transcribeVoice, { isLoading: isTranscribingVoice }] = useTranscribeVoiceMutation();
   const [analyzeImage, { isLoading: isAnalyzingImage }] = useAnalyzeImageMutation();
   const [showAddSheet, setShowAddSheet] = useState(false);
@@ -233,7 +233,7 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
   }, [categoryNameById, visibleTransactions]);
 
   const isLoading = isLoadingAccounts || isLoadingTransactions;
-  const isAssistantResponding = isSendingChatMessage;
+  const isAssistantResponding = isProcessingTurn;
   const greetingName = currentUser?.name?.trim().split(/\s+/)[0] || 'there';
   const greeting = currentHour < 12 ? 'Good morning' : currentHour < 17 ? 'Good afternoon' : 'Good evening';
 
@@ -258,6 +258,8 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
     lifecycle: 'conversation' | 'draft' = 'conversation',
     kind: 'general' | 'transaction' = chatTransactionId ? 'transaction' : 'general',
     transactionId: string | null = chatTransactionId,
+    pendingTurnId?: string | null,
+    pendingSince?: string | null,
   ): string | null => {
     if (messages.length === 0 || !currentUser?.id) {
       return draftIdOverride;
@@ -272,6 +274,8 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
       lifecycle,
       transactionId,
       threadId,
+      pendingTurnId,
+      pendingSince,
       messages,
     });
 
@@ -348,14 +352,27 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
     const userMessage: ChatMessage = { id: createLocalId(), role: 'user', content: normalizedMessage };
     const userMessageList = [...chatMessages, userMessage];
     setChatMessages(userMessageList);
-    const currentDraftId = persistGeneralDraft(userMessageList, chatThreadId, chatDraftId);
+    const threadId = chatThreadId ?? crypto.randomUUID();
+    const turnId = crypto.randomUUID();
+    setChatThreadId(threadId);
+    const currentDraftId = persistGeneralDraft(
+      userMessageList,
+      threadId,
+      chatDraftId,
+      'conversation',
+      chatTransactionId ? 'transaction' : 'general',
+      chatTransactionId,
+      turnId,
+      new Date().toISOString(),
+    );
 
     try {
-      const response = await sendChatMessage({
+      const response = await runTurn({
+        turn_id: turnId,
+        thread_id: threadId,
         message: normalizedMessage,
-        thread_id: chatThreadId ?? undefined,
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      }).unwrap();
+      });
 
       setChatThreadId(response.thread_id);
       const insightSummary = (response.insights ?? [])
@@ -384,26 +401,28 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
             lifecycle: 'conversation',
             transactionId: response.created_transaction_id,
             threadId: response.thread_id,
+            pendingTurnId: null,
+            pendingSince: null,
             messages: fullMessageList,
           });
           setChatDraftId(savedDraft.id);
           setChatTransactionId(response.created_transaction_id);
         } else {
-          persistGeneralDraft(fullMessageList, response.thread_id, currentDraftId);
+          persistGeneralDraft(
+            fullMessageList, response.thread_id, currentDraftId,
+            'conversation', 'general', null, null, null,
+          );
         }
       } else {
-        persistGeneralDraft(fullMessageList, response.thread_id, currentDraftId);
+        persistGeneralDraft(
+          fullMessageList, response.thread_id, currentDraftId,
+          'conversation', chatTransactionId ? 'transaction' : 'general', chatTransactionId, null, null,
+        );
       }
 
       if (response.show_completion_popup && !receiptTransactionLogged) {
         clearTransactionRedirectTimer();
         setTransactionSuccess({ message: assistantMessage.content, expiresAt: Date.now() + 12_000, transactionId: response.created_transaction_id ?? null });
-        transactionRedirectTimerRef.current = window.setTimeout(() => {
-          transactionRedirectTimerRef.current = null;
-          setTransactionSuccess(null);
-          resetChatSession();
-          navigate('/dashboard');
-        }, 12_000);
         return;
       }
 
@@ -416,15 +435,18 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
         setProposalSheetMode(response.manual_transaction_input_required ? 'manual_low_confidence' : 'standard');
         setShowAddSheet(true);
       }
-    } catch {
-      setChatError(DASHBOARD_CHAT_UI_TEXT.assistantError);
-      openManualTransactionFallback('The assistant could not finish this request. You can enter the transaction manually. If the request may have reached the server, check Transactions first to avoid adding it twice.');
+    } catch (error) {
+      persistGeneralDraft(
+        userMessageList, threadId, currentDraftId,
+        'conversation', chatTransactionId ? 'transaction' : 'general', chatTransactionId, null, null,
+      );
+      setChatError(error instanceof Error ? error.message : DASHBOARD_CHAT_UI_TEXT.assistantError);
     }
   };
 
   const handleChatSubmit = async () => {
     const normalizedMessage = chatInput.trim();
-    if (!normalizedMessage || isSendingChatMessage) {
+    if (!normalizedMessage || isProcessingTurn) {
       return;
     }
 
@@ -665,7 +687,7 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
           type='button'
           className='inline-flex h-12 w-12 items-center justify-center rounded-xl border border-[var(--bg-border)] bg-[var(--bg-elevated)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-card)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)] disabled:cursor-not-allowed disabled:opacity-60'
           aria-label='Upload and send image note'
-          disabled={isSendingChatMessage || isAnalyzingImage}
+          disabled={isProcessingTurn || isAnalyzingImage}
           onClick={() => imageFileInputRef.current?.click()}
         >
           {isAnalyzingImage ? (
@@ -688,7 +710,7 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
         <button
           type='button'
           className='inline-flex h-12 min-w-16 items-center justify-center rounded-xl bg-[var(--brand-primary)] px-4 text-sm font-semibold text-white transition-colors hover:bg-[var(--brand-hover)] active:bg-[var(--brand-active)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)] disabled:cursor-not-allowed disabled:opacity-60'
-          disabled={chatInput.trim().length === 0 || isSendingChatMessage}
+          disabled={chatInput.trim().length === 0 || isProcessingTurn}
           onClick={() => {
             void handleChatSubmit();
           }}
@@ -776,7 +798,7 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
               {DASHBOARD_QUICK_ACTIONS.map((action) => {
                 const isDisabled =
                   (action.key === 'voice' && (isVoiceCaptureOpen || isTranscribingVoice)) ||
-                  (action.key === 'image' && (isAnalyzingImage || isSendingChatMessage || isTranscribingVoice));
+                  (action.key === 'image' && (isAnalyzingImage || isProcessingTurn || isTranscribingVoice));
                 const Icon = action.icon;
 
                 return (
@@ -958,19 +980,19 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
               </button>
             </div>
             <p className='mt-2 text-sm text-[var(--text-secondary)]'>
-              {isSendingChatMessage
+              {isProcessingTurn
                 ? 'Your request is still processing. Closing will not cancel it. Keep this chat in Chats now; you can discard it or move it to Drafts after the reply arrives.'
                 : DASHBOARD_CHAT_UI_TEXT.closeChatPrompt}
             </p>
 
             <div className='mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3'>
-              <Button type='button' variant='secondary' disabled={isSendingChatMessage} onClick={handleDiscardDraftAndClose}>
+              <Button type='button' variant='secondary' disabled={isProcessingTurn} onClick={handleDiscardDraftAndClose}>
                 {DASHBOARD_CHAT_UI_TEXT.discardAndCloseLabel}
               </Button>
               <Button type='button' variant='secondary' onClick={handleAddChatAndClose}>
                 {DASHBOARD_CHAT_UI_TEXT.addToChatsLabel}
               </Button>
-              <Button type='button' disabled={isSendingChatMessage} onClick={handleSaveDraftAndClose}>
+              <Button type='button' disabled={isProcessingTurn} onClick={handleSaveDraftAndClose}>
                 {DASHBOARD_CHAT_UI_TEXT.addToDraftsLabel}
               </Button>
             </div>

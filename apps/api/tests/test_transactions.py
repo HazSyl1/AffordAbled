@@ -1,8 +1,12 @@
+import uuid
 from datetime import UTC, datetime
 
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.dto import CreateTransactionInput
+from app.application.services.transaction_service import TransactionService
+from app.domain.entities import TransactionType
 from app.infrastructure.ai.agents.analytics import AnalyticsToolset
 from app.infrastructure.ai.agents.contracts import HandoffContext
 from app.infrastructure.ai.tools.transaction_query_tools import TransactionQueryTools
@@ -93,6 +97,50 @@ async def test_transactions_router_smoke(client: AsyncClient) -> None:
         headers=auth_headers(token),
     )
     assert get_after_restore_response.status_code == 200
+
+
+async def test_chat_transaction_source_is_idempotent(
+    client: AsyncClient, db_session: AsyncSession,
+) -> None:
+    token = await register_and_get_token(client, 'transaction-idempotency@example.com')
+    headers = auth_headers(token)
+    account_response = await client.post(
+        '/api/v1/accounts',
+        json={'name': 'Idempotent Wallet', 'type': 'wallet', 'balance_paise': 100000, 'currency': 'INR'},
+        headers=headers,
+    )
+    category_response = await client.post(
+        '/api/v1/categories', json={'name': 'Idempotent Food', 'type': 'expense'}, headers=headers,
+    )
+    user = await SqlAlchemyUserRepository(db_session).get_by_email('transaction-idempotency@example.com')
+    assert user is not None
+
+    service = TransactionService(
+        transaction_repository=SqlAlchemyTransactionRepository(db_session),
+        account_repository=SqlAlchemyAccountRepository(db_session),
+        category_repository=SqlAlchemyCategoryRepository(db_session),
+    )
+    source_turn_id = uuid.uuid4()
+    data = CreateTransactionInput(
+        user_id=user.id,
+        account_id=uuid.UUID(account_response.json()['id']),
+        category_id=uuid.UUID(category_response.json()['id']),
+        type=TransactionType.EXPENSE,
+        amount_paise=50000,
+        occurred_at=datetime.now(UTC),
+        merchant='Reliance',
+        source_turn_id=source_turn_id,
+        source_task_id='record-reliance-expense',
+        source_item_index=0,
+    )
+
+    first = await service.create_transaction(data)
+    repeated = await service.create_transaction(data)
+
+    assert repeated.id == first.id
+    assert await _get_account_balance(client, token, account_response.json()['id']) == 50000
+    transactions = await client.get('/api/v1/transactions', headers=headers)
+    assert len(transactions.json()) == 1
 
 
 async def test_transactions_and_account_ids_are_scoped_to_the_authenticated_user(

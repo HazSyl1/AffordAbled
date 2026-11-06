@@ -13,12 +13,17 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from app.core.config import Settings, get_settings
-from app.core.dependencies import get_transaction_extraction_llm
+from app.core.dependencies import (
+    build_chat_service_for_session,
+    get_guardrail_llm,
+    get_semantic_guardrail,
+    get_transaction_extraction_llm,
+)
 from app.core.logging import configure_logging
 from app.core.middleware import register_exception_handlers, register_middleware
 from app.infrastructure.audio.ffmpeg_audio_transcoder import resolve_ffmpeg_binary
 from app.infrastructure.database.session import SessionLocal
-from app.infrastructure.jobs import run_memory_outbox_loop, run_retention_cleanup_once
+from app.infrastructure.jobs import run_chat_turn_loop, run_memory_outbox_loop, run_retention_cleanup_once
 from app.presentation.router import api_router
 
 logger = logging.getLogger(__name__)
@@ -202,6 +207,7 @@ async def _run_retention_cleanup_loop(settings: Settings) -> None:
                 cleanup_stats = await run_retention_cleanup_once(
                     session,
                     chat_message_retention_days=settings.chat_message_retention_days,
+                    chat_turn_retention_days=settings.chat_turn_retention_days,
                 )
 
             logger.info('retention.cleanup.completed', extra=cleanup_stats)
@@ -239,6 +245,7 @@ def create_app() -> FastAPI:
         app.state.chat_orchestrator = None
         retention_cleanup_task: asyncio.Task[None] | None = None
         memory_outbox_task: asyncio.Task[None] | None = None
+        chat_turn_task: asyncio.Task[None] | None = None
 
         if settings.retention_cleanup_enabled:
             retention_cleanup_task = asyncio.create_task(_run_retention_cleanup_loop(settings))
@@ -270,6 +277,45 @@ def create_app() -> FastAPI:
                 },
             )
 
+        if settings.chat_turn_worker_enabled:
+            extraction_llm = get_transaction_extraction_llm(settings)
+            guardrail_llm = get_guardrail_llm(settings)
+            semantic_guardrail = get_semantic_guardrail(settings, guardrail_llm)
+
+            async def process_chat_turn(job):
+                if extraction_llm is None:
+                    raise RuntimeError('Agentic chat requires a configured LLM deployment.')
+                async with SessionLocal() as session:
+                    chat_service = build_chat_service_for_session(
+                        db=session,
+                        checkpointer=checkpointer,
+                        settings=settings,
+                        semantic_guardrail=semantic_guardrail,
+                        extraction_llm=extraction_llm,
+                    )
+                    response = await chat_service.send_message(
+                        user_id=job.user_id,
+                        message=job.message,
+                        thread_id=job.thread_id,
+                        timezone=job.timezone,
+                        turn_id=job.id,
+                    )
+                    return response.to_public_dict()
+
+            chat_turn_task = asyncio.create_task(
+                run_chat_turn_loop(
+                    process_chat_turn,
+                    poll_interval_seconds=settings.chat_turn_poll_interval_seconds,
+                    stale_after_seconds=settings.chat_turn_stale_after_seconds,
+                    max_attempts=settings.chat_turn_max_attempts,
+                )
+            )
+            app.state.chat_turn_task = chat_turn_task
+            logger.info(
+                'chat.turn.scheduler.started',
+                extra={'poll_interval_seconds': max(1, settings.chat_turn_poll_interval_seconds)},
+            )
+
         try:
             yield
         finally:
@@ -281,6 +327,10 @@ def create_app() -> FastAPI:
                 memory_outbox_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await memory_outbox_task
+            if chat_turn_task is not None:
+                chat_turn_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await chat_turn_task
 
             if checkpointer_context is not None:
                 await checkpointer_context.__aexit__(None, None, None)
@@ -296,6 +346,7 @@ def create_app() -> FastAPI:
     app.state.langgraph_checkpointer_backend = 'memory'
     app.state.chat_orchestrator = None
     app.state.retention_cleanup_task = None
+    app.state.chat_turn_task = None
     app.state.ffmpeg_health = {
         'available': False,
         'configured_binary': settings.ffmpeg_binary,

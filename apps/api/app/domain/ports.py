@@ -121,4 +121,5 @@ class ChatOrchestrator(Protocol):
         message: str,
         owner_name: str | None = None,
         timezone: str | None = None,
+        turn_id: uuid.UUID | None = None,
     ) -> ChatTurnResult: ...

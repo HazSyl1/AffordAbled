@@ -73,6 +73,9 @@ class CreateTransactionInput:
     note: str | None = None
     review_event: dict | None = None
     memory_review_context: dict | None = None
+    source_turn_id: uuid.UUID | None = None
+    source_task_id: str | None = None
+    source_item_index: int | None = None
 
 
 @dataclass

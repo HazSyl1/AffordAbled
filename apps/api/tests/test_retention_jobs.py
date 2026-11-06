@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.database.models import (
     ChatMessageModel,
+    ChatTurnJobModel,
     ExportArtifactModel,
     GuardrailLogModel,
     UserModel,
@@ -89,6 +90,16 @@ async def test_run_retention_cleanup_once_removes_expired_and_old_records(db_ses
                 content='recent message',
                 created_at=now - timedelta(days=2),
             ),
+            ChatTurnJobModel(
+                id=uuid.uuid4(),
+                user_id=user_id,
+                thread_id='retention-thread-1',
+                message='completed old turn',
+                timezone='UTC',
+                status='succeeded',
+                completed_at=now - timedelta(days=10),
+                created_at=now - timedelta(days=10),
+            ),
         ]
     )
     await db_session.commit()
@@ -99,6 +110,7 @@ async def test_run_retention_cleanup_once_removes_expired_and_old_records(db_ses
         'deleted_guardrail_logs': 1,
         'deleted_exports': 1,
         'deleted_old_messages': 1,
+        'deleted_old_chat_turns': 1,
     }
 
     remaining_guardrail_logs = (await db_session.execute(select(GuardrailLogModel))).scalars().all()

@@ -26,6 +26,9 @@ class SqlAlchemyTransactionRepository:
             amount_paise=transaction.amount_paise,
             merchant=transaction.merchant,
             note=transaction.note,
+            source_turn_id=transaction.source_turn_id,
+            source_task_id=transaction.source_task_id,
+            source_item_index=transaction.source_item_index,
             occurred_at=transaction.occurred_at,
             deleted_at=transaction.deleted_at,
             created_at=transaction.created_at,
@@ -57,6 +60,24 @@ class SqlAlchemyTransactionRepository:
             query = query.where(TransactionModel.deleted_at.is_(None))
 
         result = await self._session.execute(query)
+        model = result.scalar_one_or_none()
+        return self._to_entity(model) if model else None
+
+    async def get_by_chat_source(
+        self,
+        user_id: uuid.UUID,
+        turn_id: uuid.UUID,
+        task_id: str,
+        item_index: int,
+    ) -> Transaction | None:
+        result = await self._session.execute(
+            select(TransactionModel).where(
+                TransactionModel.user_id == user_id,
+                TransactionModel.source_turn_id == turn_id,
+                TransactionModel.source_task_id == task_id,
+                TransactionModel.source_item_index == item_index,
+            )
+        )
         model = result.scalar_one_or_none()
         return self._to_entity(model) if model else None
 
@@ -275,4 +296,7 @@ class SqlAlchemyTransactionRepository:
             deleted_at=model.deleted_at,
             created_at=model.created_at,
             updated_at=model.updated_at,
+            source_turn_id=model.source_turn_id,
+            source_task_id=model.source_task_id,
+            source_item_index=model.source_item_index,
         )

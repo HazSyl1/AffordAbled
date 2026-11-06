@@ -1,22 +1,81 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile, status
+import uuid
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 
 from app.application.services.chat_service import ChatService
 from app.application.services.image_service import ImageService
 from app.application.services.speech_service import SpeechService
-from app.core.dependencies import get_chat_service, get_current_user, get_image_service, get_speech_service
+from app.core.dependencies import (
+    get_chat_service,
+    get_chat_turn_job_repository,
+    get_current_user,
+    get_image_service,
+    get_speech_service,
+)
 from app.domain.entities import User
+from app.infrastructure.database.models import ChatTurnJobModel
+from app.infrastructure.database.repositories.sqlalchemy_chat_turn_job_repository import (
+    ChatTurnConflictError,
+    SqlAlchemyChatTurnJobRepository,
+)
 from app.presentation.schemas.chat import (
     ChatInsightResponse,
     ChatRequest,
     ChatResponse,
+    ChatTurnStatusResponse,
+    ChatTurnSubmitRequest,
     ImageAnalysisResponse,
     PendingTransactionProposalResponse,
     VoiceTranscriptionResponse,
 )
 
 router = APIRouter(prefix="/chat", tags=["chat"])
+
+
+def _turn_status_response(job: ChatTurnJobModel) -> ChatTurnStatusResponse:
+    return ChatTurnStatusResponse(
+        turn_id=job.id,
+        thread_id=job.thread_id,
+        status=job.status,
+        result=ChatResponse.model_validate(job.result_json) if job.result_json else None,
+        error_code=job.error_code,
+        error_message=job.error_message,
+        created_at=job.created_at,
+        updated_at=job.updated_at,
+    )
+
+
+@router.post('/turns', response_model=ChatTurnStatusResponse, status_code=status.HTTP_202_ACCEPTED)
+async def submit_chat_turn(
+    payload: ChatTurnSubmitRequest,
+    current_user: User = Depends(get_current_user),
+    repository: SqlAlchemyChatTurnJobRepository = Depends(get_chat_turn_job_repository),
+) -> ChatTurnStatusResponse:
+    try:
+        job = await repository.create_or_get(
+            turn_id=payload.turn_id,
+            user_id=current_user.id,
+            thread_id=payload.thread_id,
+            message=payload.message.strip(),
+            timezone=payload.timezone,
+        )
+    except ChatTurnConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    return _turn_status_response(job)
+
+
+@router.get('/turns/{turn_id}', response_model=ChatTurnStatusResponse)
+async def get_chat_turn_status(
+    turn_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    repository: SqlAlchemyChatTurnJobRepository = Depends(get_chat_turn_job_repository),
+) -> ChatTurnStatusResponse:
+    job = await repository.get_for_user(current_user.id, turn_id)
+    if job is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Chat turn not found')
+    return _turn_status_response(job)
 
 
 @router.post("", response_model=ChatResponse, status_code=status.HTTP_200_OK)

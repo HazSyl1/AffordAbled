@@ -122,6 +122,7 @@ def _persistent_tool_context(state: dict[str, Any]) -> HandoffContext:
         current_datetime=state.get("current_datetime"),
         constraints={
             "task_id": task_id,
+            "turn_id": state.get("active_turn_id"),
             "task_contract": task_contract,
             "latest_user_reply": str(state["messages"][-1].content) if state.get("messages") else "",
             "last_transaction_window": state.get("last_transaction_window"),
