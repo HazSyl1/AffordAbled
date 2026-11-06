@@ -29,6 +29,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Apply database migrations
+        working-directory: apps/api
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          source antenv/bin/activate
+          python -m alembic upgrade head
+
       - name: Stage API package
         run: |
           mkdir -p deploy/api
@@ -61,12 +69,6 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Apply database migrations
-        working-directory: deploy/api
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: antenv/bin/python -m alembic upgrade head
 
       - name: Deploy API to Azure
         uses: azure/webapps-deploy@v3
