@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 
 from sqlalchemy import delete, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.entities import ChatMessage
@@ -18,11 +19,27 @@ class SqlAlchemyChatMessageRepository:
             id=chat_message.id,
             user_id=chat_message.user_id,
             thread_id=chat_message.thread_id,
+            turn_id=chat_message.turn_id,
             role=chat_message.role,
             content=chat_message.content,
         )
         self._session.add(model)
-        await self._session.commit()
+        try:
+            await self._session.commit()
+        except IntegrityError:
+            await self._session.rollback()
+            if chat_message.turn_id is None:
+                raise
+            existing = await self._session.scalar(
+                select(ChatMessageModel).where(
+                    ChatMessageModel.user_id == chat_message.user_id,
+                    ChatMessageModel.turn_id == chat_message.turn_id,
+                    ChatMessageModel.role == chat_message.role,
+                )
+            )
+            if existing is None:
+                raise
+            return self._to_entity(existing)
         await self._session.refresh(model)
         return self._to_entity(model)
 
@@ -50,4 +67,5 @@ class SqlAlchemyChatMessageRepository:
             role=model.role,
             content=model.content,
             created_at=model.created_at,
+            turn_id=model.turn_id,
         )

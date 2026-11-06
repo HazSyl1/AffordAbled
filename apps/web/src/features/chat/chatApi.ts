@@ -7,6 +7,24 @@ export interface ChatRequest {
   timezone?: string;
 }
 
+export interface ChatTurnSubmitRequest {
+  turn_id: string;
+  thread_id: string;
+  message: string;
+  timezone: string;
+}
+
+export interface ChatTurnStatusResponse {
+  turn_id: string;
+  thread_id: string;
+  status: 'queued' | 'processing' | 'succeeded' | 'failed';
+  result?: ChatResponse | null;
+  error_code?: string | null;
+  error_message?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface ChatTransactionProposal {
   type: TransactionType;
   amount_paise: number;
@@ -89,6 +107,16 @@ const chatApi = apiClient.injectEndpoints({
       // user never needs a browser refresh to see a chat-originated mutation.
       invalidatesTags: ['Category', 'Transaction', 'Account', 'Split'],
     }),
+    submitChatTurn: builder.mutation<ChatTurnStatusResponse, ChatTurnSubmitRequest>({
+      query: (body) => ({
+        url: '/chat/turns',
+        method: 'POST',
+        body,
+      }),
+    }),
+    getChatTurnStatus: builder.query<ChatTurnStatusResponse, string>({
+      query: (turnId) => `/chat/turns/${encodeURIComponent(turnId)}`,
+    }),
     getChatThread: builder.query<ChatThreadDetail, string>({
       query: (threadId) => `/threads/${encodeURIComponent(threadId)}`,
     }),
@@ -129,6 +157,8 @@ const chatApi = apiClient.injectEndpoints({
 
 export const {
   useSendChatMessageMutation,
+  useSubmitChatTurnMutation,
+  useLazyGetChatTurnStatusQuery,
   useLazyGetChatThreadQuery,
   useOpenTransactionChatMutation,
   useTranscribeVoiceMutation,

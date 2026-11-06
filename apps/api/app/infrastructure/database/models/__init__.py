@@ -3,6 +3,7 @@ from app.infrastructure.database.models.agent_correction import AgentCorrectionM
 from app.infrastructure.database.models.category import CategoryModel
 from app.infrastructure.database.models.chat_message import ChatMessageModel
 from app.infrastructure.database.models.chat_thread import ChatThreadModel
+from app.infrastructure.database.models.chat_turn_job import ChatTurnJobModel
 from app.infrastructure.database.models.complex_settlement import (
     SettlementDraftModel,
     SettlementPlanModel,
@@ -30,6 +31,7 @@ __all__ = [
     'CategoryModel',
     'ChatMessageModel',
     'ChatThreadModel',
+    'ChatTurnJobModel',
     'SettlementDraftModel',
     'SettlementPlanModel',
     'SettlementPlanTransactionModel',

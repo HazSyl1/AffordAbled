@@ -36,6 +36,40 @@ class ChatResponseOutput:
     guardrail_layer: str = "semantic"
     insights: list[dict[str, str]] | None = None
 
+    def to_public_dict(self) -> dict:
+        def proposal_payload(proposal: PendingTransactionProposal) -> dict:
+            return {
+                'type': proposal.type,
+                'amount_paise': proposal.amount_paise,
+                'occurred_at': proposal.occurred_at,
+                'account_id': proposal.account_id,
+                'account_name': proposal.account_name,
+                'category_id': proposal.category_id,
+                'category_name': proposal.category_name,
+                'confidence_score': proposal.confidence_score,
+                'merchant': proposal.merchant,
+                'note': proposal.note,
+            }
+
+        return {
+            'thread_id': self.thread_id,
+            'message': self.message,
+            'tasks_completed': self.tasks_completed,
+            'show_completion_popup': self.show_completion_popup,
+            'pending_transaction_proposal': (
+                proposal_payload(self.pending_transaction_proposal)
+                if self.pending_transaction_proposal else None
+            ),
+            'pending_transaction_proposals': (
+                [proposal_payload(item) for item in self.pending_transaction_proposals]
+                if self.pending_transaction_proposals else None
+            ),
+            'transaction_logged': self.transaction_logged,
+            'created_transaction_id': self.created_transaction_id,
+            'manual_transaction_input_required': self.manual_transaction_input_required,
+            'insights': self.insights,
+        }
+
 
 @dataclass
 class ChatService:
@@ -55,6 +89,7 @@ class ChatService:
         message: str,
         thread_id: str | None = None,
         timezone: str | None = None,
+        turn_id: uuid.UUID | None = None,
     ) -> ChatResponseOutput:
         normalized_message = message.strip()
         if not normalized_message:
@@ -68,6 +103,7 @@ class ChatService:
             message=normalized_message,
             owner_name=user.name if user is not None else None,
             timezone=timezone,
+            turn_id=turn_id,
         )
 
         if user is not None and user.conversation_storage_enabled:
@@ -114,6 +150,7 @@ class ChatService:
                     role="user",
                     content=normalized_message,
                     created_at=now,
+                    turn_id=turn_id,
                 )
             )
             await self.chat_message_repository.create(
@@ -124,6 +161,7 @@ class ChatService:
                     role="assistant",
                     content=result.message,
                     created_at=now,
+                    turn_id=turn_id,
                 )
             )
 

@@ -39,6 +39,16 @@ class TransactionService:
     memory_event_writer: MemoryEventWriter | None = None
 
     async def create_transaction(self, data: CreateTransactionInput) -> Transaction:
+        if data.source_turn_id is not None and data.source_task_id is not None and data.source_item_index is not None:
+            existing = await self.transaction_repository.get_by_chat_source(
+                data.user_id,
+                data.source_turn_id,
+                data.source_task_id,
+                data.source_item_index,
+            )
+            if existing is not None:
+                return existing
+
         await self._validate_transaction(
             user_id=data.user_id,
             account_id=data.account_id,
@@ -63,6 +73,9 @@ class TransactionService:
             deleted_at=None,
             created_at=now,
             updated_at=now,
+            source_turn_id=data.source_turn_id,
+            source_task_id=data.source_task_id,
+            source_item_index=data.source_item_index,
         )
 
         await self._apply_balance_effect(transaction)

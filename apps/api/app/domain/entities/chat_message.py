@@ -13,3 +13,4 @@ class ChatMessage:
     role: str
     content: str
     created_at: datetime
+    turn_id: uuid.UUID | None = None

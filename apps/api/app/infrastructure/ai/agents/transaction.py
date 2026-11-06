@@ -146,6 +146,15 @@ class TransactionToolset:
                 merchant=merchant,
                 note=args.get("note"),
                 memory_review_context=memory_review_context,
+                source_turn_id=(
+                    uuid.UUID(str(context.constraints["turn_id"]))
+                    if context.constraints.get("turn_id") else None
+                ),
+                source_task_id=(
+                    str(context.constraints["task_id"])
+                    if context.constraints.get("task_id") else None
+                ),
+                source_item_index=int(args.get("_source_item_index", 0)),
             )
         )
         return {"transaction": self._serialize(transaction)}
@@ -154,7 +163,11 @@ class TransactionToolset:
         rows = args.get("transactions")
         if not isinstance(rows, list) or not 1 <= len(rows) <= 10:
             raise ValueError("transactions must contain between 1 and 10 rows")
-        created = [await self.create_transaction(context, row) for row in rows if isinstance(row, dict)]
+        created = [
+            await self.create_transaction(context, {**row, "_source_item_index": index})
+            for index, row in enumerate(rows)
+            if isinstance(row, dict)
+        ]
         if len(created) != len(rows):
             raise ValueError("each batch row must be an object")
         return {"transactions": [item["transaction"] for item in created]}

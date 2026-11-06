@@ -20,9 +20,9 @@ import {
   useLazyGetChatThreadQuery,
   useOpenTransactionChatMutation,
   type ChatTransactionProposal,
-  useSendChatMessageMutation,
   useTranscribeVoiceMutation,
 } from '../../features/chat/chatApi';
+import { useDurableChatTurn } from '../../features/chat/useDurableChatTurn';
 import { mapProposalToCreateTransactionValues } from '../../features/chat/chatProposal';
 import {
   createChatDraft,
@@ -86,7 +86,7 @@ export function ChatPage() {
 function ChatWorkspace({ userId }: { userId: string }) {
   const navigate = useNavigate();
   const location = useLocation();
-  const [sendChatMessage, { isLoading: isSendingChatMessage }] = useSendChatMessageMutation();
+  const { runTurn, isProcessingTurn } = useDurableChatTurn();
   const [getChatThread] = useLazyGetChatThreadQuery();
   const [openTransactionChat] = useOpenTransactionChatMutation();
   const [transcribeVoice, { isLoading: isTranscribingVoice }] = useTranscribeVoiceMutation();
@@ -126,6 +126,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
   const chatMessagesRef = useRef<HTMLDivElement | null>(null);
   const transactionRedirectTimerRef = useRef<number | null>(null);
   const selectedThreadRequestRef = useRef(0);
+  const processingTurnIdsRef = useRef(new Set<string>());
   const [openingGreeting] = useState(() => {
     const options = DASHBOARD_CHAT_UI_TEXT.rotatingGreetings;
     const selectedGreeting = options[Math.floor(Math.random() * options.length)];
@@ -150,7 +151,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
 
   const filteredItems = activeFilter === 'finance' ? groupedDrafts.financeChats : groupedDrafts.draftChats;
   const messageList = selectedDraft?.messages ?? [];
-  const isAssistantResponding = isSendingChatMessage;
+  const isAssistantResponding = isProcessingTurn;
   const proposalInitialValues = useMemo(
     () => (proposalForSheet ? mapProposalToCreateTransactionValues(proposalForSheet) : undefined),
     [proposalForSheet],
@@ -305,6 +306,8 @@ function ChatWorkspace({ userId }: { userId: string }) {
     messages: ChatDraftMessage[],
     threadId?: string | null,
     lifecycleOverride?: ChatDraftLifecycle,
+    pendingTurnId?: string | null,
+    pendingSince?: string | null,
   ): ChatDraft => {
     const nextLifecycle = lifecycleOverride ?? draft.lifecycle;
     const savedDraft = saveChatDraft({
@@ -314,6 +317,8 @@ function ChatWorkspace({ userId }: { userId: string }) {
       lifecycle: nextLifecycle,
       transactionId: draft.transaction_id,
       threadId: threadId ?? draft.thread_id,
+      pendingTurnId,
+      pendingSince,
       messages,
       expiresAt: nextLifecycle === 'draft' ? draft.expires_at : null,
     });
@@ -324,7 +329,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
 
   const handleSendMessage = async (messageOverride?: string) => {
     const normalizedMessage = (messageOverride ?? chatInput).trim();
-    if (!normalizedMessage || isSendingChatMessage) {
+    if (!normalizedMessage || isProcessingTurn) {
       return;
     }
     setIsSideToolCollapsed(true);
@@ -342,15 +347,26 @@ function ChatWorkspace({ userId }: { userId: string }) {
     setChatError(null);
 
     const optimisticMessages = [...draft.messages, userMessage];
-    const optimisticDraft = persistDraftMessages(draft, optimisticMessages);
+    const threadId = draft.thread_id ?? crypto.randomUUID();
+    const turnId = crypto.randomUUID();
+    processingTurnIdsRef.current.add(turnId);
+    const optimisticDraft = persistDraftMessages(
+      draft,
+      optimisticMessages,
+      threadId,
+      undefined,
+      turnId,
+      new Date().toISOString(),
+    );
     queueChatDraftTitleGeneration(userId, optimisticDraft.id);
 
     try {
-      const response = await sendChatMessage({
+      const response = await runTurn({
+        turn_id: turnId,
+        thread_id: threadId,
         message: normalizedMessage,
-        thread_id: optimisticDraft.thread_id ?? undefined,
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      }).unwrap();
+      });
 
       const insightSummary = (response.insights ?? [])
         .map((insight) => `• ${insight.title}: ${insight.detail}`)
@@ -392,35 +408,126 @@ function ChatWorkspace({ userId }: { userId: string }) {
             lifecycle: 'conversation',
             transactionId: response.created_transaction_id,
             threadId: response.thread_id,
+            pendingTurnId: null,
+            pendingSince: null,
             messages: completedMessages,
           });
         } else {
-          savedDraft = persistDraftMessages(optimisticDraft, completedMessages, response.thread_id, nextLifecycle);
+          savedDraft = persistDraftMessages(
+            optimisticDraft, completedMessages, response.thread_id, nextLifecycle, null, null,
+          );
         }
         refreshDrafts(savedDraft.id);
         setActiveFilter('finance');
         if (response.show_completion_popup && !receiptTransactionLogged) {
           clearTaskSuccessTimer();
           setTaskSuccess({ message: assistantMessage.content, expiresAt: Date.now() + 12_000, transactionId: response.created_transaction_id ?? null });
-          transactionRedirectTimerRef.current = window.setTimeout(() => {
-            transactionRedirectTimerRef.current = null;
-            setTaskSuccess(null);
-            navigate('/dashboard');
-          }, 12_000);
         }
         return;
       }
 
-      persistDraftMessages(optimisticDraft, completedMessages, response.thread_id, nextLifecycle);
+      persistDraftMessages(optimisticDraft, completedMessages, response.thread_id, nextLifecycle, null, null);
 
       if (nextLifecycle === 'conversation') {
         setActiveFilter('finance');
       }
-    } catch {
-      setChatError(DASHBOARD_CHAT_UI_TEXT.assistantError);
-      openManualTransactionFallback('The assistant could not finish this request. You can enter the transaction manually. If the request may have reached the server, check Transactions first to avoid adding it twice.');
+    } catch (error) {
+      persistDraftMessages(optimisticDraft, optimisticMessages, threadId, undefined, null, null);
+      setChatError(error instanceof Error ? error.message : DASHBOARD_CHAT_UI_TEXT.assistantError);
+    } finally {
+      processingTurnIdsRef.current.delete(turnId);
     }
   };
+
+  useEffect(() => {
+    const pendingDraft = drafts.find(
+      (draft) => draft.pending_turn_id && draft.thread_id
+        && !processingTurnIdsRef.current.has(draft.pending_turn_id),
+    );
+    if (!pendingDraft?.pending_turn_id || !pendingDraft.thread_id) return;
+    const lastUserMessage = [...pendingDraft.messages].reverse().find((message) => message.role === 'user');
+    if (!lastUserMessage) return;
+
+    const turnId = pendingDraft.pending_turn_id;
+    processingTurnIdsRef.current.add(turnId);
+
+    void runTurn({
+      turn_id: turnId,
+      thread_id: pendingDraft.thread_id,
+      message: lastUserMessage.content,
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    }).then(async (response) => {
+      let completedMessages = pendingDraft.messages;
+      try {
+        const detail = await getChatThread(response.thread_id, false).unwrap();
+        completedMessages = detail.messages.map((message) => ({
+          id: message.id,
+          role: message.role,
+          content: message.content,
+        }));
+      } catch {
+        if (!completedMessages.some(
+          (message) => message.role === 'assistant' && message.content === response.message,
+        )) {
+          completedMessages = [
+            ...completedMessages,
+            { id: createLocalMessageId(), role: 'assistant', content: response.message },
+          ];
+        }
+      }
+      let savedDraft: ChatDraft;
+      if (response.transaction_logged && response.created_transaction_id) {
+        deleteChatDraft(userId, pendingDraft.id);
+        savedDraft = saveChatDraft({
+          userId,
+          kind: 'transaction',
+          lifecycle: 'conversation',
+          transactionId: response.created_transaction_id,
+          threadId: response.thread_id,
+          pendingTurnId: null,
+          pendingSince: null,
+          messages: completedMessages,
+        });
+      } else {
+        savedDraft = saveChatDraft({
+          userId,
+          draftId: pendingDraft.id,
+          kind: pendingDraft.kind,
+          lifecycle: pendingDraft.lifecycle === 'draft' ? 'conversation' : pendingDraft.lifecycle,
+          transactionId: pendingDraft.transaction_id,
+          threadId: response.thread_id,
+          pendingTurnId: null,
+          pendingSince: null,
+          messages: completedMessages,
+        });
+      }
+      setDrafts(listChatDrafts(userId));
+      setSelectedDraftId(savedDraft.id);
+      if (response.show_completion_popup) {
+        setTaskSuccess({
+          message: response.message,
+          expiresAt: Date.now() + 12_000,
+          transactionId: response.created_transaction_id ?? null,
+        });
+      }
+    }).catch((error) => {
+      saveChatDraft({
+        userId,
+        draftId: pendingDraft.id,
+        kind: pendingDraft.kind,
+        lifecycle: pendingDraft.lifecycle,
+        transactionId: pendingDraft.transaction_id,
+        threadId: pendingDraft.thread_id,
+        pendingTurnId: null,
+        pendingSince: null,
+        messages: pendingDraft.messages,
+      });
+      setDrafts(listChatDrafts(userId));
+      setChatError(error instanceof Error ? error.message : DASHBOARD_CHAT_UI_TEXT.assistantError);
+    }).finally(() => {
+      processingTurnIdsRef.current.delete(turnId);
+    });
+  }, [drafts, getChatThread, runTurn, userId]);
 
   const handleRecordedVoice = async (voiceFile: File) => {
     if (!voiceFile) {
@@ -884,7 +991,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
               type='button'
               className='inline-flex h-12 w-12 items-center justify-center rounded-xl border border-[var(--bg-border)] bg-[var(--bg-elevated)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-card)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)] disabled:cursor-not-allowed disabled:opacity-60'
               aria-label='Upload and send image note'
-              disabled={isSendingChatMessage || isAnalyzingImage}
+              disabled={isProcessingTurn || isAnalyzingImage}
               onClick={() => imageFileInputRef.current?.click()}
             >
               {isAnalyzingImage ? (
@@ -908,7 +1015,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
             <button
               type='button'
               className='inline-flex h-12 min-w-16 items-center justify-center rounded-xl bg-[var(--brand-primary)] px-4 text-sm font-semibold text-white transition-colors hover:bg-[var(--brand-hover)] active:bg-[var(--brand-active)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)] disabled:cursor-not-allowed disabled:opacity-60'
-              disabled={chatInput.trim().length === 0 || isSendingChatMessage}
+              disabled={chatInput.trim().length === 0 || isProcessingTurn}
               onClick={() => {
                 void handleSendMessage();
               }}

@@ -1636,6 +1636,7 @@ class AgentGraphState(TypedDict, total=False):
     specialist_steps: int
     final_response: str | None
     last_transaction_window: dict[str, str]
+    active_turn_id: str | None
 
 
 class AgenticSupervisorGraph:
@@ -1775,7 +1776,7 @@ class AgenticSupervisorGraph:
 
     async def invoke(
         self, *, user_id: uuid.UUID, thread_id: str, message: str, timezone: str = "UTC",
-        owner_name: str | None = None,
+        owner_name: str | None = None, turn_id: uuid.UUID | None = None,
     ) -> dict[str, Any]:
         config = {"configurable": {"thread_id": f"{user_id}:{thread_id}"}}
         current_datetime = _current_datetime(timezone)
@@ -1805,6 +1806,7 @@ class AgenticSupervisorGraph:
             updated_history.append({"role": "user", "content": message})
             resume_update: dict[str, Any] = {
                 "messages": [HumanMessage(content=message)],
+                "active_turn_id": str(turn_id) if turn_id else None,
                 "conversation_history": updated_history[-100:],
                 "current_datetime": current_datetime,
                 "verified_transaction_references": merge_verified_transaction_references(
@@ -1908,6 +1910,7 @@ class AgenticSupervisorGraph:
                     {"role": "user", "content": message},
                 ][-100:],
                 "user_id": str(user_id),
+                "active_turn_id": str(turn_id) if turn_id else None,
                 "owner_name": owner_name,
                 "timezone": timezone,
                 "current_datetime": current_datetime,
@@ -2068,6 +2071,7 @@ class AgenticSupervisorGraph:
             owner_name=state.get("owner_name"),
             constraints={
                 "task_id": active_contract.id if active_contract else None,
+                "turn_id": state.get("active_turn_id"),
                 "latest_user_reply": str(state["messages"][-1].content),
                 "completed_tasks": state.get("completed_tasks", []),
                 "remaining_tasks": task_queue,
@@ -2674,6 +2678,7 @@ class AgenticSupervisorGraph:
             owner_name=state.get("owner_name"),
             constraints={
                 "task_id": active_contract.id if active_contract else None,
+                "turn_id": state.get("active_turn_id"),
                 "task_contract": active_contract.model_dump() if active_contract else None,
                 "specialist_results": state.get("results", []),
                 "prior_specialist_results": state.get("prior_results", []),
@@ -2714,6 +2719,7 @@ class AgenticChatOrchestrator:
         message: str,
         owner_name: str | None = None,
         timezone: str | None = None,
+        turn_id: uuid.UUID | None = None,
     ) -> ChatTurnResult:
         result = await self._graph.invoke(
             user_id=user_id,
@@ -2721,6 +2727,7 @@ class AgenticChatOrchestrator:
             message=message,
             timezone=timezone or "UTC",
             owner_name=owner_name,
+            turn_id=turn_id,
         )
         interrupts = result.get("__interrupt__", [])
         if interrupts:

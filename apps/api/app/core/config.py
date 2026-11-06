@@ -60,6 +60,11 @@ class Settings(BaseSettings):
     memory_outbox_enabled: bool = True
     memory_outbox_poll_interval_seconds: int = 5
     memory_outbox_batch_size: int = 20
+    chat_turn_worker_enabled: bool = True
+    chat_turn_poll_interval_seconds: int = 2
+    chat_turn_stale_after_seconds: int = 600
+    chat_turn_max_attempts: int = 3
+    chat_turn_retention_days: int = 7
 
     langsmith_api_key: str = ''
     langsmith_tracing: bool = False

@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, String, Text, func
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.infrastructure.database.base import Base
@@ -11,6 +11,12 @@ from app.infrastructure.database.base import Base
 
 class TransactionModel(Base):
     __tablename__ = 'transactions'
+    __table_args__ = (
+        UniqueConstraint(
+            'user_id', 'source_turn_id', 'source_task_id', 'source_item_index',
+            name='uq_transactions_chat_source',
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(
@@ -37,6 +43,9 @@ class TransactionModel(Base):
     amount_paise: Mapped[int] = mapped_column(BigInteger, nullable=False)
     merchant: Mapped[str | None] = mapped_column(String(255), nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_turn_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True, index=True)
+    source_task_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    source_item_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

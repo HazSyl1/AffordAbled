@@ -13,6 +13,8 @@ export interface ChatDraft {
   lifecycle: ChatDraftLifecycle;
   transaction_id: string | null;
   thread_id: string | null;
+  pending_turn_id: string | null;
+  pending_since: string | null;
   title: string;
   messages: ChatDraftMessage[];
   updated_at: string;
@@ -26,6 +28,8 @@ interface SaveChatDraftInput {
   lifecycle?: ChatDraftLifecycle;
   transactionId?: string | null;
   threadId?: string | null;
+  pendingTurnId?: string | null;
+  pendingSince?: string | null;
   messages: ChatDraftMessage[];
   expiresAt?: string | null;
   title?: string | null;
@@ -195,6 +199,8 @@ function normalizeDraft(rawDraft: unknown): ChatDraft | null {
   const lifecycle = isValidLifecycle(candidate.lifecycle) ? candidate.lifecycle : 'conversation';
   const transactionId = typeof candidate.transaction_id === 'string' ? candidate.transaction_id : null;
   const threadId = typeof candidate.thread_id === 'string' ? candidate.thread_id : null;
+  const pendingTurnId = typeof candidate.pending_turn_id === 'string' ? candidate.pending_turn_id : null;
+  const pendingSince = typeof candidate.pending_since === 'string' ? candidate.pending_since : null;
   const updatedAt = typeof candidate.updated_at === 'string' ? candidate.updated_at : getDefaultOccurredAtIso();
   const messages = normalizeMessages(candidate.messages);
   const title =
@@ -217,6 +223,8 @@ function normalizeDraft(rawDraft: unknown): ChatDraft | null {
     lifecycle,
     transaction_id: transactionId,
     thread_id: threadId,
+    pending_turn_id: pendingTurnId,
+    pending_since: pendingSince,
     title,
     messages,
     updated_at: updatedAt,
@@ -347,6 +355,8 @@ export function createChatDraft(
     lifecycle,
     transaction_id: transactionId,
     thread_id: null,
+    pending_turn_id: null,
+    pending_since: null,
     title: getInitialTitle(kind, transactionId, options.title),
     messages: [],
     updated_at: nowIso,
@@ -376,6 +386,12 @@ export function saveChatDraft(input: SaveChatDraftInput): ChatDraft {
   const lifecycle = input.lifecycle ?? existingDraft?.lifecycle ?? 'conversation';
   const transactionId = existingDraft?.transaction_id ?? input.transactionId ?? null;
   const threadId = input.threadId ?? existingDraft?.thread_id ?? null;
+  const pendingTurnId = input.pendingTurnId === undefined
+    ? existingDraft?.pending_turn_id ?? null
+    : input.pendingTurnId;
+  const pendingSince = input.pendingSince === undefined
+    ? existingDraft?.pending_since ?? null
+    : input.pendingSince;
   const expiresAt =
     lifecycle === 'draft' ? input.expiresAt ?? existingDraft?.expires_at ?? getDefaultDraftExpiryIso(nowIso) : null;
   const explicitTitle = typeof input.title === 'string' ? input.title.trim() : null;
@@ -395,6 +411,8 @@ export function saveChatDraft(input: SaveChatDraftInput): ChatDraft {
     lifecycle,
     transaction_id: transactionId,
     thread_id: threadId,
+    pending_turn_id: pendingTurnId,
+    pending_since: pendingSince,
     title: nextTitle,
     messages: normalizedMessages,
     updated_at: input.preserveUpdatedAt && existingDraft ? existingDraft.updated_at : nowIso,
