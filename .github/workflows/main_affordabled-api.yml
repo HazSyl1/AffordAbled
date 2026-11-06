@@ -62,6 +62,12 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      - name: Apply database migrations
+        working-directory: deploy/api
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: antenv/bin/python -m alembic upgrade head
+
       - name: Deploy API to Azure
         uses: azure/webapps-deploy@v3
         with:
