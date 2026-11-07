@@ -38,6 +38,7 @@ class ChatResponse(BaseModel):
     pending_transaction_proposals: list[PendingTransactionProposalResponse] | None = None
     transaction_logged: bool = False
     created_transaction_id: str | None = None
+    created_split_ids: list[str] = Field(default_factory=list)
     manual_transaction_input_required: bool = False
     insights: list[ChatInsightResponse] | None = None
 

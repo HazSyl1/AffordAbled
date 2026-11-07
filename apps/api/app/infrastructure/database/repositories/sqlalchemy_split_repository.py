@@ -31,6 +31,32 @@ class SqlAlchemySplitRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
+    async def _validate_participant_contacts(
+        self, user_id: uuid.UUID, participants: list[ParticipantShare | ParticipantEditShare],
+    ) -> dict[str, uuid.UUID]:
+        requested = {person.contact_id for person in participants if person.contact_id is not None}
+        contacts: dict[uuid.UUID, SplitContactModel] = {}
+        if requested:
+            rows = await self.session.scalars(
+                select(SplitContactModel).where(
+                    SplitContactModel.user_id == user_id, SplitContactModel.id.in_(requested),
+                )
+            )
+            contacts = {contact.id: contact for contact in rows.all()}
+            if set(contacts) != requested:
+                raise ValueError('A selected contact was not found.')
+        for person in participants:
+            if person.contact_id is not None and (
+                contacts[person.contact_id].normalized_name != person.name.strip().casefold()
+            ):
+                raise ValueError('The selected contact does not match the participant name.')
+        normalized_names = {person.name.strip().casefold() for person in participants}
+        matches = await self.session.scalars(select(SplitContactModel).where(
+            SplitContactModel.user_id == user_id,
+            SplitContactModel.normalized_name.in_(normalized_names),
+        ))
+        return {contact.normalized_name: contact.id for contact in matches.all()}
+
     async def is_linked(self, user_id: uuid.UUID, transaction_id: uuid.UUID) -> bool:
         split_id = await self.session.scalar(
             select(SplitModel.id).where(
@@ -76,6 +102,7 @@ class SqlAlchemySplitRepository:
         owner_share_paise: int, participants: list[ParticipantShare], item_breakdown: list[dict] | None = None,
         settlement_breakdown: dict | None = None,
     ) -> SplitModel:
+        contact_ids = await self._validate_participant_contacts(user_id, participants)
         existing_plan = await self.session.scalar(
             select(SettlementPlanTransactionModel.transaction_id).join(SettlementPlanModel).where(
                 SettlementPlanModel.user_id == user_id,
@@ -105,6 +132,7 @@ class SqlAlchemySplitRepository:
             settlement_breakdown=settlement_breakdown,
             participants=[
                 SplitParticipantModel(id=uuid.uuid4(), name=person.name, share_paise=person.share_paise,
+                                      contact_id=person.contact_id or contact_ids.get(person.name.strip().casefold()),
                                       settled_paise=0)
                 for person in participants
             ],
@@ -128,12 +156,14 @@ class SqlAlchemySplitRepository:
     async def create_owed_batch(
         self, user_id: uuid.UUID, title: str, people: list[ParticipantShare], direction: str,
     ) -> list[SplitModel]:
+        contact_ids = await self._validate_participant_contacts(user_id, people)
         splits = [
             SplitModel(
                 id=uuid.uuid4(), user_id=user_id, transaction_id=None, title=title,
                 direction=direction, owner_share_paise=0, item_breakdown=None,
                 participants=[SplitParticipantModel(
-                    id=uuid.uuid4(), name=person.name, share_paise=person.share_paise, settled_paise=0,
+                    id=uuid.uuid4(), name=person.name, share_paise=person.share_paise,
+                    contact_id=person.contact_id or contact_ids.get(person.name.strip().casefold()), settled_paise=0,
                 )],
             )
             for person in people
@@ -166,6 +196,7 @@ class SqlAlchemySplitRepository:
         self, user_id: uuid.UUID, split_id: uuid.UUID, title: str,
         owner_share_paise: int, participants: list[ParticipantEditShare],
     ) -> SplitModel | None:
+        contact_ids = await self._validate_participant_contacts(user_id, participants)
         split = await self.get_for_user(user_id, split_id)
         if split is None:
             return None
@@ -232,11 +263,16 @@ class SqlAlchemySplitRepository:
             for person in participants:
                 if person.id is None:
                     split.participants.append(SplitParticipantModel(
-                        id=uuid.uuid4(), name=person.name, share_paise=person.share_paise, settled_paise=0,
+                        id=uuid.uuid4(), name=person.name, share_paise=person.share_paise,
+                        contact_id=person.contact_id or contact_ids.get(person.name.strip().casefold()),
+                        settled_paise=0,
                     ))
                 else:
                     existing[person.id].name = person.name
                     existing[person.id].share_paise = person.share_paise
+                    existing[person.id].contact_id = (
+                        person.contact_id or contact_ids.get(person.name.strip().casefold())
+                    )
             await self.session.commit()
         except IntegrityError as error:
             await self.session.rollback()
@@ -717,6 +753,43 @@ class SqlAlchemySplitRepository:
         except IntegrityError as error:
             await self.session.rollback()
             raise ValueError('This split contact already exists. Please try again.') from error
+        return contact
+
+    async def set_contact_details(
+        self, user_id: uuid.UUID, name: str, phone_e164: str | None, email: str | None = None,
+    ) -> SplitContactModel:
+        clean_name = name.strip()
+        normalized_name = clean_name.casefold()
+        contact = await self.session.scalar(
+            select(SplitContactModel).where(
+                SplitContactModel.user_id == user_id,
+                SplitContactModel.normalized_name == normalized_name,
+            )
+        )
+        if contact is None:
+            contact = SplitContactModel(
+                id=uuid.uuid4(), user_id=user_id, name=clean_name, normalized_name=normalized_name,
+            )
+            self.session.add(contact)
+            await self.session.flush()
+        else:
+            contact.name = clean_name
+        contact.phone_e164 = phone_e164
+        contact.email = email
+        participants = await self.session.scalars(
+            select(SplitParticipantModel).join(SplitModel).where(
+                SplitModel.user_id == user_id, SplitParticipantModel.contact_id.is_(None),
+            )
+        )
+        for participant in participants.all():
+            if participant.name.strip().casefold() == normalized_name:
+                participant.contact_id = contact.id
+        try:
+            await self.session.commit()
+        except IntegrityError as error:
+            await self.session.rollback()
+            raise ValueError('This split contact already exists. Please try again.') from error
+        await self.session.refresh(contact)
         return contact
 
     async def delete_contact_preference(self, user_id: uuid.UUID, contact_id: uuid.UUID) -> bool:

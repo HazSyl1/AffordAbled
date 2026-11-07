@@ -29,6 +29,7 @@ class ChatResponseOutput:
     pending_transaction_proposals: list[PendingTransactionProposal] | None = None
     transaction_logged: bool = False
     created_transaction_id: str | None = None
+    created_split_ids: list[str] | None = None
     manual_transaction_input_required: bool = False
     intent: str | None = None
     guardrail_decision: str = "allow"
@@ -66,6 +67,7 @@ class ChatResponseOutput:
             ),
             'transaction_logged': self.transaction_logged,
             'created_transaction_id': self.created_transaction_id,
+            'created_split_ids': self.created_split_ids or [],
             'manual_transaction_input_required': self.manual_transaction_input_required,
             'insights': self.insights,
         }
@@ -207,6 +209,7 @@ class ChatService:
             pending_transaction_proposals=result.pending_transaction_proposals,
             transaction_logged=result.transaction_logged,
             created_transaction_id=result.created_transaction_id,
+            created_split_ids=result.created_split_ids,
             manual_transaction_input_required=result.manual_transaction_input_required,
             intent=result.intent,
             guardrail_decision=result.guardrail_decision,

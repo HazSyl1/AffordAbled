@@ -6,6 +6,7 @@ export interface SplitParticipant {
   share_paise: number;
   settled_paise: number;
   repayment_transaction_id: string | null;
+  contact_id: string | null;
   payments: { id: string; amount_paise: number; transaction_id: string | null; created_at: string }[];
 }
 
@@ -72,7 +73,7 @@ export interface CreateSplitRequest {
   amount_paise: number;
   mode: 'equal' | 'custom';
   owner_share_paise?: number;
-  participants: { name: string; share_paise: number }[];
+  participants: { name: string; share_paise: number; contact_id?: string }[];
 }
 
 export interface CreateOwedRequest {
@@ -80,12 +81,48 @@ export interface CreateOwedRequest {
   name: string;
   amount_paise: number;
   direction: 'to_you' | 'by_you';
+  contact_id?: string;
 }
 
 export interface UpdateSplitRequest {
   title: string;
   owner_share_paise: number;
-  participants: { id?: string; name: string; share_paise: number }[];
+  participants: { id?: string; name: string; share_paise: number; contact_id?: string }[];
+}
+
+export interface SplitContactDetails {
+  id: string;
+  name: string;
+  phone_e164: string | null;
+  email: string | null;
+  dietary_preference: 'vegetarian' | 'vegan' | 'omnivore' | null;
+}
+
+export interface SplitNotificationHistory {
+  id: string;
+  status: 'queued' | 'processing' | 'sent' | 'failed' | 'rate_limited' | 'cancelled' | 'uncertain';
+  channel: string;
+  blocked_reason: string | null;
+  provider_error_message: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+export interface SplitNotificationStatus {
+  server_now: string;
+  can_notify: boolean;
+  blocked_reason: string | null;
+  notification_count: number;
+  max_notifications: number;
+  last_sent_at: string | null;
+  next_available_at: string | null;
+  cooldown_remaining_seconds: number;
+  request_in_progress: boolean;
+  message_preview: string | null;
+  recipient_phone_masked: string | null;
+  recipient_email_masked?: string | null;
+  channel?: 'sms' | 'email';
+  history: SplitNotificationHistory[];
 }
 
 const splitsApi = apiClient.injectEndpoints({
@@ -106,6 +143,13 @@ const splitsApi = apiClient.injectEndpoints({
       invalidatesTags: ['Split', 'Transaction', 'Account', 'Category'],
     }),
     listSplitContacts: builder.query<string[], void>({ query: () => '/splits/contacts', providesTags: ['Split'] }),
+    listSplitContactDetails: builder.query<SplitContactDetails[], void>({
+      query: () => '/splits/contacts/details', providesTags: ['Split'],
+    }),
+    setSplitContactDetails: builder.mutation<SplitContactDetails, { name: string; phone_e164: string | null; email: string | null }>({
+      query: (body) => ({ url: '/splits/contacts/details', method: 'PUT', body }),
+      invalidatesTags: ['Split', 'SplitNotification'],
+    }),
     listSplitContactPreferences: builder.query<SplitContactPreference[], void>({
       query: () => '/splits/contacts/preferences', providesTags: ['Split'],
     }),
@@ -172,6 +216,22 @@ const splitsApi = apiClient.injectEndpoints({
       query: (splitId) => ({ url: `/splits/${splitId}`, method: 'DELETE' }),
       invalidatesTags: ['Split'],
     }),
+    listSplitNotificationStatuses: builder.query<Record<string, SplitNotificationStatus>, void>({
+      query: () => '/splits/notification-statuses', providesTags: ['SplitNotification'],
+    }),
+    getSplitNotificationStatus: builder.query<SplitNotificationStatus, { splitId: string; participantId: string }>({
+      query: ({ splitId, participantId }) => `/splits/${splitId}/participants/${participantId}/notifications`,
+      providesTags: ['SplitNotification'],
+    }),
+    queueSplitNotification: builder.mutation<{
+      notification_id: string; status: string; created_at: string;
+    }, { splitId: string; participantId: string; idempotencyKey: string }>({
+      query: ({ splitId, participantId, idempotencyKey }) => ({
+        url: `/splits/${splitId}/participants/${participantId}/notifications`, method: 'POST',
+        headers: { 'Idempotency-Key': idempotencyKey },
+      }),
+      invalidatesTags: ['SplitNotification'],
+    }),
   }),
 });
 
@@ -186,4 +246,8 @@ export const {
   useListSplitContactPreferencesQuery, useSetSplitContactPreferenceMutation,
   useListSplitPreferenceSuggestionsQuery,
   useDeleteSplitContactPreferenceMutation,
+  useListSplitContactDetailsQuery, useSetSplitContactDetailsMutation,
+  useListSplitNotificationStatusesQuery, useLazyGetSplitNotificationStatusQuery,
+  useQueueSplitNotificationMutation,
+  useLazyListSplitsQuery,
 } = splitsApi;

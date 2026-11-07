@@ -1,5 +1,5 @@
 import { ChevronDown, ChevronUp, ImagePlus, LoaderCircle, Mic } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 
 import { useAppSelector } from '../../app/hooks';
@@ -37,7 +37,11 @@ import {
 import { useVoiceCapture } from '../../features/chat/useVoiceCapture';
 import { useListMemorySuggestionsQuery } from '../../features/memory/memoryApi';
 import { useListTransactionsQuery } from '../../features/transactions/transactionsApi';
+import {
+  useLazyListSplitsQuery, type Split, type SplitParticipant,
+} from '../../features/splits/splitsApi';
 import { useBodyScrollLock } from '../../lib/useBodyScrollLock';
+import { NotificationConfirmDialog } from '../SplitsPage/NotificationConfirmDialog';
 
 type ChatListFilter = 'finance' | 'drafts';
 
@@ -88,6 +92,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
   const location = useLocation();
   const { runTurn, isProcessingTurn } = useDurableChatTurn();
   const [getChatThread] = useLazyGetChatThreadQuery();
+  const [getSplits] = useLazyListSplitsQuery();
   const [openTransactionChat] = useOpenTransactionChatMutation();
   const [transcribeVoice, { isLoading: isTranscribingVoice }] = useTranscribeVoiceMutation();
   const [analyzeImage, { isLoading: isAnalyzingImage }] = useAnalyzeImageMutation();
@@ -98,6 +103,10 @@ function ChatWorkspace({ userId }: { userId: string }) {
   const [isMobileHistoryOpen, setIsMobileHistoryOpen] = useState(false);
   const [chatInput, setChatInput] = useState('');
   const [chatError, setChatError] = useState<string | null>(null);
+  const [notificationNotice, setNotificationNotice] = useState<string | null>(null);
+  const [pendingSplitReminders, setPendingSplitReminders] = useState<
+    { split: Split; participant: SplitParticipant }[]
+  >([]);
   const [manualFallbackMessage, setManualFallbackMessage] = useState<string | null>(null);
   const receiptUploadRef = useRef(false);
   const [showProposalSheet, setShowProposalSheet] = useState(false);
@@ -156,6 +165,19 @@ function ChatWorkspace({ userId }: { userId: string }) {
     () => (proposalForSheet ? mapProposalToCreateTransactionValues(proposalForSheet) : undefined),
     [proposalForSheet],
   );
+
+  const prepareSplitReminders = useCallback(async (splitIds: string[] | undefined) => {
+    if (!splitIds?.length) return;
+    const splits = await getSplits(undefined, false).unwrap();
+    const requestedIds = new Set(splitIds);
+    const reminders = splits
+      .filter((split) => requestedIds.has(split.id) && split.direction === 'to_you')
+      .flatMap((split) => split.participants
+        .filter((participant) => participant.contact_id
+          && participant.share_paise > participant.settled_paise)
+        .map((participant) => ({ split, participant })));
+    setPendingSplitReminders((current) => [...current, ...reminders]);
+  }, [getSplits]);
 
   const openManualTransactionFallback = (message: string) => {
     receiptUploadRef.current = false;
@@ -367,6 +389,9 @@ function ChatWorkspace({ userId }: { userId: string }) {
         message: normalizedMessage,
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       });
+      void prepareSplitReminders(response.created_split_ids).catch(() => {
+        setChatError('The split was created, but reminder details could not be loaded.');
+      });
 
       const insightSummary = (response.insights ?? [])
         .map((insight) => `• ${insight.title}: ${insight.detail}`)
@@ -457,6 +482,9 @@ function ChatWorkspace({ userId }: { userId: string }) {
       message: lastUserMessage.content,
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     }).then(async (response) => {
+      void prepareSplitReminders(response.created_split_ids).catch(() => {
+        setChatError('The split was created, but reminder details could not be loaded.');
+      });
       let completedMessages = pendingDraft.messages;
       try {
         const detail = await getChatThread(response.thread_id, false).unwrap();
@@ -527,7 +555,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
     }).finally(() => {
       processingTurnIdsRef.current.delete(turnId);
     });
-  }, [drafts, getChatThread, runTurn, userId]);
+  }, [drafts, getChatThread, prepareSplitReminders, runTurn, userId]);
 
   const handleRecordedVoice = async (voiceFile: File) => {
     if (!voiceFile) {
@@ -974,6 +1002,11 @@ function ChatWorkspace({ userId }: { userId: string }) {
               {chatError}
             </p>
           ) : null}
+          {notificationNotice ? (
+            <p className='mb-2 text-sm text-[var(--positive)]' role='status'>
+              {notificationNotice}
+            </p>
+          ) : null}
 
           <div className='flex items-center gap-2'>
             <button
@@ -1143,6 +1176,14 @@ function ChatWorkspace({ userId }: { userId: string }) {
           }}
         />
       </BottomSheet>
+      {pendingSplitReminders[0] ? (
+        <NotificationConfirmDialog
+          split={pendingSplitReminders[0].split}
+          participant={pendingSplitReminders[0].participant}
+          onQueued={setNotificationNotice}
+          onClose={() => setPendingSplitReminders((current) => current.slice(1))}
+        />
+      ) : null}
     </div>
   );
 }

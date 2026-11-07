@@ -21,6 +21,7 @@ export interface LoginRequest {
 export interface UpdateProfileRequest {
   name: string;
   date_of_birth: string | null;
+  upi_id: string | null;
 }
 
 export interface ProfileTransactionSummary {

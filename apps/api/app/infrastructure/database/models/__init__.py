@@ -22,6 +22,7 @@ from app.infrastructure.database.models.recurring_transaction import RecurringTr
 from app.infrastructure.database.models.refresh_session import RefreshSessionModel
 from app.infrastructure.database.models.split import SplitModel, SplitParticipantModel, SplitPaymentModel
 from app.infrastructure.database.models.split_contact import SplitContactModel
+from app.infrastructure.database.models.split_notification import SplitNotificationModel
 from app.infrastructure.database.models.transaction import TransactionModel
 from app.infrastructure.database.models.transaction_import import TransactionImportModel
 from app.infrastructure.database.models.user import UserModel
@@ -45,6 +46,7 @@ __all__ = [
     'SplitParticipantModel',
     'SplitPaymentModel',
     'SplitContactModel',
+    'SplitNotificationModel',
     'MemoryModel',
     'MemoryOutboxModel',
     'MemoryAnalysisOutboxModel',

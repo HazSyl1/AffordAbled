@@ -47,11 +47,13 @@ class UserResponse(BaseModel):
     email: str
     name: str
     date_of_birth: date | None
+    upi_id: str | None = None
 
 
 class UpdateProfileRequest(BaseModel):
     name: str = Field(min_length=2, max_length=120)
     date_of_birth: date | None
+    upi_id: str | None = Field(default=None, max_length=255)
 
     @field_validator('name')
     @classmethod
@@ -64,6 +66,19 @@ class UpdateProfileRequest(BaseModel):
         if value is not None and value >= datetime.now(UTC).date():
             raise ValueError('Date of birth must be in the past')
         return value
+
+    @field_validator('upi_id')
+    @classmethod
+    def validate_upi_id(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        normalized = value.strip()
+        if any(character.isspace() for character in normalized) or normalized.count('@') != 1:
+            raise ValueError('Enter a valid UPI ID, such as name@bank')
+        payer, handle = normalized.split('@', 1)
+        if not payer or not handle:
+            raise ValueError('Enter a valid UPI ID, such as name@bank')
+        return normalized
 
 
 class ProfileTransactionSummaryResponse(BaseModel):

@@ -27,6 +27,7 @@ def matches_owner_name(name: str, owner_name: str | None) -> bool:
 class ParticipantShare:
     name: str
     share_paise: int
+    contact_id: uuid.UUID | None = None
 
 
 @dataclass(frozen=True)
@@ -34,6 +35,7 @@ class ParticipantEditShare:
     id: uuid.UUID | None
     name: str
     share_paise: int
+    contact_id: uuid.UUID | None = None
 
 
 class SplitStore(Protocol):
@@ -99,6 +101,10 @@ class SplitStore(Protocol):
 
     async def delete_contact_preference(self, user_id: uuid.UUID, contact_id: uuid.UUID) -> bool: ...
 
+    async def set_contact_details(
+        self, user_id: uuid.UUID, name: str, phone_e164: str | None, email: str | None = None,
+    ): ...
+
 
 class MemoryEventWriter(Protocol):
     async def add_review_event(self, **kwargs): ...
@@ -111,7 +117,7 @@ class SplitService:
 
     async def create_owed(
         self, user_id: uuid.UUID, title: str | None, name: str, amount_paise: int,
-        direction: str = 'to_you', owner_name: str | None = None,
+        direction: str = 'to_you', owner_name: str | None = None, contact_id: uuid.UUID | None = None,
     ):
         clean_title = (title or '').strip() or 'Money owed'
         clean_name = capitalize_name(name)
@@ -129,7 +135,7 @@ class SplitService:
         if direction not in {'to_you', 'by_you'}:
             raise ValueError('Choose whether the other person owes you or you owe them.')
         return await self.store.create_owed(
-            user_id, clean_title, ParticipantShare(clean_name, amount_paise), direction,
+            user_id, clean_title, ParticipantShare(clean_name, amount_paise, contact_id), direction,
         )
 
     async def create_owed_batch(
@@ -155,7 +161,7 @@ class SplitService:
                 )
             if person.share_paise <= 0:
                 raise ValueError('Each amount owed must be positive.')
-            cleaned.append(ParticipantShare(name, person.share_paise))
+            cleaned.append(ParticipantShare(name, person.share_paise, person.contact_id))
         if len({person.name.casefold() for person in cleaned}) != len(cleaned):
             raise ValueError('Each person can appear only once in a request.')
         return await self.store.create_owed_batch(user_id, clean_title, cleaned, direction)
@@ -182,12 +188,15 @@ class SplitService:
             if base <= 0:
                 raise ValueError('Amount is too small to divide between everyone.')
             owner_share_paise = base + remainder
-            shares = [ParticipantShare(name, base) for name in names]
+            shares = [
+                ParticipantShare(name, base, person.contact_id)
+                for name, person in zip(names, participants, strict=True)
+            ]
         elif mode == 'custom':
             if owner_share_paise is None or owner_share_paise < 0:
                 raise ValueError('Enter your share for a custom split.')
             shares = [
-                ParticipantShare(name, person.share_paise)
+                ParticipantShare(name, person.share_paise, person.contact_id)
                 for name, person in zip(names, participants, strict=True)
             ]
             if any(person.share_paise <= 0 for person in shares):
@@ -333,7 +342,7 @@ class SplitService:
         ids = [person.id for person in participants if person.id is not None]
         if len(ids) != len(set(ids)):
             raise ValueError('Each existing person may only appear once.')
-        cleaned = [ParticipantEditShare(person.id, name, person.share_paise)
+        cleaned = [ParticipantEditShare(person.id, name, person.share_paise, person.contact_id)
                    for person, name in zip(participants, names, strict=True)]
         if self.memory_event_writer is not None:
             existing = await self.store.get_for_user(user_id, split_id)
@@ -410,3 +419,20 @@ class SplitService:
 
     async def delete_contact_preference(self, user_id: uuid.UUID, contact_id: uuid.UUID) -> bool:
         return await self.store.delete_contact_preference(user_id, contact_id)
+
+    async def set_contact_details(
+        self, user_id: uuid.UUID, name: str, phone_e164: str | None, email: str | None = None,
+    ):
+        clean_name = capitalize_name(name)
+        if not clean_name or len(clean_name) > 100:
+            raise ValueError('Contact name must be between 1 and 100 characters.')
+        if phone_e164 is not None:
+            phone_e164 = phone_e164.strip() or None
+        if phone_e164 is not None and (
+            not phone_e164.startswith('+') or not phone_e164[1:].isdigit() or not 8 <= len(phone_e164[1:]) <= 15
+        ):
+            raise ValueError('Enter the phone number in international format, such as +919876543210.')
+        email = email.strip().lower() if email else None
+        if email and ('@' not in email or ' ' in email or len(email) > 320):
+            raise ValueError('Enter a valid email address.')
+        return await self.store.set_contact_details(user_id, clean_name, phone_e164, email)

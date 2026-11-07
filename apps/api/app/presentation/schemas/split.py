@@ -12,6 +12,7 @@ from app.infrastructure.database.models.split import SplitModel
 class ParticipantRequest(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     share_paise: int = Field(default=0, ge=0)
+    contact_id: uuid.UUID | None = None
 
 
 class CreateSplitRequest(BaseModel):
@@ -28,12 +29,14 @@ class CreateOwedRequest(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     amount_paise: int = Field(gt=0)
     direction: Literal['to_you', 'by_you'] = 'to_you'
+    contact_id: uuid.UUID | None = None
 
 
 class UpdateParticipantRequest(BaseModel):
     id: uuid.UUID | None = None
     name: str = Field(min_length=1, max_length=100)
     share_paise: int = Field(gt=0)
+    contact_id: uuid.UUID | None = None
 
 
 class UpdateSplitRequest(BaseModel):
@@ -55,6 +58,7 @@ class ParticipantResponse(BaseModel):
     share_paise: int
     settled_paise: int
     repayment_transaction_id: uuid.UUID | None
+    contact_id: uuid.UUID | None = None
     payments: list[SplitPaymentResponse] = Field(default_factory=list)
 
 
@@ -98,6 +102,53 @@ class SplitContactPreferenceResponse(BaseModel):
     name: str
     dietary_preference: Literal['vegetarian', 'vegan', 'omnivore'] | None
     preference_confirmed_at: datetime | None
+
+
+class SplitContactDetailsRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    phone_e164: str | None = Field(default=None, max_length=20)
+    email: str | None = Field(default=None, max_length=320)
+
+
+class SplitContactDetailsResponse(BaseModel):
+    id: uuid.UUID
+    name: str
+    phone_e164: str | None
+    email: str | None
+    dietary_preference: Literal['vegetarian', 'vegan', 'omnivore'] | None
+
+
+class SplitNotificationHistoryResponse(BaseModel):
+    id: uuid.UUID
+    status: Literal['queued', 'processing', 'sent', 'failed', 'rate_limited', 'cancelled', 'uncertain']
+    channel: str
+    blocked_reason: str | None
+    provider_error_message: str | None
+    created_at: datetime
+    completed_at: datetime | None
+
+
+class SplitNotificationQueueResponse(BaseModel):
+    notification_id: uuid.UUID
+    status: str
+    created_at: datetime
+
+
+class SplitNotificationStatusResponse(BaseModel):
+    server_now: datetime
+    can_notify: bool
+    blocked_reason: str | None
+    notification_count: int
+    max_notifications: int
+    last_sent_at: datetime | None
+    next_available_at: datetime | None
+    cooldown_remaining_seconds: int
+    request_in_progress: bool
+    message_preview: str | None
+    recipient_phone_masked: str | None
+    recipient_email_masked: str | None = None
+    channel: str = 'sms'
+    history: list[SplitNotificationHistoryResponse]
 
 
 class ItemAllocationRequest(BaseModel):
@@ -173,6 +224,7 @@ class SplitResponse(BaseModel):
                     id=person.id, name=person.name,
                     share_paise=person.share_paise, settled_paise=person.settled_paise,
                     repayment_transaction_id=person.repayment_transaction_id,
+                    contact_id=person.contact_id,
                     payments=[
                         SplitPaymentResponse(
                             id=payment.id, amount_paise=payment.amount_paise,

@@ -23,12 +23,15 @@ from app.core.logging import configure_logging
 from app.core.middleware import register_exception_handlers, register_middleware
 from app.infrastructure.audio.ffmpeg_audio_transcoder import resolve_ffmpeg_binary
 from app.infrastructure.database.session import SessionLocal
+from app.infrastructure.email import AzureAcsEmailProvider
 from app.infrastructure.jobs import (
     run_chat_turn_loop,
     run_memory_outbox_loop,
     run_recurring_transaction_loop,
     run_retention_cleanup_once,
+    run_split_notification_loop,
 )
+from app.infrastructure.sms import AzureAcsSmsProvider
 from app.presentation.router import api_router
 
 logger = logging.getLogger(__name__)
@@ -252,6 +255,8 @@ def create_app() -> FastAPI:
         memory_outbox_task: asyncio.Task[None] | None = None
         chat_turn_task: asyncio.Task[None] | None = None
         recurring_transaction_task: asyncio.Task[None] | None = None
+        split_notification_task: asyncio.Task[None] | None = None
+        email_notification_task: asyncio.Task[None] | None = None
 
         if settings.retention_cleanup_enabled:
             retention_cleanup_task = asyncio.create_task(_run_retention_cleanup_loop(settings))
@@ -335,6 +340,42 @@ def create_app() -> FastAPI:
                 'max_sleep_seconds': max(1, settings.recurring_transaction_max_sleep_seconds),
             })
 
+        if settings.sms_enabled and settings.sms_worker_enabled:
+            sms_provider = AzureAcsSmsProvider(
+                settings.acs_connection_string,
+                settings.acs_sender_number,
+                settings.sms_send_timeout_seconds,
+            )
+            split_notification_task = asyncio.create_task(run_split_notification_loop(
+                sms_provider,
+                poll_interval_seconds=settings.sms_worker_poll_seconds,
+                batch_size=settings.sms_worker_batch_size,
+                stale_after_seconds=settings.sms_processing_stale_seconds,
+            ))
+            app.state.split_notification_task = split_notification_task
+            logger.info('split_notification.scheduler.started', extra={
+                'batch_size': max(1, settings.sms_worker_batch_size),
+                'poll_interval_seconds': max(1, settings.sms_worker_poll_seconds),
+            })
+
+        email_worker_configured = (
+            settings.email_enabled
+            and settings.email_worker_enabled
+            and settings.acs_connection_string
+            and settings.email_sender_address
+        )
+        if email_worker_configured:
+            email_provider = AzureAcsEmailProvider(
+                settings.acs_connection_string, settings.email_sender_address, settings.email_send_timeout_seconds,
+            )
+            email_notification_task = asyncio.create_task(run_split_notification_loop(
+                email_provider,
+                poll_interval_seconds=settings.email_worker_poll_seconds,
+                batch_size=settings.email_worker_batch_size,
+                stale_after_seconds=settings.email_processing_stale_seconds,
+                channel='email',
+            ))
+
         try:
             yield
         finally:
@@ -354,6 +395,14 @@ def create_app() -> FastAPI:
                 recurring_transaction_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await recurring_transaction_task
+            if split_notification_task is not None:
+                split_notification_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await split_notification_task
+            if email_notification_task is not None:
+                email_notification_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await email_notification_task
 
             if checkpointer_context is not None:
                 await checkpointer_context.__aexit__(None, None, None)
@@ -371,6 +420,7 @@ def create_app() -> FastAPI:
     app.state.retention_cleanup_task = None
     app.state.chat_turn_task = None
     app.state.recurring_transaction_task = None
+    app.state.split_notification_task = None
     app.state.ffmpeg_health = {
         'available': False,
         'configured_binary': settings.ffmpeg_binary,

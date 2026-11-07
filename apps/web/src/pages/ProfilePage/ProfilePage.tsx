@@ -1,4 +1,4 @@
-import { CalendarDays, ChevronDown, ChevronLeft, ChevronRight, LogOut, Mail, Sparkles, UserRound } from 'lucide-react';
+import { CalendarDays, ChevronDown, ChevronLeft, ChevronRight, Landmark, LogOut, Mail, Sparkles, UserRound } from 'lucide-react';
 import { useEffect, useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 
@@ -29,13 +29,15 @@ export function ProfilePage() {
   const currentUser = useAppSelector((state) => state.auth.user);
   const [nameDraft, setNameDraft] = useState<string | null>(null);
   const [dateOfBirthDraft, setDateOfBirthDraft] = useState<string | null>(null);
+  const [upiIdDraft, setUpiIdDraft] = useState<string | null>(null);
   const name = nameDraft ?? currentUser?.name ?? '';
   const dateOfBirth = dateOfBirthDraft ?? currentUser?.date_of_birth ?? '';
+  const upiId = upiIdDraft ?? currentUser?.upi_id ?? '';
   const normalizedName = name.trim().replace(/\s+/g, ' ');
   const hasChanges = Boolean(
     currentUser &&
       (normalizedName !== currentUser.name.trim().replace(/\s+/g, ' ') ||
-        dateOfBirth !== (currentUser.date_of_birth ?? '')),
+        dateOfBirth !== (currentUser.date_of_birth ?? '') || upiId.trim() !== (currentUser.upi_id ?? '')),
   );
   const [formError, setFormError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -71,13 +73,20 @@ export function ProfilePage() {
       setFormError('Date of birth must be in the past.');
       return;
     }
+    if (upiId.trim() && (!upiId.includes('@') || /\s/.test(upiId.trim()))) {
+      setFormError('Enter a valid UPI ID, such as name@bank.');
+      return;
+    }
     setFormError(null);
     setSaved(false);
     try {
-      const updated = await updateProfile({ name: normalizedName, date_of_birth: dateOfBirth || null }).unwrap();
+      const updated = await updateProfile({
+        name: normalizedName, date_of_birth: dateOfBirth || null, upi_id: upiId.trim() || null,
+      }).unwrap();
       dispatch(setUser(updated));
       setNameDraft(null);
       setDateOfBirthDraft(null);
+      setUpiIdDraft(null);
       setSaved(true);
     } catch {
       setFormError('Could not save your profile. Please try again.');
@@ -119,6 +128,14 @@ export function ProfilePage() {
             <h3 className='text-base font-semibold text-[var(--text-primary)]'>Personal details</h3>
             <p className='mt-1 text-sm text-[var(--text-muted)]'>Update how your name appears across AffordAbled.</p>
           </div>
+          <label className='block min-w-0 space-y-2'>
+            <span className='flex items-center gap-2 text-sm font-medium text-[var(--text-secondary)]'>
+              <Landmark className='h-4 w-4' aria-hidden='true' /> UPI ID <span className='font-normal text-[var(--text-muted)]'>(optional)</span>
+            </span>
+            <Input value={upiId} maxLength={255} autoComplete='off' placeholder='name@bank'
+              onChange={(event) => { setUpiIdDraft(event.target.value); setSaved(false); }} />
+            <span className='block text-xs text-[var(--text-muted)]'>Used only when you confirm a split payment reminder.</span>
+          </label>
           <div className='grid min-w-0 gap-4 md:grid-cols-2'>
             <label className='block min-w-0 space-y-2'>
               <span className='flex items-center gap-2 text-sm font-medium text-[var(--text-secondary)]'>

@@ -71,6 +71,27 @@ class Settings(BaseSettings):
     recurring_transaction_batch_size: int = 50
     recurring_transaction_max_sleep_seconds: int = 300
 
+    sms_enabled: bool = False
+    sms_provider: Literal['azure_acs'] = 'azure_acs'
+    acs_connection_string: str = ''
+    acs_sender_number: str = ''
+    notification_cooldown_hours: int = 6
+    max_notifications_per_participant: int = 3
+    max_sms_per_user_per_day: int = 10
+    sms_worker_enabled: bool = True
+    sms_worker_batch_size: int = 20
+    sms_worker_poll_seconds: int = 5
+    sms_processing_stale_seconds: int = 120
+    sms_send_timeout_seconds: int = 15
+    email_enabled: bool = False
+    email_provider: Literal['azure_acs'] = 'azure_acs'
+    email_sender_address: str = ''
+    email_worker_enabled: bool = True
+    email_worker_batch_size: int = 20
+    email_worker_poll_seconds: int = 5
+    email_processing_stale_seconds: int = 120
+    email_send_timeout_seconds: int = 30
+
     langsmith_api_key: str = ''
     langsmith_tracing: bool = False
     langsmith_project: str = 'affordabled-dev'

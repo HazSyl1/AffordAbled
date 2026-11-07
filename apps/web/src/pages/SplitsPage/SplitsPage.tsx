@@ -12,6 +12,8 @@ import {
   useRecordSplitPaymentMutation,
   useDeleteSplitMutation, useUpdateSplitMutation,
   useListPersonSplitBalancesQuery, useSettlePersonSplitBalanceMutation,
+  useListSplitContactDetailsQuery, useSetSplitContactDetailsMutation,
+  useListSplitNotificationStatusesQuery,
   type CreateSplitRequest, type PersonSplitBalance, type Split,
 } from '../../features/splits/splitsApi';
 import { useListSettlementPlansQuery, useSettleSettlementPlanTransferMutation,
@@ -19,6 +21,7 @@ import { useListSettlementPlansQuery, useSettleSettlementPlanTransferMutation,
 import { useListTransactionsQuery } from '../../features/transactions/transactionsApi';
 import { formatPaiseAsInr } from '../../lib/money';
 import { ComplexSettlementPlanner } from './ComplexSettlementPlanner';
+import { NotificationConfirmDialog } from './NotificationConfirmDialog';
 
 type Person = { name: string; amount: string | null; isNew: boolean };
 const NEW_PERSON = '__new_person__';
@@ -33,8 +36,9 @@ function paise(value: string): number | null {
 function detail(error: unknown): string {
   if (typeof error === 'object' && error !== null) {
     if ('data' in error) {
-      const data = (error as { data?: { detail?: string } }).data;
+      const data = (error as { data?: { detail?: string | { message?: string } } }).data;
       if (typeof data?.detail === 'string') return data.detail;
+      if (typeof data?.detail === 'object' && data.detail?.message) return data.detail.message;
     }
     if ('status' in error) {
       const status = (error as { status: unknown }).status;
@@ -54,7 +58,7 @@ function unpaidCount(split: Split): number {
       person.settled_paise < person.share_paise && !person.repayment_transaction_id).length;
 }
 
-type EditPerson = { id?: string; name: string; amount: string; hasRepayment: boolean };
+type EditPerson = { id?: string; name: string; amount: string; hasRepayment: boolean; contactId?: string };
 
 function EditSplitForm({ split, onCancel }: { split: Split; onCancel: () => void }) {
   const [updateSplit, { isLoading: saving }] = useUpdateSplitMutation();
@@ -63,6 +67,7 @@ function EditSplitForm({ split, onCancel }: { split: Split; onCancel: () => void
   const [people, setPeople] = useState<EditPerson[]>(() => split.participants.map((person) => ({
     id: person.id, name: person.name, amount: (person.share_paise / 100).toFixed(2),
     hasRepayment: person.repayment_transaction_id !== null || person.settled_paise > 0,
+    contactId: person.contact_id ?? undefined,
   })));
   const [showValidation, setShowValidation] = useState(false);
   const [error, setError] = useState('');
@@ -94,6 +99,7 @@ function EditSplitForm({ split, onCancel }: { split: Split; onCancel: () => void
           title: title.trim(), owner_share_paise: ownShare!,
           participants: people.map((person, index) => ({
             ...(person.id ? { id: person.id } : {}), name: person.name.trim(), share_paise: shares[index]!,
+            ...(person.contactId ? { contact_id: person.contactId } : {}),
           })),
         },
       }).unwrap();
@@ -166,6 +172,9 @@ export function SplitsPage() {
   const { data: transactions = [] } = useListTransactionsQuery();
   const { data: accounts = [] } = useListAccountsQuery();
   const { data: contacts = [] } = useListSplitContactsQuery();
+  const { data: contactDetails = [] } = useListSplitContactDetailsQuery();
+  const { data: notificationStatuses = {} } = useListSplitNotificationStatusesQuery();
+  const [setContactDetails, { isLoading: savingContact }] = useSetSplitContactDetailsMutation();
   const [createSplit, { isLoading: creating }] = useCreateSplitMutation();
   const [createOwed, { isLoading: creatingOwed }] = useCreateOwedMutation();
   const [repay, { isLoading: repaying }] = useRepaySplitParticipantMutation();
@@ -202,6 +211,15 @@ export function SplitsPage() {
   const [balanceReview, setBalanceReview] = useState<PersonSplitBalance | null>(null);
   const [balanceSettlementAmount, setBalanceSettlementAmount] = useState('');
   const [balanceSettlementAccountId, setBalanceSettlementAccountId] = useState('');
+  const [managePeopleOpen, setManagePeopleOpen] = useState(false);
+  const [contactName, setContactName] = useState('');
+  const [contactPhone, setContactPhone] = useState('');
+  const [contactEmail, setContactEmail] = useState('');
+  const [contactFeedback, setContactFeedback] = useState('');
+  const [notificationQueue, setNotificationQueue] = useState<{
+    split: Split; participant: Split['participants'][number];
+  }[]>([]);
+  const [notificationFeedback, setNotificationFeedback] = useState('');
   const expenseSplitOwedPaise = splits.filter((split) => split.kind === 'expense_split')
     .reduce((total, split) => total + split.outstanding_paise, 0);
   const standaloneOwedPaise = splits.filter((split) => split.kind === 'money_owed' && split.direction === 'to_you')
@@ -212,6 +230,25 @@ export function SplitsPage() {
   const orderedSplits = [...splits].sort((a, b) => Number(b.outstanding_paise > 0) - Number(a.outstanding_paise > 0));
   const activeAccounts = accounts.filter((account) => account.is_active);
   const defaultAccountId = activeAccounts.find((account) => account.is_default)?.id ?? activeAccounts[0]?.id ?? '';
+  const contactForName = (name: string) => contactDetails.find((contact) =>
+    contact.name.trim().toLowerCase() === name.trim().toLowerCase());
+
+  const saveContact = async (event: FormEvent) => {
+    event.preventDefault();
+    setContactFeedback('');
+    if (!contactName.trim()) { setContactFeedback('Enter the person’s name.'); return; }
+    if (contactPhone.trim() && !/^\+[1-9]\d{7,14}$/.test(contactPhone.trim())) {
+      setContactFeedback('Use international format, such as +919876543210.');
+      return;
+    }
+    try {
+      await setContactDetails({ name: contactName.trim(), phone_e164: contactPhone.trim() || null, email: contactEmail.trim().toLowerCase() || null }).unwrap();
+      setContactFeedback('Contact saved.');
+      setContactName('');
+      setContactPhone('');
+      setContactEmail('');
+    } catch (failure) { setContactFeedback(detail(failure)); }
+  };
   const confirmBalanceSettlement = async () => {
     if (!balanceReview) return;
     const netPaise = balanceReview.net_paise;
@@ -329,6 +366,7 @@ export function SplitsPage() {
       owner_share_paise: mode === 'equal' ? ownerEqualShare : ownCustomShare ?? 0,
       participants: people.map((person, index) => ({
         name: person.name.trim(), share_paise: mode === 'equal' ? equalShare : customShares[index] ?? 0,
+        ...(contactForName(person.name)?.id ? { contact_id: contactForName(person.name)!.id } : {}),
       })),
     });
   }
@@ -336,7 +374,10 @@ export function SplitsPage() {
   async function confirm() {
     if (!review) return;
     try {
-      await createSplit(review).unwrap();
+      const created = await createSplit(review).unwrap();
+      setNotificationQueue(created.participants.filter((participant) =>
+        participant.contact_id && participant.share_paise > participant.settled_paise,
+      ).map((participant) => ({ split: created, participant })));
       setOpen(false); setReview(null); setTransactionId(''); setTitle(''); setTitleManuallyEdited(false);
       setPeople([newPerson()]); setOwnerAmount(null); setShowValidation(false); setError(''); navigate('/splits');
     } catch (failure) { setError(detail(failure)); }
@@ -351,7 +392,14 @@ export function SplitsPage() {
       return;
     }
     try {
-      await createOwed({ name: owedName.trim(), title: owedTitle.trim(), amount_paise: amount, direction: owedDirection }).unwrap();
+      const contact = contactForName(owedName);
+      const created = await createOwed({
+        name: owedName.trim(), title: owedTitle.trim(), amount_paise: amount, direction: owedDirection,
+        ...(contact?.id ? { contact_id: contact.id } : {}),
+      }).unwrap();
+      if (owedDirection === 'to_you' && created.participants[0]?.contact_id) {
+        setNotificationQueue([{ split: created, participant: created.participants[0] }]);
+      }
       setOwedName(''); setAddingOwedPerson(false); setOwedAmount(''); setOwedTitle('');
       setOwedDirection('to_you'); setOwedOpen(false);
     } catch (failure) { setError(detail(failure)); }
@@ -467,7 +515,7 @@ export function SplitsPage() {
         </div>
         <p className='mt-1 text-xs text-[var(--text-muted)]'>Group settlement plans are listed separately below and are not included in this total.</p>
       </div>
-      <div className='grid min-w-0 grid-cols-1 gap-2 min-[480px]:grid-cols-2 md:grid-cols-3'>
+      <div className='grid min-w-0 grid-cols-1 gap-2 min-[480px]:grid-cols-2 md:grid-cols-4'>
         <Button className='min-w-0 whitespace-normal text-center text-sm' onClick={() => {
           setOpen(true); setOwedOpen(false); setComplexOpen(false); setReview(null);
         }}>Split an expense</Button>
@@ -478,8 +526,44 @@ export function SplitsPage() {
           onClick={() => {
             setComplexOpen((value) => !value); setOpen(false); setOwedOpen(false); setReview(null);
           }}>Plan group settlement</Button>
+        <Button variant='secondary' className='min-w-0 whitespace-normal text-center text-sm'
+          onClick={() => setManagePeopleOpen((value) => !value)}>Manage people</Button>
       </div>
     </div>
+    {managePeopleOpen && <Card className='space-y-4 p-5'>
+      <div>
+        <h2 className='font-semibold text-[var(--text-primary)]'>People and contact details</h2>
+        <p className='text-xs text-[var(--text-muted)]'>Email and phone are optional. Reminders are sent only after you confirm.</p>
+      </div>
+      {contactDetails.length > 0 && <ul className='grid gap-2 sm:grid-cols-2'>
+        {contactDetails.map((contact) => <li key={contact.id} className='rounded-lg border border-[var(--bg-border)] p-3 text-sm'>
+          <button type='button' className='w-full text-left' onClick={() => {
+            setContactName(contact.name); setContactPhone(contact.phone_e164 ?? ''); setContactEmail(contact.email ?? ''); setContactFeedback('');
+          }}>
+            <span className='block font-medium text-[var(--text-primary)]'>{contact.name}</span>
+            <span className='text-xs text-[var(--text-muted)]'>{contact.phone_e164 ?? 'No phone number'}</span>
+            <span className='block text-xs text-[var(--text-muted)]'>{contact.email ?? 'No email'}</span>
+          </button>
+        </li>)}
+      </ul>}
+      <form onSubmit={(event) => { void saveContact(event); }} className='grid gap-3 sm:grid-cols-2'>
+        <label className='space-y-1 text-sm text-[var(--text-secondary)]'>Name
+          <input className={inputClass} value={contactName} maxLength={100} list='split-contact-names'
+            onChange={(event) => { setContactName(event.target.value); setContactFeedback(''); }} />
+          <datalist id='split-contact-names'>{contacts.map((name) => <option key={name} value={name} />)}</datalist>
+        </label>
+        <label className='space-y-1 text-sm text-[var(--text-secondary)]'>Phone number
+          <input className={inputClass} value={contactPhone} maxLength={20} inputMode='tel' placeholder='+919876543210'
+            onChange={(event) => { setContactPhone(event.target.value); setContactFeedback(''); }} />
+        </label>
+        <label className='space-y-1 text-sm text-[var(--text-secondary)]'>Email address
+          <input className={inputClass} value={contactEmail} maxLength={320} type='email' placeholder='person@example.com'
+            onChange={(event) => { setContactEmail(event.target.value); setContactFeedback(''); }} />
+        </label>
+        {contactFeedback && <p role='status' className='text-sm text-[var(--text-muted)] sm:col-span-2'>{contactFeedback}</p>}
+        <div className='sm:col-span-2'><Button type='submit' isLoading={savingContact}>Save person</Button></div>
+      </form>
+    </Card>}
     {complexOpen && <ComplexSettlementPlanner />}
     {owedOpen && <Card className='space-y-3 p-5'>
       <div><h2 className='font-semibold text-[var(--text-primary)]'>Record an amount owed</h2>
@@ -852,6 +936,7 @@ export function SplitsPage() {
               .map((person) => {
                 const remaining = Math.max(0, person.share_paise - person.settled_paise);
                 const ownerPays = split.kind === 'money_owed' && split.direction === 'by_you';
+                const reminderStatus = notificationStatuses[person.id];
                 const amountText = paymentAmounts[person.id] ?? '';
                 const amountPaise = amountText ? paise(amountText) : null;
                 return <div key={person.id} className='space-y-2 border-t border-[var(--bg-border)] pt-2'>
@@ -861,6 +946,11 @@ export function SplitsPage() {
                         {ownerPays ? `You owe ${person.name}` : `${person.name} owes you`}: {formatPaiseAsInr(remaining)} remaining
                       </p>
                       <p className='text-xs text-[var(--text-muted)]'>Original {formatPaiseAsInr(person.share_paise)} · Paid {formatPaiseAsInr(person.settled_paise)}</p>
+                      {!ownerPays && reminderStatus && <p className='text-xs text-[var(--text-muted)]'>
+                        {(reminderStatus.channel === 'email' ? 'Email' : 'SMS')} reminders {reminderStatus.notification_count}/{reminderStatus.max_notifications}
+                        {reminderStatus.cooldown_remaining_seconds > 0
+                          ? ` · ${Math.ceil(reminderStatus.cooldown_remaining_seconds / 60)} min cooldown` : ''}
+                      </p>}
                     </div>
                     {remaining > 0 ? <div className='flex w-full min-w-0 flex-col gap-2 sm:w-56 sm:shrink-0 sm:items-end'>
                       <label className='w-full space-y-1 text-xs text-[var(--text-muted)]'>
@@ -880,6 +970,15 @@ export function SplitsPage() {
                           value={amountText} onChange={(event) => setPaymentAmounts((current) => ({ ...current, [person.id]: event.target.value }))} />
                       </label>}
                       <div className='flex w-full flex-wrap justify-end gap-2'>
+                        {!ownerPays && <button type='button'
+                          disabled={reminderStatus?.blocked_reason === 'cooldown_active' ||
+                            reminderStatus?.blocked_reason === 'participant_limit_reached' ||
+                            reminderStatus?.blocked_reason === 'daily_limit_reached' ||
+                            reminderStatus?.request_in_progress}
+                          className='rounded-lg border border-[var(--brand-primary)]/40 px-3 py-1.5 text-xs font-semibold text-[var(--brand-primary)] disabled:opacity-50'
+                          onClick={() => setNotificationQueue([{ split, participant: person }])}>
+                          {reminderStatus?.request_in_progress ? 'Reminder queued' : 'Send reminder'}
+                        </button>}
                         <button type='button' disabled={recordingSplitPayment || repayingAllSplitId !== null}
                           className='rounded-lg border border-[var(--brand-primary)]/40 px-3 py-1.5 text-xs font-semibold text-[var(--brand-primary)] disabled:opacity-50'
                           onClick={() => {
@@ -908,6 +1007,15 @@ export function SplitsPage() {
                       </li>)}
                     </ul>
                   </details>}
+                  {!ownerPays && reminderStatus?.history.length > 0 && <details className='text-xs text-[var(--text-secondary)]'>
+                    <summary className='cursor-pointer text-[var(--brand-primary)]'>Notification history ({reminderStatus.history.length})</summary>
+                    <ul className='mt-2 space-y-1'>
+                      {reminderStatus.history.map((notification) => <li key={notification.id} className='flex flex-wrap justify-between gap-2'>
+                        <span>{new Date(notification.created_at).toLocaleString()} · {notification.status.replace('_', ' ')}</span>
+                        {notification.blocked_reason && <span>{notification.blocked_reason.replaceAll('_', ' ')}</span>}
+                      </li>)}
+                    </ul>
+                  </details>}
                 </div>;
               })}            {!split.settlement_breakdown && split.outstanding_paise > 0 && <p className='text-xs text-[var(--text-muted)]'>
               {split.kind === 'money_owed' && split.direction === 'by_you'
@@ -916,6 +1024,15 @@ export function SplitsPage() {
             </>}
           </Card>)}
     </section>
+    {notificationFeedback && <p role='status' className='rounded-xl bg-[var(--brand-subtle)] p-3 text-sm text-[var(--brand-primary)]'>
+      {notificationFeedback}
+    </p>}
+    {notificationQueue[0] && <NotificationConfirmDialog
+      split={notificationQueue[0].split}
+      participant={notificationQueue[0].participant}
+      onQueued={(message) => setNotificationFeedback(message)}
+      onClose={() => setNotificationQueue((current) => current.slice(1))}
+    />}
     {balanceReview && <div className='fixed inset-0 z-[100] flex items-center justify-center overflow-y-auto bg-black/70 p-4' role='presentation'
       onMouseDown={(event) => { if (event.target === event.currentTarget && !settlingPersonBalance) setBalanceReview(null); }}>
       <Card role='dialog' aria-modal='true' aria-labelledby='settle-balance-title' className='my-auto w-full max-w-lg space-y-4 p-5'>

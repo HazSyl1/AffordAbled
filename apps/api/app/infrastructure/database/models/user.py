@@ -24,6 +24,7 @@ class UserModel(Base):
     date_of_birth: Mapped[date | None] = mapped_column(Date, nullable=True)
     hashed_password: Mapped[str | None] = mapped_column(String(255), nullable=True)
     google_sub: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True)
+    upi_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     conversation_storage_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('true'))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

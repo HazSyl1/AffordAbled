@@ -133,6 +133,7 @@ async def send_chat_message(
         ),
         transaction_logged=response.transaction_logged,
         created_transaction_id=response.created_transaction_id,
+        created_split_ids=response.created_split_ids or [],
         manual_transaction_input_required=response.manual_transaction_input_required,
         insights=(
             [

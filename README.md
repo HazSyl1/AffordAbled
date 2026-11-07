@@ -40,6 +40,7 @@ AffordAbled brings those workflows together. **Financial arithmetic is performed
 - **Expense shares and settlement transfers are separate concepts:** a person's share describes consumption; a transfer describes who must pay whom after contributions and debts.
 - Integer-paise calculations reconcile shares to the bill and net balances to zero.
 - Standalone “someone owes me” records and repayment flows link owner payments to wallet transactions.
+- Optional UPI IDs and contact phone numbers support user-confirmed SMS payment requests, with cooldown, lifetime, and daily limits enforced by the API.
 
 ### User-controlled preference memory
 
@@ -115,6 +116,14 @@ uvicorn app.main:app --reload
 
 Configure PostgreSQL in `.env` before running Alembic or the API. Configure Azure OpenAI, OCR, and speech credentials for the features you want to use. Keep `.env` and real credentials out of Git. The API defaults to `http://localhost:8000`; OpenAPI documentation is at `/docs`.
 
+To enable split reminders, set `SMS_ENABLED=true`, `SMS_PROVIDER=azure_acs`, `ACS_CONNECTION_STRING`, and `ACS_SENDER_NUMBER`. The API process runs a durable database-backed dispatcher; queued reminders survive restarts. Relevant authenticated endpoints are:
+
+- `PUT /api/v1/splits/contacts/details` to save an optional E.164 phone number.
+- `GET /api/v1/splits/{split_id}/participants/{participant_id}/notifications` for availability and history.
+- `POST /api/v1/splits/{split_id}/participants/{participant_id}/notifications` with an `Idempotency-Key` header to confirm and queue one SMS.
+
+The frontend never sends automatically. A manual or chat-created split opens the same confirmation dialog, and the worker revalidates the amount, phone, UPI link, and repayment state immediately before dispatch.
+
 ### Web
 
 ```bash
@@ -140,6 +149,7 @@ From `apps/web`:
 
 ```text
 npm run lint
+npm test
 npm run build
 ```
 
