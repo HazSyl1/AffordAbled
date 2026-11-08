@@ -24,6 +24,11 @@ async def _account(client: AsyncClient, token: str, name: str, balance: int = 10
 
 
 async def _category(client: AsyncClient, token: str, name: str, type: str) -> dict:
+    # Registration seeds default categories; reuse them so imports resolve names unambiguously.
+    existing = await client.get('/api/v1/categories', headers=auth_headers(token))
+    for category in existing.json():
+        if category['name'] == name and category['type'] == type:
+            return category
     response = await client.post(
         '/api/v1/categories', json={'name': name, 'type': type}, headers=auth_headers(token)
     )

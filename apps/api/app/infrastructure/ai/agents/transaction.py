@@ -180,13 +180,17 @@ class TransactionToolset:
         rows = args.get("transactions")
         if not isinstance(rows, list) or not 1 <= len(rows) <= 10:
             raise ValueError("transactions must contain between 1 and 10 rows")
+        if not all(isinstance(row, dict) for row in rows):
+            raise ValueError("each batch row must be an object")
+        turn_id, task_id = context.constraints.get("turn_id"), context.constraints.get("task_id")
+        if turn_id and task_id:
+            await self._service.ensure_ai_transaction_capacity(
+                context.user_id, [f"{turn_id}:{task_id}:{index}" for index in range(len(rows))],
+            )
         created = [
             await self.create_transaction(context, {**row, "_source_item_index": index})
             for index, row in enumerate(rows)
-            if isinstance(row, dict)
         ]
-        if len(created) != len(rows):
-            raise ValueError("each batch row must be an object")
         return {"transactions": [item["transaction"] for item in created]}
 
     async def create_recurring_transaction(self, context: HandoffContext, args: dict[str, Any]) -> dict[str, Any]:

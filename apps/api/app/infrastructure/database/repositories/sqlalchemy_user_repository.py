@@ -6,7 +6,7 @@ from datetime import date
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.entities import User
+from app.domain.entities import User, UserTier
 from app.infrastructure.database.models import UserModel
 
 
@@ -38,6 +38,7 @@ class SqlAlchemyUserRepository:
             google_sub=user.google_sub,
             upi_id=user.upi_id,
             conversation_storage_enabled=user.conversation_storage_enabled,
+            account_tier=user.account_tier.value,
         )
         self._session.add(model)
         await self._session.commit()
@@ -69,4 +70,5 @@ class SqlAlchemyUserRepository:
             upi_id=model.upi_id,
             created_at=model.created_at,
             conversation_storage_enabled=model.conversation_storage_enabled,
+            account_tier=UserTier(model.account_tier),
         )

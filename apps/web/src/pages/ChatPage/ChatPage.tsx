@@ -38,7 +38,7 @@ import { useVoiceCapture } from '../../features/chat/useVoiceCapture';
 import { useListMemorySuggestionsQuery } from '../../features/memory/memoryApi';
 import { useListTransactionsQuery } from '../../features/transactions/transactionsApi';
 import {
-  useLazyListSplitsQuery, type Split, type SplitParticipant,
+  useLazyListSplitsQuery, useListSplitContactDetailsQuery, type Split,
 } from '../../features/splits/splitsApi';
 import { useBodyScrollLock } from '../../lib/useBodyScrollLock';
 import { NotificationConfirmDialog } from '../SplitsPage/NotificationConfirmDialog';
@@ -93,6 +93,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
   const { runTurn, isProcessingTurn } = useDurableChatTurn();
   const [getChatThread] = useLazyGetChatThreadQuery();
   const [getSplits] = useLazyListSplitsQuery();
+  const { data: splitContacts = [] } = useListSplitContactDetailsQuery();
   const [openTransactionChat] = useOpenTransactionChatMutation();
   const [transcribeVoice, { isLoading: isTranscribingVoice }] = useTranscribeVoiceMutation();
   const [analyzeImage, { isLoading: isAnalyzingImage }] = useAnalyzeImageMutation();
@@ -104,9 +105,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
   const [chatInput, setChatInput] = useState('');
   const [chatError, setChatError] = useState<string | null>(null);
   const [notificationNotice, setNotificationNotice] = useState<string | null>(null);
-  const [pendingSplitReminders, setPendingSplitReminders] = useState<
-    { split: Split; participant: SplitParticipant }[]
-  >([]);
+  const [pendingSplitReminders, setPendingSplitReminders] = useState<{ split: Split }[]>([]);
   const [manualFallbackMessage, setManualFallbackMessage] = useState<string | null>(null);
   const receiptUploadRef = useRef(false);
   const [showProposalSheet, setShowProposalSheet] = useState(false);
@@ -171,11 +170,9 @@ function ChatWorkspace({ userId }: { userId: string }) {
     const splits = await getSplits(undefined, false).unwrap();
     const requestedIds = new Set(splitIds);
     const reminders = splits
-      .filter((split) => requestedIds.has(split.id) && split.direction === 'to_you')
-      .flatMap((split) => split.participants
-        .filter((participant) => participant.contact_id
-          && participant.share_paise > participant.settled_paise)
-        .map((participant) => ({ split, participant })));
+      .filter((split) => requestedIds.has(split.id) && split.direction === 'to_you'
+        && split.participants.some((participant) => participant.share_paise > participant.settled_paise))
+      .map((split) => ({ split }));
     setPendingSplitReminders((current) => [...current, ...reminders]);
   }, [getSplits]);
 
@@ -1179,7 +1176,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
       {pendingSplitReminders[0] ? (
         <NotificationConfirmDialog
           split={pendingSplitReminders[0].split}
-          participant={pendingSplitReminders[0].participant}
+          contacts={splitContacts}
           onQueued={setNotificationNotice}
           onClose={() => setPendingSplitReminders((current) => current.slice(1))}
         />

@@ -9,6 +9,7 @@ from app.infrastructure.database.models import ChatTurnJobModel
 from app.infrastructure.database.repositories.sqlalchemy_chat_turn_job_repository import (
     SqlAlchemyChatTurnJobRepository,
 )
+from app.infrastructure.database.repositories.sqlalchemy_user_usage_repository import SqlAlchemyUserUsageRepository
 from app.infrastructure.database.session import SessionLocal
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,8 @@ async def run_chat_turn_once(
                     error_code='processing_failed',
                     error_message='The assistant could not process this turn.',
                 )
+                # A turn that never produced an answer must not use up the user's daily allowance.
+                await SqlAlchemyUserUsageRepository(session).remove(job.user_id, 'chat_turn', f'turn:{job.id}')
             else:
                 await repository.release_for_retry(
                     job.id,

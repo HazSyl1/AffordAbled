@@ -26,6 +26,7 @@ from app.presentation.schemas.split import (
     ItemizedSplitRequest,
     PayOwedRequest,
     RecordSplitPaymentRequest,
+    RenameSplitRequest,
     RepayParticipantRequest,
     RepaySettlementTransferRequest,
     SettleBalanceRequest,
@@ -34,8 +35,8 @@ from app.presentation.schemas.split import (
     SplitContactDetailsResponse,
     SplitContactPreferenceRequest,
     SplitContactPreferenceResponse,
-    SplitNotificationQueueResponse,
-    SplitNotificationStatusResponse,
+    SplitNotificationBatchQueueResponse,
+    SplitNotificationSplitStatusResponse,
     SplitResponse,
     UpdateSplitRequest,
 )
@@ -57,7 +58,7 @@ def get_split_notification_service(
         repository=SqlAlchemySplitNotificationRepository(db), enabled=configured,
         provider_name=settings.email_provider if email_configured else settings.sms_provider,
         cooldown_hours=max(1, settings.notification_cooldown_hours),
-        max_per_participant=max(1, settings.max_notifications_per_participant),
+        max_per_split=max(1, settings.max_notifications_per_split),
         max_per_user_daily=max(1, settings.max_sms_per_user_per_day),
         channel='email' if email_configured else 'sms',
     )
@@ -79,17 +80,16 @@ async def list_balances_by_person(
     return await service.balances_by_person(current_user.id)
 
 
-@router.get('/notification-statuses', response_model=dict[str, SplitNotificationStatusResponse])
+@router.get('/notification-statuses', response_model=dict[str, SplitNotificationSplitStatusResponse])
 async def list_notification_statuses(
     current_user: User = Depends(get_current_user),
     split_service: SplitService = Depends(get_split_service),
     notification_service: SplitNotificationService = Depends(get_split_notification_service),
-) -> dict[str, SplitNotificationStatusResponse]:
-    result: dict[str, SplitNotificationStatusResponse] = {}
+) -> dict[str, SplitNotificationSplitStatusResponse]:
+    result: dict[str, SplitNotificationSplitStatusResponse] = {}
     for split in await split_service.list_for_user(current_user.id):
-        for participant in split.participants:
-            payload = await notification_service.status(current_user.id, split.id, participant.id)
-            result[str(participant.id)] = SplitNotificationStatusResponse.model_validate(payload)
+        payload = await notification_service.status_split(current_user.id, split.id)
+        result[str(split.id)] = SplitNotificationSplitStatusResponse.model_validate(payload)
     return result
 
 
@@ -145,10 +145,26 @@ async def set_split_contact_details(
     current_user: User = Depends(get_current_user), service: SplitService = Depends(get_split_service),
 ) -> SplitContactDetailsResponse:
     try:
-        contact = await service.set_contact_details(current_user.id, payload.name, payload.phone_e164, payload.email)
+        contact = await service.set_contact_details(
+            current_user.id, payload.name, payload.phone_e164, payload.email, payload.contact_id,
+        )
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     return SplitContactDetailsResponse.model_validate(contact, from_attributes=True)
+
+
+@router.delete('/contacts/details/{contact_id}', status_code=status.HTTP_204_NO_CONTENT)
+async def delete_split_contact_details(
+    contact_id: uuid.UUID,
+    current_user: User = Depends(get_current_user), service: SplitService = Depends(get_split_service),
+) -> None:
+    try:
+        if not await service.delete_contact_preference(current_user.id, contact_id):
+            raise HTTPException(status_code=404, detail='Split contact not found.')
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 @router.get('/contacts/preference-suggestions', response_model=list[dict])
@@ -177,8 +193,11 @@ async def delete_split_contact_preference(
     contact_id: uuid.UUID,
     current_user: User = Depends(get_current_user), service: SplitService = Depends(get_split_service),
 ) -> None:
-    if not await service.delete_contact_preference(current_user.id, contact_id):
-        raise HTTPException(status_code=404, detail='Split contact preference not found.')
+    try:
+        if not await service.delete_contact_preference(current_user.id, contact_id):
+            raise HTTPException(status_code=404, detail='Split contact preference not found.')
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 async def _itemized_calculation(
@@ -288,41 +307,55 @@ async def get_split(
 
 
 @router.post(
-    '/{split_id}/participants/{participant_id}/notifications',
-    response_model=SplitNotificationQueueResponse, status_code=status.HTTP_202_ACCEPTED,
+    '/{split_id}/notifications',
+    response_model=SplitNotificationBatchQueueResponse, status_code=status.HTTP_202_ACCEPTED,
 )
-async def queue_split_notification(
-    split_id: uuid.UUID, participant_id: uuid.UUID,
+async def queue_split_notifications(
+    split_id: uuid.UUID,
     idempotency_key: uuid.UUID = Header(alias='Idempotency-Key'),
     current_user: User = Depends(get_current_user),
     service: SplitNotificationService = Depends(get_split_notification_service),
-) -> SplitNotificationQueueResponse:
+) -> SplitNotificationBatchQueueResponse:
     try:
-        notification = await service.queue(current_user.id, split_id, participant_id, idempotency_key)
+        notifications = await service.queue_split(current_user.id, split_id, idempotency_key)
     except SplitNotificationError as error:
         raise _notification_http_error(error) from error
     wake_sms_scheduler()
-    return SplitNotificationQueueResponse(
-        notification_id=notification.id, status=notification.status, created_at=notification.created_at,
+    first = notifications[0]
+    return SplitNotificationBatchQueueResponse(
+        campaign_id=idempotency_key,
+        notification_ids=[item.id for item in notifications],
+        status=first.status, created_at=first.created_at,
     )
 
 
-@router.get(
-    '/{split_id}/participants/{participant_id}/notifications',
-    response_model=SplitNotificationStatusResponse,
-)
+@router.get('/{split_id}/notifications', response_model=SplitNotificationSplitStatusResponse)
 async def get_split_notification_status(
-    split_id: uuid.UUID, participant_id: uuid.UUID,
+    split_id: uuid.UUID,
     response: Response,
     current_user: User = Depends(get_current_user),
     service: SplitNotificationService = Depends(get_split_notification_service),
-) -> SplitNotificationStatusResponse:
+) -> SplitNotificationSplitStatusResponse:
     try:
-        payload = await service.status(current_user.id, split_id, participant_id)
+        payload = await service.status_split(current_user.id, split_id)
     except SplitNotificationError as error:
         raise _notification_http_error(error) from error
     response.headers['Cache-Control'] = 'private, no-store'
-    return SplitNotificationStatusResponse.model_validate(payload)
+    return SplitNotificationSplitStatusResponse.model_validate(payload)
+
+
+@router.patch('/{split_id}/title', response_model=SplitResponse)
+async def rename_split(
+    split_id: uuid.UUID, payload: RenameSplitRequest,
+    current_user: User = Depends(get_current_user), service: SplitService = Depends(get_split_service),
+) -> SplitResponse:
+    try:
+        split = await service.rename(current_user.id, split_id, payload.title)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    if split is None:
+        raise HTTPException(status_code=404, detail='Split not found.')
+    return SplitResponse.from_model(split)
 
 
 @router.patch('/{split_id}', response_model=SplitResponse)

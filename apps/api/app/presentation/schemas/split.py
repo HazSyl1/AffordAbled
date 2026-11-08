@@ -39,6 +39,10 @@ class UpdateParticipantRequest(BaseModel):
     contact_id: uuid.UUID | None = None
 
 
+class RenameSplitRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=255)
+
+
 class UpdateSplitRequest(BaseModel):
     title: str = Field(min_length=1, max_length=255)
     owner_share_paise: int = Field(ge=0)
@@ -105,6 +109,7 @@ class SplitContactPreferenceResponse(BaseModel):
 
 
 class SplitContactDetailsRequest(BaseModel):
+    contact_id: uuid.UUID | None = None
     name: str = Field(min_length=1, max_length=100)
     phone_e164: str | None = Field(default=None, max_length=20)
     email: str | None = Field(default=None, max_length=320)
@@ -126,6 +131,7 @@ class SplitNotificationHistoryResponse(BaseModel):
     provider_error_message: str | None
     created_at: datetime
     completed_at: datetime | None
+    recipient_name: str | None = None
 
 
 class SplitNotificationQueueResponse(BaseModel):
@@ -134,12 +140,45 @@ class SplitNotificationQueueResponse(BaseModel):
     created_at: datetime
 
 
+class SplitNotificationBatchQueueResponse(BaseModel):
+    campaign_id: uuid.UUID
+    notification_ids: list[uuid.UUID]
+    status: str
+    created_at: datetime
+
+
+class SplitNotificationRecipientResponse(BaseModel):
+    participant_id: uuid.UUID
+    contact_id: uuid.UUID | None
+    name: str
+    amount_paise: int
+    recipient: str | None
+
+
+class SplitNotificationSplitStatusResponse(BaseModel):
+    server_now: datetime
+    can_notify: bool
+    blocked_reason: str | None
+    notification_count: int
+    max_notifications: int
+    limits_bypassed: bool = False
+    last_sent_at: datetime | None
+    next_available_at: datetime | None
+    cooldown_remaining_seconds: int
+    request_in_progress: bool
+    channel: str
+    recipients: list[SplitNotificationRecipientResponse]
+    missing_recipients: list[SplitNotificationRecipientResponse]
+    history: list[SplitNotificationHistoryResponse]
+
+
 class SplitNotificationStatusResponse(BaseModel):
     server_now: datetime
     can_notify: bool
     blocked_reason: str | None
     notification_count: int
     max_notifications: int
+    limits_bypassed: bool = False
     last_sent_at: datetime | None
     next_available_at: datetime | None
     cooldown_remaining_seconds: int

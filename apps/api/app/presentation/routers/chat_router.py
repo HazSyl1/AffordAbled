@@ -1,18 +1,21 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 
 from app.application.services.chat_service import ChatService
 from app.application.services.image_service import ImageService
 from app.application.services.speech_service import SpeechService
+from app.application.services.user_usage_service import CHAT_TURN, MEDIA_REQUEST, UsageLimitExceeded, UserUsageService
 from app.core.dependencies import (
     get_chat_service,
     get_chat_turn_job_repository,
     get_current_user,
     get_image_service,
     get_speech_service,
+    get_user_usage_service,
 )
 from app.domain.entities import User
 from app.infrastructure.database.models import ChatTurnJobModel
@@ -34,6 +37,22 @@ from app.presentation.schemas.chat import (
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 
+def _quota_http_error(error: UsageLimitExceeded) -> HTTPException:
+    retry_after = max(0, int((error.reset_at - datetime.now(UTC)).total_seconds()))
+    return HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail=error.detail(),
+        headers={'Retry-After': str(retry_after)},
+    )
+
+
+async def _consume_media(usage_service: UserUsageService, user: User) -> None:
+    try:
+        await usage_service.consume(user.id, MEDIA_REQUEST, f'media:{uuid.uuid4()}', commit=True)
+    except UsageLimitExceeded as exc:
+        raise _quota_http_error(exc) from exc
+
+
 def _turn_status_response(job: ChatTurnJobModel) -> ChatTurnStatusResponse:
     return ChatTurnStatusResponse(
         turn_id=job.id,
@@ -52,8 +71,12 @@ async def submit_chat_turn(
     payload: ChatTurnSubmitRequest,
     current_user: User = Depends(get_current_user),
     repository: SqlAlchemyChatTurnJobRepository = Depends(get_chat_turn_job_repository),
+    usage_service: UserUsageService = Depends(get_user_usage_service),
 ) -> ChatTurnStatusResponse:
     try:
+        await usage_service.consume(
+            current_user.id, CHAT_TURN, f'turn:{payload.turn_id}', commit=True,
+        )
         job = await repository.create_or_get(
             turn_id=payload.turn_id,
             user_id=current_user.id,
@@ -63,6 +86,8 @@ async def submit_chat_turn(
         )
     except ChatTurnConflictError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except UsageLimitExceeded as exc:
+        raise _quota_http_error(exc) from exc
     return _turn_status_response(job)
 
 
@@ -83,13 +108,20 @@ async def send_chat_message(
     payload: ChatRequest,
     current_user: User = Depends(get_current_user),
     chat_service: ChatService = Depends(get_chat_service),
+    usage_service: UserUsageService = Depends(get_user_usage_service),
 ) -> ChatResponse:
-    response = await chat_service.send_message(
-        user_id=current_user.id,
-        message=payload.message,
-        thread_id=payload.thread_id,
-        timezone=payload.timezone,
-    )
+    turn_id = uuid.uuid4()
+    try:
+        await usage_service.consume(current_user.id, CHAT_TURN, f'turn:{turn_id}', commit=True)
+        response = await chat_service.send_message(
+            user_id=current_user.id,
+            message=payload.message,
+            thread_id=payload.thread_id,
+            timezone=payload.timezone,
+            turn_id=turn_id,
+        )
+    except UsageLimitExceeded as exc:
+        raise _quota_http_error(exc) from exc
     proposal = response.pending_transaction_proposal
     proposals = response.pending_transaction_proposals or []
     return ChatResponse(
@@ -153,13 +185,15 @@ async def send_chat_message(
     "/voice",
     response_model=VoiceTranscriptionResponse,
     status_code=status.HTTP_200_OK,
-    dependencies=[Depends(get_current_user)],
 )
 async def transcribe_voice(
     audio: UploadFile = File(...),
     locale: str = Form("en-IN"),
     speech_service: SpeechService = Depends(get_speech_service),
+    current_user: User = Depends(get_current_user),
+    usage_service: UserUsageService = Depends(get_user_usage_service),
 ) -> VoiceTranscriptionResponse:
+    await _consume_media(usage_service, current_user)
     audio_bytes = await audio.read()
     content_type = audio.content_type or "application/octet-stream"
 
@@ -171,12 +205,14 @@ async def transcribe_voice(
     "/image",
     response_model=ImageAnalysisResponse,
     status_code=status.HTTP_200_OK,
-    dependencies=[Depends(get_current_user)],
 )
 async def analyze_image(
     image: UploadFile = File(...),
     image_service: ImageService = Depends(get_image_service),
+    current_user: User = Depends(get_current_user),
+    usage_service: UserUsageService = Depends(get_user_usage_service),
 ) -> ImageAnalysisResponse:
+    await _consume_media(usage_service, current_user)
     image_bytes = await image.read()
     content_type = image.content_type or "application/octet-stream"
 

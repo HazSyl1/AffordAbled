@@ -53,6 +53,7 @@ pytest==9.1.1
 pytest-asyncio==1.4.0
 python-dotenv==1.2.3
 python-multipart==0.0.32
+qrcode[pil]==8.2
 PyYAML==6.0.3
 rend==7.0.2
 ruff==0.16.8

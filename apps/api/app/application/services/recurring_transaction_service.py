@@ -126,7 +126,10 @@ class RecurringTransactionService:
         if data.source_memory_id is not None:
             await self.repository.consume_memory(data.user_id, data.source_memory_id)
         if data.create_initial_transaction:
-            initial = await self._post(rule, data.anchor_at.astimezone(UTC))
+            initial = await self._post(
+                rule, data.anchor_at.astimezone(UTC),
+                source_turn_id=data.source_turn_id, source_task_id=data.source_task_id,
+            )
         else:
             await self.repository.commit()
         wake_recurring_scheduler()
@@ -237,13 +240,22 @@ class RecurringTransactionService:
             rule.status = RecurringRuleStatus.NEEDS_ATTENTION
         await self.repository.update(rule)
 
-    async def _post(self, rule: RecurringTransactionRule, scheduled_for: datetime) -> Transaction:
+    async def _post(
+        self,
+        rule: RecurringTransactionRule,
+        scheduled_for: datetime,
+        *,
+        source_turn_id: uuid.UUID | None = None,
+        source_task_id: str | None = None,
+    ) -> Transaction:
         if rule.account_id is None or rule.category_id is None:
             raise ValueError('The recurring rule needs a valid account and category.')
         return await self.transaction_service.create_transaction(CreateTransactionInput(
             user_id=rule.user_id, account_id=rule.account_id, category_id=rule.category_id, type=rule.type,
             amount_paise=rule.amount_paise, occurred_at=scheduled_for, merchant=rule.merchant, note=rule.note,
             recurring_rule_id=rule.id, scheduled_for=scheduled_for,
+            source_turn_id=source_turn_id, source_task_id=source_task_id,
+            source_item_index=0 if source_turn_id is not None and source_task_id is not None else None,
         ))
 
     @staticmethod

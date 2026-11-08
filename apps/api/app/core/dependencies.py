@@ -27,6 +27,7 @@ from app.application.services.split_service import SplitService
 from app.application.services.thread_service import ThreadService
 from app.application.services.transaction_import_service import TransactionImportService
 from app.application.services.transaction_service import TransactionService
+from app.application.services.user_usage_service import UserUsageService
 from app.core.config import Settings, get_settings
 from app.domain.entities import User
 from app.domain.exceptions import InvalidTokenError
@@ -70,6 +71,7 @@ from app.infrastructure.database.repositories.sqlalchemy_transaction_import_repo
 )
 from app.infrastructure.database.repositories.sqlalchemy_transaction_repository import SqlAlchemyTransactionRepository
 from app.infrastructure.database.repositories.sqlalchemy_user_repository import SqlAlchemyUserRepository
+from app.infrastructure.database.repositories.sqlalchemy_user_usage_repository import SqlAlchemyUserUsageRepository
 from app.infrastructure.database.session import get_session
 
 logger = logging.getLogger(__name__)
@@ -88,6 +90,20 @@ def get_settings_dependency() -> Settings:
 
 def get_user_repository(db: AsyncSession = Depends(get_db)) -> SqlAlchemyUserRepository:
     return SqlAlchemyUserRepository(db)
+
+
+def get_user_usage_service(
+    db: AsyncSession = Depends(get_db), settings: Settings = Depends(get_settings_dependency),
+) -> UserUsageService:
+    return UserUsageService(
+        SqlAlchemyUserUsageRepository(db),
+        free_chat_turns=max(1, settings.free_chat_turns_per_day),
+        free_ai_transactions=max(1, settings.free_ai_transactions_per_day),
+        subscribed_chat_turns=max(1, settings.subscribed_chat_turns_per_day),
+        subscribed_ai_transactions=max(1, settings.subscribed_ai_transactions_per_day),
+        free_media_requests=max(1, settings.free_media_requests_per_day),
+        subscribed_media_requests=max(1, settings.subscribed_media_requests_per_day),
+    )
 
 
 def get_account_repository(db: AsyncSession = Depends(get_db)) -> SqlAlchemyAccountRepository:
@@ -272,6 +288,7 @@ def get_transaction_service(
     transaction_repository: SqlAlchemyTransactionRepository = Depends(get_transaction_repository),
     account_repository: SqlAlchemyAccountRepository = Depends(get_account_repository),
     category_repository: SqlAlchemyCategoryRepository = Depends(get_category_repository),
+    usage_service: UserUsageService = Depends(get_user_usage_service),
     db: AsyncSession = Depends(get_db),
 ) -> TransactionService:
     return TransactionService(
@@ -280,6 +297,7 @@ def get_transaction_service(
         category_repository=category_repository,
         split_repository=SqlAlchemySplitRepository(db),
         memory_event_writer=SqlAlchemyMemoryRepository(db),
+        usage_service=usage_service,
     )
 
 
@@ -437,6 +455,13 @@ def build_chat_service_for_session(
         category_repository=category_repository,
         split_repository=SqlAlchemySplitRepository(db),
         memory_event_writer=memory_repository,
+        usage_service=UserUsageService(
+            SqlAlchemyUserUsageRepository(db),
+            free_chat_turns=max(1, settings.free_chat_turns_per_day),
+            free_ai_transactions=max(1, settings.free_ai_transactions_per_day),
+            subscribed_chat_turns=max(1, settings.subscribed_chat_turns_per_day),
+            subscribed_ai_transactions=max(1, settings.subscribed_ai_transactions_per_day),
+        ),
     )
     orchestrator = AgenticChatOrchestrator(
         AgenticSupervisorGraph(

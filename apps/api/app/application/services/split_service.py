@@ -65,6 +65,8 @@ class SplitStore(Protocol):
         owner_share_paise: int, participants: list[ParticipantEditShare],
     ): ...
 
+    async def rename(self, user_id: uuid.UUID, split_id: uuid.UUID, title: str): ...
+
     async def settle(
         self, user_id: uuid.UUID, split_id: uuid.UUID,
         participant_id: uuid.UUID, repayment_transaction_id: uuid.UUID,
@@ -103,6 +105,7 @@ class SplitStore(Protocol):
 
     async def set_contact_details(
         self, user_id: uuid.UUID, name: str, phone_e164: str | None, email: str | None = None,
+        contact_id: uuid.UUID | None = None,
     ): ...
 
 
@@ -321,6 +324,12 @@ class SplitService:
     async def get_for_user(self, user_id: uuid.UUID, split_id: uuid.UUID):
         return await self.store.get_for_user(user_id, split_id)
 
+    async def rename(self, user_id: uuid.UUID, split_id: uuid.UUID, title: str):
+        clean_title = ' '.join(title.split())
+        if not clean_title or len(clean_title) > 255:
+            raise ValueError('Enter a description (up to 255 characters).')
+        return await self.store.rename(user_id, split_id, clean_title)
+
     async def update(
         self, user_id: uuid.UUID, split_id: uuid.UUID, title: str,
         owner_share_paise: int, participants: list[ParticipantEditShare],
@@ -422,6 +431,7 @@ class SplitService:
 
     async def set_contact_details(
         self, user_id: uuid.UUID, name: str, phone_e164: str | None, email: str | None = None,
+        contact_id: uuid.UUID | None = None,
     ):
         clean_name = capitalize_name(name)
         if not clean_name or len(clean_name) > 100:
@@ -435,4 +445,4 @@ class SplitService:
         email = email.strip().lower() if email else None
         if email and ('@' not in email or ' ' in email or len(email) > 320):
             raise ValueError('Enter a valid email address.')
-        return await self.store.set_contact_details(user_id, clean_name, phone_e164, email)
+        return await self.store.set_contact_details(user_id, clean_name, phone_e164, email, contact_id)

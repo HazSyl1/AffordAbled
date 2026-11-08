@@ -106,6 +106,15 @@ export interface SplitNotificationHistory {
   provider_error_message: string | null;
   created_at: string;
   completed_at: string | null;
+  recipient_name?: string | null;
+}
+
+export interface SplitNotificationRecipient {
+  participant_id: string;
+  contact_id: string | null;
+  name: string;
+  amount_paise: number;
+  recipient: string | null;
 }
 
 export interface SplitNotificationStatus {
@@ -114,14 +123,14 @@ export interface SplitNotificationStatus {
   blocked_reason: string | null;
   notification_count: number;
   max_notifications: number;
+  limits_bypassed: boolean;
   last_sent_at: string | null;
   next_available_at: string | null;
   cooldown_remaining_seconds: number;
   request_in_progress: boolean;
-  message_preview: string | null;
-  recipient_phone_masked: string | null;
-  recipient_email_masked?: string | null;
-  channel?: 'sms' | 'email';
+  channel: 'sms' | 'email';
+  recipients: SplitNotificationRecipient[];
+  missing_recipients: SplitNotificationRecipient[];
   history: SplitNotificationHistory[];
 }
 
@@ -146,8 +155,14 @@ const splitsApi = apiClient.injectEndpoints({
     listSplitContactDetails: builder.query<SplitContactDetails[], void>({
       query: () => '/splits/contacts/details', providesTags: ['Split'],
     }),
-    setSplitContactDetails: builder.mutation<SplitContactDetails, { name: string; phone_e164: string | null; email: string | null }>({
+    setSplitContactDetails: builder.mutation<SplitContactDetails, {
+      contact_id?: string; name: string; phone_e164: string | null; email: string | null;
+    }>({
       query: (body) => ({ url: '/splits/contacts/details', method: 'PUT', body }),
+      invalidatesTags: ['Split', 'SplitNotification'],
+    }),
+    deleteSplitContactDetails: builder.mutation<void, string>({
+      query: (contactId) => ({ url: `/splits/contacts/details/${contactId}`, method: 'DELETE' }),
       invalidatesTags: ['Split', 'SplitNotification'],
     }),
     listSplitContactPreferences: builder.query<SplitContactPreference[], void>({
@@ -181,6 +196,10 @@ const splitsApi = apiClient.injectEndpoints({
     updateSplit: builder.mutation<Split, { splitId: string; body: UpdateSplitRequest }>({
       query: ({ splitId, body }) => ({ url: `/splits/${splitId}`, method: 'PATCH', body }),
       invalidatesTags: ['Split'],
+    }),
+    renameSplit: builder.mutation<Split, { splitId: string; title: string }>({
+      query: ({ splitId, title }) => ({ url: `/splits/${splitId}/title`, method: 'PATCH', body: { title } }),
+      invalidatesTags: ['Split', 'SplitNotification'],
     }),
     settleSplitParticipant: builder.mutation<Split, { splitId: string; participantId: string; repaymentTransactionId: string }>({
       query: ({ splitId, participantId, repaymentTransactionId }) => ({
@@ -219,15 +238,15 @@ const splitsApi = apiClient.injectEndpoints({
     listSplitNotificationStatuses: builder.query<Record<string, SplitNotificationStatus>, void>({
       query: () => '/splits/notification-statuses', providesTags: ['SplitNotification'],
     }),
-    getSplitNotificationStatus: builder.query<SplitNotificationStatus, { splitId: string; participantId: string }>({
-      query: ({ splitId, participantId }) => `/splits/${splitId}/participants/${participantId}/notifications`,
+    getSplitNotificationStatus: builder.query<SplitNotificationStatus, { splitId: string }>({
+      query: ({ splitId }) => `/splits/${splitId}/notifications`,
       providesTags: ['SplitNotification'],
     }),
     queueSplitNotification: builder.mutation<{
-      notification_id: string; status: string; created_at: string;
-    }, { splitId: string; participantId: string; idempotencyKey: string }>({
-      query: ({ splitId, participantId, idempotencyKey }) => ({
-        url: `/splits/${splitId}/participants/${participantId}/notifications`, method: 'POST',
+      campaign_id: string; notification_ids: string[]; status: string; created_at: string;
+    }, { splitId: string; idempotencyKey: string }>({
+      query: ({ splitId, idempotencyKey }) => ({
+        url: `/splits/${splitId}/notifications`, method: 'POST',
         headers: { 'Idempotency-Key': idempotencyKey },
       }),
       invalidatesTags: ['SplitNotification'],
@@ -246,8 +265,9 @@ export const {
   useListSplitContactPreferencesQuery, useSetSplitContactPreferenceMutation,
   useListSplitPreferenceSuggestionsQuery,
   useDeleteSplitContactPreferenceMutation,
-  useListSplitContactDetailsQuery, useSetSplitContactDetailsMutation,
+  useListSplitContactDetailsQuery, useSetSplitContactDetailsMutation, useDeleteSplitContactDetailsMutation,
   useListSplitNotificationStatusesQuery, useLazyGetSplitNotificationStatusQuery,
   useQueueSplitNotificationMutation,
+  useRenameSplitMutation,
   useLazyListSplitsQuery,
 } = splitsApi;

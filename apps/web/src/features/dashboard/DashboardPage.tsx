@@ -33,7 +33,7 @@ import {
 import { useVoiceCapture } from '../chat/useVoiceCapture';
 import { useListTransactionsQuery } from '../transactions/transactionsApi';
 import {
-  useLazyListSplitsQuery, useListSplitsQuery, type Split, type SplitParticipant,
+  useLazyListSplitsQuery, useListSplitContactDetailsQuery, useListSplitsQuery, type Split,
 } from '../splits/splitsApi';
 import { useListMemorySuggestionsQuery } from '../memory/memoryApi';
 import type { TransactionType } from '../transactions/transactionsApi';
@@ -91,6 +91,7 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
   const { data: accounts, isLoading: isLoadingAccounts } = useListAccountsQuery();
   const { data: transactions, isLoading: isLoadingTransactions } = useListTransactionsQuery();
   const { data: splits, isLoading: isLoadingSplits } = useListSplitsQuery();
+  const { data: splitContacts = [] } = useListSplitContactDetailsQuery();
   const [getSplits] = useLazyListSplitsQuery();
   const { data: categories } = useListCategoriesQuery();
   const { runTurn, isProcessingTurn } = useDurableChatTurn();
@@ -112,9 +113,7 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatError, setChatError] = useState<string | null>(null);
   const [notificationNotice, setNotificationNotice] = useState<string | null>(null);
-  const [pendingSplitReminders, setPendingSplitReminders] = useState<
-    { split: Split; participant: SplitParticipant }[]
-  >([]);
+  const [pendingSplitReminders, setPendingSplitReminders] = useState<{ split: Split }[]>([]);
   const [manualFallbackMessage, setManualFallbackMessage] = useState<string | null>(null);
   const receiptUploadRef = useRef(false);
   const [transactionSuccess, setTransactionSuccess] = useState<{ message: string; expiresAt: number; transactionId: string | null } | null>(null);
@@ -169,11 +168,9 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
     const latestSplits = await getSplits(undefined, false).unwrap();
     const requestedIds = new Set(splitIds);
     const reminders = latestSplits
-      .filter((split) => requestedIds.has(split.id) && split.direction === 'to_you')
-      .flatMap((split) => split.participants
-        .filter((participant) => participant.contact_id
-          && participant.share_paise > participant.settled_paise)
-        .map((participant) => ({ split, participant })));
+      .filter((split) => requestedIds.has(split.id) && split.direction === 'to_you'
+        && split.participants.some((participant) => participant.share_paise > participant.settled_paise))
+      .map((split) => ({ split }));
     setPendingSplitReminders((current) => [...current, ...reminders]);
   }, [getSplits]);
 
@@ -1160,7 +1157,7 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
       {pendingSplitReminders[0] ? (
         <NotificationConfirmDialog
           split={pendingSplitReminders[0].split}
-          participant={pendingSplitReminders[0].participant}
+          contacts={splitContacts}
           onQueued={setNotificationNotice}
           onClose={() => setPendingSplitReminders((current) => current.slice(1))}
         />

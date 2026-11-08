@@ -12,7 +12,7 @@ from app.domain.entities.recurring_transaction import (
 )
 from app.domain.entities.refresh_session import RefreshSession
 from app.domain.entities.transaction import Transaction, TransactionType
-from app.domain.entities.user import User
+from app.domain.entities.user import User, UserTier
 
 __all__ = [
     'Account',
@@ -31,4 +31,5 @@ __all__ = [
     'Transaction',
     'TransactionType',
     'User',
+    'UserTier',
 ]

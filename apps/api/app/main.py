@@ -365,6 +365,12 @@ def create_app() -> FastAPI:
             and settings.email_sender_address
         )
         if email_worker_configured:
+            if not settings.public_api_base_url.startswith('https://'):
+                logger.warning(
+                    'split_notification.pay_link.unusable',
+                    extra={'detail': 'PUBLIC_API_BASE_URL is not a public https URL; the email "Pay with UPI" '
+                                     'button will use a raw upi:// link that Gmail and Outlook do not open.'},
+                )
             email_provider = AzureAcsEmailProvider(
                 settings.acs_connection_string, settings.email_sender_address, settings.email_send_timeout_seconds,
             )
@@ -374,6 +380,8 @@ def create_app() -> FastAPI:
                 batch_size=settings.email_worker_batch_size,
                 stale_after_seconds=settings.email_processing_stale_seconds,
                 channel='email',
+                pay_base_url=settings.public_api_base_url,
+                app_url=settings.public_web_url or (settings.cors_allowed_origins_list or [''])[0],
             ))
 
         try:

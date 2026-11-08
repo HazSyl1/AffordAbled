@@ -26,6 +26,7 @@ from app.infrastructure.database.models.split_notification import SplitNotificat
 from app.infrastructure.database.models.transaction import TransactionModel
 from app.infrastructure.database.models.transaction_import import TransactionImportModel
 from app.infrastructure.database.models.user import UserModel
+from app.infrastructure.database.models.user_usage_event import UserUsageEventModel
 
 __all__ = [
     'AccountModel',
@@ -54,4 +55,5 @@ __all__ = [
     'TransactionModel',
     'TransactionImportModel',
     'UserModel',
+    'UserUsageEventModel',
 ]

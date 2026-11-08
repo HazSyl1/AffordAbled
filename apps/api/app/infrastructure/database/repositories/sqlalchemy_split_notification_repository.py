@@ -33,6 +33,13 @@ class ReservationResult:
     next_available_at: datetime | None = None
 
 
+@dataclass
+class BatchReservationResult:
+    notifications: list[SplitNotificationModel]
+    blocked_reason: str | None = None
+    next_available_at: datetime | None = None
+
+
 class SqlAlchemySplitNotificationRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
@@ -55,11 +62,107 @@ class SqlAlchemySplitNotificationRepository:
         split, participant, contact, user = row
         return SimpleNamespace(split=split, participant=participant, contact=contact, user=user)
 
+    async def get_split_contexts(self, user_id: uuid.UUID, split_id: uuid.UUID):
+        rows = (await self.session.execute(
+            select(SplitModel, SplitParticipantModel, SplitContactModel, UserModel)
+            .join(SplitParticipantModel, SplitParticipantModel.split_id == SplitModel.id)
+            .outerjoin(SplitContactModel, SplitContactModel.id == SplitParticipantModel.contact_id)
+            .join(UserModel, UserModel.id == SplitModel.user_id)
+            .where(SplitModel.id == split_id, SplitModel.user_id == user_id)
+            .order_by(SplitParticipantModel.name)
+        )).all()
+        return [SimpleNamespace(split=split, participant=participant, contact=contact, user=user)
+                for split, participant, contact, user in rows]
+
+    async def get_by_id(self, notification_id: uuid.UUID):
+        return await self.session.get(SplitNotificationModel, notification_id)
+
     async def get_by_idempotency(self, user_id: uuid.UUID, key: uuid.UUID):
         return await self.session.scalar(select(SplitNotificationModel).where(
             SplitNotificationModel.sent_by_user_id == user_id,
             SplitNotificationModel.idempotency_key == key,
         ))
+
+    async def get_campaign(self, user_id: uuid.UUID, split_id: uuid.UUID, key: uuid.UUID):
+        rows = await self.session.scalars(select(SplitNotificationModel).where(
+            SplitNotificationModel.sent_by_user_id == user_id,
+            SplitNotificationModel.split_id == split_id,
+            SplitNotificationModel.idempotency_key == key,
+        ).order_by(SplitNotificationModel.recipient_name))
+        return list(rows.all())
+
+    async def reserve_split_batch(self, *, notifications: list[dict], **values) -> BatchReservationResult:
+        user_id = values['user_id']
+        split_id = values['split_id']
+        key = values['idempotency_key']
+        now = values['now']
+        cooldown = values['cooldown']
+        max_per_split = values['max_per_split']
+        max_per_user_daily = values['max_per_user_daily']
+        bypass_limits = bool(values.get('bypass_limits'))
+        await self.session.scalar(select(UserModel.id).where(UserModel.id == user_id).with_for_update())
+        split = await self.session.scalar(select(SplitModel).where(
+            SplitModel.id == split_id, SplitModel.user_id == user_id,
+        ).with_for_update())
+        if split is None:
+            raise LookupError('Split was not found.')
+        existing = await self.get_campaign(user_id, split_id, key)
+        if existing:
+            return BatchReservationResult(existing)
+        latest_in_progress = await self.session.scalar(select(SplitNotificationModel).where(
+            SplitNotificationModel.split_id == split_id,
+            SplitNotificationModel.status.in_({'queued', 'processing'}),
+        ).order_by(SplitNotificationModel.created_at.desc()))
+        latest_sent = await self.session.scalar(select(SplitNotificationModel).where(
+            SplitNotificationModel.split_id == split_id,
+            SplitNotificationModel.status.in_(COOLDOWN_STATUSES),
+        ).order_by(SplitNotificationModel.created_at.desc()))
+        campaign_count = int(await self.session.scalar(select(
+            func.count(func.distinct(SplitNotificationModel.idempotency_key)),
+        ).where(
+            SplitNotificationModel.split_id == split_id,
+            SplitNotificationModel.status.in_(COUNTED_STATUSES),
+        )) or 0)
+        day_start = now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+        daily_count = int(await self.session.scalar(select(func.count()).select_from(
+            SplitNotificationModel,
+        ).where(
+            SplitNotificationModel.sent_by_user_id == user_id,
+            SplitNotificationModel.status.in_(COUNTED_STATUSES),
+            SplitNotificationModel.created_at >= day_start,
+        )) or 0)
+        reason = None
+        next_at = None
+        if latest_in_progress is not None:
+            reason = 'request_in_progress'
+        elif not bypass_limits and latest_sent is not None and _as_utc(latest_sent.created_at) + cooldown > now:
+            reason = 'cooldown_active'
+            next_at = _as_utc(latest_sent.created_at) + cooldown
+        elif not bypass_limits and campaign_count >= max_per_split:
+            reason = 'split_limit_reached'
+        elif not bypass_limits and daily_count + len(notifications) > max_per_user_daily:
+            reason = 'daily_limit_reached'
+            next_at = day_start + timedelta(days=1)
+        rows = [SplitNotificationModel(
+            id=uuid.uuid4(), split_id=split_id, split_participant_id=item['participant_id'],
+            sent_by_user_id=user_id, idempotency_key=key,
+            channel=values['channel'], provider=values['provider'], recipient_name=item['recipient_name'],
+            recipient_phone_e164=item.get('recipient_phone_e164'), recipient_email=item.get('recipient_email'),
+            email_subject=item.get('email_subject'), amount_paise=item['amount_paise'], currency='INR',
+            message_body=item['message_body'], upi_link=item['upi_link'],
+            status='rate_limited' if reason else 'queued', blocked_reason=reason,
+            created_at=now, completed_at=now if reason else None,
+        ) for item in notifications]
+        self.session.add_all(rows)
+        try:
+            await self.session.commit()
+        except IntegrityError:
+            await self.session.rollback()
+            existing = await self.get_campaign(user_id, split_id, key)
+            if not existing:
+                raise
+            return BatchReservationResult(existing)
+        return BatchReservationResult(rows, reason, next_at)
 
     async def reserve(self, **values) -> ReservationResult:
         user_id = values['user_id']
@@ -68,6 +171,7 @@ class SqlAlchemySplitNotificationRepository:
         cooldown = values.pop('cooldown')
         max_per_participant = values.pop('max_per_participant')
         max_per_user_daily = values.pop('max_per_user_daily')
+        bypass_limits = bool(values.pop('bypass_limits', False))
         await self.session.scalar(select(UserModel.id).where(UserModel.id == user_id).with_for_update())
         participant = await self.session.scalar(
             select(SplitParticipantModel).where(SplitParticipantModel.id == participant_id).with_for_update()
@@ -105,12 +209,12 @@ class SqlAlchemySplitNotificationRepository:
         next_at = None
         if latest_in_progress is not None:
             reason = 'request_in_progress'
-        elif latest_sent is not None and _as_utc(latest_sent.created_at) + cooldown > now:
+        elif not bypass_limits and latest_sent is not None and _as_utc(latest_sent.created_at) + cooldown > now:
             reason = 'cooldown_active'
             next_at = _as_utc(latest_sent.created_at) + cooldown
-        elif participant_count >= max_per_participant:
+        elif not bypass_limits and participant_count >= max_per_participant:
             reason = 'participant_limit_reached'
-        elif daily_count >= max_per_user_daily:
+        elif not bypass_limits and daily_count >= max_per_user_daily:
             reason = 'daily_limit_reached'
             next_at = day_start + timedelta(days=1)
         notification = SplitNotificationModel(
@@ -141,9 +245,57 @@ class SqlAlchemySplitNotificationRepository:
         ).order_by(SplitNotificationModel.created_at.desc()).limit(limit))
         return list(rows.all())
 
+    async def history_split(self, user_id: uuid.UUID, split_id: uuid.UUID, *, limit: int):
+        rows = await self.session.scalars(select(SplitNotificationModel).where(
+            SplitNotificationModel.sent_by_user_id == user_id,
+            SplitNotificationModel.split_id == split_id,
+        ).order_by(SplitNotificationModel.created_at.desc()).limit(limit))
+        return list(rows.all())
+
+    async def summary_split(
+        self, user_id: uuid.UUID, split_id: uuid.UUID, *, now: datetime,
+        cooldown: timedelta, max_per_split: int, max_per_user_daily: int,
+        bypass_limits: bool = False,
+    ) -> dict:
+        history = await self.history_split(user_id, split_id, limit=200)
+        counted_campaigns = {
+            item.idempotency_key for item in history if item.status in COUNTED_STATUSES
+        }
+        latest_sent = next((item for item in history if item.status in COOLDOWN_STATUSES), None)
+        in_progress = any(item.status in {'queued', 'processing'} for item in history)
+        day_start = now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+        daily_count = int(await self.session.scalar(select(func.count()).select_from(
+            SplitNotificationModel,
+        ).where(
+            SplitNotificationModel.sent_by_user_id == user_id,
+            SplitNotificationModel.status.in_(COUNTED_STATUSES),
+            SplitNotificationModel.created_at >= day_start,
+        )) or 0)
+        next_at = _as_utc(latest_sent.created_at) + cooldown if latest_sent else None
+        blocked = None
+        if in_progress:
+            blocked = 'request_in_progress'
+        elif not bypass_limits and next_at and next_at > now:
+            blocked = 'cooldown_active'
+        elif not bypass_limits and len(counted_campaigns) >= max_per_split:
+            blocked = 'split_limit_reached'
+        elif not bypass_limits and daily_count >= max_per_user_daily:
+            blocked = 'daily_limit_reached'
+        return {
+            'notification_count': len(counted_campaigns), 'max_notifications': max_per_split,
+            'last_sent_at': latest_sent.created_at if latest_sent else None,
+            'next_available_at': next_at if not bypass_limits and next_at and next_at > now else None,
+            'cooldown_remaining_seconds': (
+                max(0, int((next_at - now).total_seconds())) if not bypass_limits and next_at else 0
+            ),
+            'request_in_progress': in_progress, 'blocked_reason': blocked,
+            'limits_bypassed': bypass_limits,
+        }
+
     async def summary(
         self, user_id: uuid.UUID, participant_id: uuid.UUID, *, now: datetime,
         cooldown: timedelta, max_per_participant: int, max_per_user_daily: int,
+        bypass_limits: bool = False,
     ) -> dict:
         history = await self.history(user_id, participant_id, limit=100)
         counted = [item for item in history if item.status in COUNTED_STATUSES]
@@ -159,18 +311,21 @@ class SqlAlchemySplitNotificationRepository:
         blocked = None
         if in_progress:
             blocked = 'request_in_progress'
-        elif next_at and next_at > now:
+        elif not bypass_limits and next_at and next_at > now:
             blocked = 'cooldown_active'
-        elif len(counted) >= max_per_participant:
+        elif not bypass_limits and len(counted) >= max_per_participant:
             blocked = 'participant_limit_reached'
-        elif daily_count >= max_per_user_daily:
+        elif not bypass_limits and daily_count >= max_per_user_daily:
             blocked = 'daily_limit_reached'
         return {
             'notification_count': len(counted), 'max_notifications': max_per_participant,
             'last_sent_at': latest_sent.created_at if latest_sent else None,
-            'next_available_at': next_at if next_at and next_at > now else None,
-            'cooldown_remaining_seconds': max(0, int((next_at - now).total_seconds())) if next_at else 0,
+            'next_available_at': next_at if not bypass_limits and next_at and next_at > now else None,
+            'cooldown_remaining_seconds': (
+                max(0, int((next_at - now).total_seconds())) if not bypass_limits and next_at else 0
+            ),
             'request_in_progress': in_progress, 'blocked_reason': blocked,
+            'limits_bypassed': bypass_limits,
         }
 
     async def claim_queued(

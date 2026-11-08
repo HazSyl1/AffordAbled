@@ -4,7 +4,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from urllib.parse import urlencode
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 COUNTED_STATUSES = {'queued', 'processing', 'sent', 'uncertain'}
 COOLDOWN_STATUSES = {'sent', 'uncertain'}
@@ -41,12 +41,27 @@ def build_sms_message(contact_name: str, creator_name: str, amount_paise: int, n
     return f'Hi {contact_name}, {creator_name} requested Rs.{amount:.2f} for "{short_note}". Pay via UPI: {upi_link}'
 
 
-def build_email_subject(creator_name: str, note: str) -> str:
-    return f'Payment request from {creator_name}: {" ".join(note.split())[:80]}'
+def build_email_subject(creator_name: str, amount_paise: int) -> str:
+    amount = Decimal(amount_paise) / Decimal(100)
+    return f'AffordAbled: {creator_name} requested ₹{amount:,.2f} from you'
 
 
-def build_email_message(contact_name: str, creator_name: str, amount_paise: int, note: str, upi_link: str) -> str:
-    return build_sms_message(contact_name, creator_name, amount_paise, note, upi_link)
+def build_email_message(
+    contact_name: str, creator_name: str, amount_paise: int, note: str, upi_id: str, upi_link: str,
+) -> str:
+    amount = Decimal(amount_paise) / Decimal(100)
+    short_note = ' '.join(note.split())[:80]
+    return (
+        f'Hi {contact_name},\n\n'
+        f'{creator_name} sent you a payment request through AffordAbled.\n\n'
+        f'Amount: ₹{amount:,.2f}\n'
+        f'For: {short_note}\n'
+        f'Requested by: {creator_name}\n'
+        f'Pay to UPI ID: {upi_id}\n\n'
+        f'Pay with UPI: {upi_link}\n\n'
+        'Before paying, verify the payee UPI ID and amount in your UPI app.\n\n'
+        'This is an automated message from AffordAbled. Please do not reply to this email.'
+    )
 
 
 def mask_phone(phone: str) -> str:
@@ -66,9 +81,172 @@ class SplitNotificationService:
     enabled: bool
     provider_name: str
     cooldown_hours: int
-    max_per_participant: int
+    max_per_split: int
     max_per_user_daily: int
     channel: str = 'sms'
+
+    async def queue_split(
+        self, user_id: uuid.UUID, split_id: uuid.UUID, idempotency_key: uuid.UUID,
+        *, now: datetime | None = None,
+    ):
+        if not self.enabled:
+            raise SplitNotificationError(
+                'notification_unavailable', 'Payment reminders are not configured.', status_code=503,
+            )
+        now = now or datetime.now(UTC)
+        existing = await self.repository.get_campaign(user_id, split_id, idempotency_key)
+        if existing:
+            if existing[0].status == 'rate_limited':
+                raise SplitNotificationError(
+                    existing[0].blocked_reason or 'rate_limited', 'This reminder request was rate limited.',
+                    status_code=429,
+                )
+            return existing
+        contexts = await self.repository.get_split_contexts(user_id, split_id)
+        if not contexts:
+            raise SplitNotificationError('split_not_found', 'Split was not found.', status_code=404)
+        self.validate_split_context(contexts[0])
+        unpaid = [item for item in contexts if item.participant.share_paise > item.participant.settled_paise]
+        if not unpaid:
+            raise SplitNotificationError('already_settled', 'This split is already settled.', status_code=409)
+        missing = [item.participant.name for item in unpaid if not self._recipient(item)]
+        if missing:
+            raise SplitNotificationError(
+                'participant_emails_required',
+                f'Add contact details for: {", ".join(missing)}.', status_code=422,
+            )
+        notifications = []
+        for context in unpaid:
+            amount = context.participant.share_paise - context.participant.settled_paise
+            link = build_upi_link(context.user.upi_id, context.user.name, amount, context.split.title)
+            message = (
+                build_email_message(
+                    context.participant.name, context.user.name, amount, context.split.title,
+                    context.user.upi_id, link,
+                )
+                if self.channel == 'email' else
+                build_sms_message(context.participant.name, context.user.name, amount, context.split.title, link)
+            )
+            notifications.append({
+                'participant_id': context.participant.id,
+                'recipient_name': context.participant.name,
+                'recipient_phone_e164': context.contact.phone_e164 if self.channel == 'sms' else None,
+                'recipient_email': context.contact.email if self.channel == 'email' else None,
+                'email_subject': (
+                    build_email_subject(context.user.name, amount) if self.channel == 'email' else None
+                ),
+                'amount_paise': amount, 'message_body': message, 'upi_link': link,
+            })
+        result = await self.repository.reserve_split_batch(
+            user_id=user_id, split_id=split_id, idempotency_key=idempotency_key,
+            notifications=notifications, channel=self.channel, provider=self.provider_name,
+            now=now, cooldown=timedelta(hours=self.cooldown_hours),
+            max_per_split=self.max_per_split, max_per_user_daily=self.max_per_user_daily,
+            bypass_limits=contexts[0].user.account_tier == 'test',
+        )
+        if result.blocked_reason:
+            next_at = result.next_available_at
+            retry = max(0, int((next_at - now).total_seconds())) if next_at else None
+            messages = {
+                'request_in_progress': 'A reminder for this split is already being processed.',
+                'cooldown_active': 'Wait before sending another reminder for this split.',
+                'split_limit_reached': 'This split has reached its reminder limit.',
+                'daily_limit_reached': 'Your daily notification limit has been reached.',
+            }
+            raise SplitNotificationError(
+                result.blocked_reason, messages[result.blocked_reason],
+                status_code=409 if result.blocked_reason == 'request_in_progress' else 429,
+                retry_after_seconds=retry, next_available_at=next_at,
+            )
+        return result.notifications
+
+    async def payment_page_data(self, notification_id: uuid.UUID) -> dict | None:
+        """Details for the public pay page opened from a reminder email; None when it should not be shown."""
+        notification = await self.repository.get_by_id(notification_id)
+        if notification is None or notification.status in {'cancelled', 'failed', 'rate_limited'}:
+            return None
+        parsed = urlsplit(notification.upi_link)
+        if parsed.scheme != 'upi' or parsed.netloc != 'pay':
+            return None
+        params = dict(parse_qsl(parsed.query))
+        return {
+            'upi_link': notification.upi_link,
+            'amount_paise': notification.amount_paise,
+            'payee_upi_id': params.get('pa', ''),
+            'payee_name': params.get('pn', ''),
+            'recipient_name': notification.recipient_name,
+        }
+
+    async def status_split(
+        self, user_id: uuid.UUID, split_id: uuid.UUID, *, now: datetime | None = None,
+    ) -> dict:
+        now = now or datetime.now(UTC)
+        contexts = await self.repository.get_split_contexts(user_id, split_id)
+        if not contexts:
+            raise SplitNotificationError('split_not_found', 'Split was not found.', status_code=404)
+        history_rows = await self.repository.history_split(user_id, split_id, limit=100)
+        summary = await self.repository.summary_split(
+            user_id, split_id, now=now, cooldown=timedelta(hours=self.cooldown_hours),
+            max_per_split=self.max_per_split, max_per_user_daily=self.max_per_user_daily,
+            bypass_limits=contexts[0].user.account_tier == 'test',
+        )
+        blocked_reason = None
+        try:
+            self.validate_split_context(contexts[0])
+        except SplitNotificationError as error:
+            blocked_reason = error.code
+        unpaid = [item for item in contexts if item.participant.share_paise > item.participant.settled_paise]
+        recipients = []
+        missing_recipients = []
+        for context in unpaid:
+            recipient = self._recipient(context)
+            item = {
+                'participant_id': context.participant.id,
+                'contact_id': context.contact.id if context.contact else None,
+                'name': context.participant.name,
+                'amount_paise': context.participant.share_paise - context.participant.settled_paise,
+                'recipient': mask_email(recipient) if self.channel == 'email' and recipient else (
+                    mask_phone(recipient) if recipient else None
+                ),
+            }
+            recipients.append(item)
+            if not recipient:
+                missing_recipients.append(item)
+        if not unpaid:
+            blocked_reason = 'already_settled'
+        elif missing_recipients:
+            blocked_reason = 'participant_emails_required' if self.channel == 'email' else 'participant_phones_required'
+        blocked_reason = summary.get('blocked_reason') or blocked_reason
+        history = [{
+            'id': item.id, 'status': item.status, 'channel': item.channel,
+            'recipient_name': item.recipient_name, 'blocked_reason': item.blocked_reason,
+            'provider_error_message': item.provider_error_message,
+            'created_at': item.created_at, 'completed_at': item.completed_at,
+        } for item in history_rows]
+        return {
+            **summary, 'server_now': now, 'channel': self.channel,
+            'can_notify': self.enabled and blocked_reason is None,
+            'blocked_reason': blocked_reason if self.enabled else 'notification_unavailable',
+            'recipients': recipients, 'missing_recipients': missing_recipients, 'history': history,
+        }
+
+    def _recipient(self, context) -> str | None:
+        if context.contact is None:
+            return None
+        return context.contact.email if self.channel == 'email' else context.contact.phone_e164
+
+    @staticmethod
+    def validate_split_context(context) -> None:
+        if context.split.settlement_breakdown is not None:
+            raise SplitNotificationError(
+                'notification_not_supported', 'Reminders are not available for settlement plans.', status_code=409,
+            )
+        if context.split.transaction_id is None and context.split.direction != 'to_you':
+            raise SplitNotificationError(
+                'notification_not_supported', 'This entry records money that you owe.', status_code=409,
+            )
+        if not context.user.upi_id:
+            raise SplitNotificationError('upi_id_required', 'Add your UPI ID in Profile first.', status_code=422)
 
     async def queue(
         self, user_id: uuid.UUID, split_id: uuid.UUID, participant_id: uuid.UUID,
@@ -92,7 +270,8 @@ class SplitNotificationService:
         amount_paise = context.participant.share_paise - context.participant.settled_paise
         upi_link = build_upi_link(context.user.upi_id, context.user.name, amount_paise, context.split.title)
         message = build_email_message(
-            context.participant.name, context.user.name, amount_paise, context.split.title, upi_link,
+            context.participant.name, context.user.name, amount_paise, context.split.title,
+            context.user.upi_id, upi_link,
         ) if self.channel == 'email' else build_sms_message(
             context.participant.name, context.user.name, amount_paise, context.split.title, upi_link,
         )
@@ -106,15 +285,16 @@ class SplitNotificationService:
             recipient_phone_e164=context.contact.phone_e164 if self.channel == 'sms' else None,
             recipient_email=context.contact.email if self.channel == 'email' else None,
             email_subject=(
-                build_email_subject(context.user.name, context.split.title) if self.channel == 'email' else None
+                build_email_subject(context.user.name, amount_paise) if self.channel == 'email' else None
             ),
             amount_paise=amount_paise,
             message_body=message,
             upi_link=upi_link,
             now=now,
             cooldown=timedelta(hours=self.cooldown_hours),
-            max_per_participant=self.max_per_participant,
+            max_per_participant=self.max_per_split,
             max_per_user_daily=self.max_per_user_daily,
+            bypass_limits=context.user.account_tier == 'test',
         )
         if result.blocked_reason:
             next_at = result.next_available_at
@@ -154,8 +334,9 @@ class SplitNotificationService:
         ]
         summary = await self.repository.summary(
             user_id, participant_id, now=now, cooldown=timedelta(hours=self.cooldown_hours),
-            max_per_participant=self.max_per_participant,
+            max_per_participant=self.max_per_split,
             max_per_user_daily=self.max_per_user_daily,
+            bypass_limits=context.user.account_tier == 'test',
         )
         blocked_reason = None
         preview = None
@@ -165,7 +346,10 @@ class SplitNotificationService:
             amount = context.participant.share_paise - context.participant.settled_paise
             link = build_upi_link(context.user.upi_id, context.user.name, amount, context.split.title)
             preview = (
-                build_email_message(context.participant.name, context.user.name, amount, context.split.title, link)
+                build_email_message(
+                    context.participant.name, context.user.name, amount, context.split.title,
+                    context.user.upi_id, link,
+                )
                 if self.channel == 'email' else
                 build_sms_message(context.participant.name, context.user.name, amount, context.split.title, link)
             )

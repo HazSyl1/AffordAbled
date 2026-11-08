@@ -12,7 +12,10 @@ from app.infrastructure.database.base import Base
 class SplitNotificationModel(Base):
     __tablename__ = 'split_notifications'
     __table_args__ = (
-        UniqueConstraint('sent_by_user_id', 'idempotency_key', name='uq_split_notification_idempotency'),
+        UniqueConstraint(
+            'sent_by_user_id', 'idempotency_key', 'split_participant_id',
+            name='uq_split_notification_campaign_recipient',
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)

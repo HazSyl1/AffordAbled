@@ -65,6 +65,12 @@ class Settings(BaseSettings):
     chat_turn_stale_after_seconds: int = 600
     chat_turn_max_attempts: int = 3
     chat_turn_retention_days: int = 7
+    free_chat_turns_per_day: int = 50
+    free_ai_transactions_per_day: int = 20
+    subscribed_chat_turns_per_day: int = 250
+    subscribed_ai_transactions_per_day: int = 100
+    free_media_requests_per_day: int = 30
+    subscribed_media_requests_per_day: int = 150
     recurring_transaction_worker_enabled: bool = True
     recurring_transaction_stale_after_seconds: int = 300
     recurring_transaction_max_attempts: int = 8
@@ -76,13 +82,16 @@ class Settings(BaseSettings):
     acs_connection_string: str = ''
     acs_sender_number: str = ''
     notification_cooldown_hours: int = 6
-    max_notifications_per_participant: int = 3
+    max_notifications_per_split: int = 3
     max_sms_per_user_per_day: int = 10
     sms_worker_enabled: bool = True
     sms_worker_batch_size: int = 20
     sms_worker_poll_seconds: int = 5
     sms_processing_stale_seconds: int = 120
     sms_send_timeout_seconds: int = 15
+    # Public URLs used inside reminder emails. The pay page must be reachable by recipients' phones.
+    public_api_base_url: str = ''
+    public_web_url: str = ''
     email_enabled: bool = False
     email_provider: Literal['azure_acs'] = 'azure_acs'
     email_sender_address: str = ''

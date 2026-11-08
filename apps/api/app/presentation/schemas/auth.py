@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
+from typing import Literal
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
@@ -48,6 +49,22 @@ class UserResponse(BaseModel):
     name: str
     date_of_birth: date | None
     upi_id: str | None = None
+    account_tier: Literal['free', 'subscribed', 'test'] = 'free'
+
+
+class UsageMetricResponse(BaseModel):
+    used: int
+    limit: int | None
+    remaining: int | None
+    unlimited: bool
+
+
+class UserUsageResponse(BaseModel):
+    account_tier: Literal['free', 'subscribed', 'test']
+    reset_at: datetime
+    chat_turns: UsageMetricResponse
+    ai_transactions: UsageMetricResponse
+    notification_limits_bypassed: bool
 
 
 class UpdateProfileRequest(BaseModel):

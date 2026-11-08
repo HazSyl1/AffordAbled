@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from dataclasses import dataclass
+
+from app.infrastructure.email.message import RenderedEmail
 
 
 @dataclass(frozen=True)
@@ -20,11 +23,25 @@ class AzureAcsEmailProvider:
         self._sender_address = sender_address
         self._timeout_seconds = max(5, timeout_seconds)
 
-    async def send(self, *, recipient_email: str, subject: str, body: str, notification_id) -> EmailSendResult:
+    async def send(self, *, recipient_email: str, email: RenderedEmail, notification_id) -> EmailSendResult:
         message = {
             'senderAddress': self._sender_address,
             'recipients': {'to': [{'address': recipient_email}]},
-            'content': {'subject': subject, 'plainText': body},
+            'content': {
+                'subject': email.subject,
+                'plainText': email.plain_text,
+                'html': email.html,
+            },
+            'attachments': [
+                {
+                    'name': attachment.name,
+                    'contentType': attachment.content_type,
+                    'contentInBase64': base64.b64encode(attachment.content).decode('ascii'),
+                    'contentId': attachment.content_id,
+                }
+                for attachment in email.inline_attachments
+            ],
+            'userEngagementTrackingDisabled': True,
         }
         try:
             poller = await asyncio.wait_for(

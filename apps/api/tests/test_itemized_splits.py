@@ -937,8 +937,13 @@ async def test_contact_memory_and_itemized_split_are_user_scoped(client: AsyncCl
     assert len(created.json()['item_breakdown']) == 4
     assert (await client.get(f"/api/v1/splits/{created.json()['id']}",
                              headers=auth_headers(other))).status_code == 404
+    # A person still attached to a split cannot be deleted; the preference is cleared instead.
     removed = await client.delete(f'/api/v1/splits/contacts/preferences/{contact_id}', headers=headers)
-    assert removed.status_code == 204
+    assert removed.status_code == 409
+    cleared = await client.put('/api/v1/splits/contacts/preferences', json={
+        'name': 'Isha', 'dietary_preference': None,
+    }, headers=headers)
+    assert cleared.status_code == 200, cleared.text
     for day in (18, 19):
         another_transaction = await client.post('/api/v1/transactions', json={
             'account_id': account.json()['id'], 'category_id': category.json()['id'],

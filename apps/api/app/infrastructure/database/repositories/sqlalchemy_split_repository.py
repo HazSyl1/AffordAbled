@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -191,6 +191,14 @@ class SqlAlchemySplitRepository:
             .options(selectinload(SplitModel.participants).selectinload(SplitParticipantModel.payments))
             .execution_options(populate_existing=True)
         )
+
+    async def rename(self, user_id: uuid.UUID, split_id: uuid.UUID, title: str) -> SplitModel | None:
+        split = await self.get_for_user(user_id, split_id)
+        if split is None:
+            return None
+        split.title = title
+        await self.session.commit()
+        return await self.get_for_user(user_id, split_id)
 
     async def update(
         self, user_id: uuid.UUID, split_id: uuid.UUID, title: str,
@@ -757,15 +765,21 @@ class SqlAlchemySplitRepository:
 
     async def set_contact_details(
         self, user_id: uuid.UUID, name: str, phone_e164: str | None, email: str | None = None,
+        contact_id: uuid.UUID | None = None,
     ) -> SplitContactModel:
         clean_name = name.strip()
         normalized_name = clean_name.casefold()
-        contact = await self.session.scalar(
-            select(SplitContactModel).where(
+        if contact_id is not None:
+            contact = await self.session.scalar(select(SplitContactModel).where(
+                SplitContactModel.user_id == user_id, SplitContactModel.id == contact_id,
+            ))
+            if contact is None:
+                raise LookupError('Split contact was not found.')
+        else:
+            contact = await self.session.scalar(select(SplitContactModel).where(
                 SplitContactModel.user_id == user_id,
                 SplitContactModel.normalized_name == normalized_name,
-            )
-        )
+            ))
         if contact is None:
             contact = SplitContactModel(
                 id=uuid.uuid4(), user_id=user_id, name=clean_name, normalized_name=normalized_name,
@@ -774,6 +788,7 @@ class SqlAlchemySplitRepository:
             await self.session.flush()
         else:
             contact.name = clean_name
+            contact.normalized_name = normalized_name
         contact.phone_e164 = phone_e164
         contact.email = email
         participants = await self.session.scalars(
@@ -798,6 +813,13 @@ class SqlAlchemySplitRepository:
         )
         if contact is None:
             return False
+        linked_participants = int(await self.session.scalar(select(func.count()).select_from(
+            SplitParticipantModel,
+        ).where(SplitParticipantModel.contact_id == contact_id)) or 0)
+        if linked_participants > 0:
+            raise ValueError(
+                'This person is still associated with one or more splits. Remove those splits before deleting them.',
+            )
         await self.session.delete(contact)
         await self.session.commit()
         return True
