@@ -94,8 +94,12 @@ class AuthService:
             return
         await self.refresh_session_repository.revoke(jti)
 
-    async def update_profile(self, user_id: uuid.UUID, *, name: str, date_of_birth: date | None) -> User | None:
-        return await self.user_repository.update_profile(user_id, name=name, date_of_birth=date_of_birth)
+    async def update_profile(
+        self, user_id: uuid.UUID, *, name: str, date_of_birth: date | None, upi_id: str | None,
+    ) -> User | None:
+        return await self.user_repository.update_profile(
+            user_id, name=name, date_of_birth=date_of_birth, upi_id=upi_id,
+        )
 
     async def _issue_tokens(self, user_id: uuid.UUID) -> TokenPair:
         access_token = self.token_service.create_access_token(user_id)

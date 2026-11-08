@@ -36,3 +36,7 @@ class AccountModel(Base):
     )
 
     user: Mapped[UserModel] = relationship(back_populates="accounts")
+
+
+
+

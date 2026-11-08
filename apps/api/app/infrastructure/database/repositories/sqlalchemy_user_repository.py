@@ -6,7 +6,7 @@ from datetime import date
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.entities import User
+from app.domain.entities import User, UserTier
 from app.infrastructure.database.models import UserModel
 
 
@@ -36,19 +36,24 @@ class SqlAlchemyUserRepository:
             date_of_birth=user.date_of_birth,
             hashed_password=user.hashed_password,
             google_sub=user.google_sub,
+            upi_id=user.upi_id,
             conversation_storage_enabled=user.conversation_storage_enabled,
+            account_tier=user.account_tier.value,
         )
         self._session.add(model)
         await self._session.commit()
         await self._session.refresh(model)
         return self._to_entity(model)
 
-    async def update_profile(self, user_id: uuid.UUID, *, name: str, date_of_birth: date | None) -> User | None:
+    async def update_profile(
+        self, user_id: uuid.UUID, *, name: str, date_of_birth: date | None, upi_id: str | None,
+    ) -> User | None:
         model = await self._session.get(UserModel, user_id)
         if model is None:
             return None
         model.name = name
         model.date_of_birth = date_of_birth
+        model.upi_id = upi_id
         await self._session.commit()
         await self._session.refresh(model)
         return self._to_entity(model)
@@ -62,6 +67,8 @@ class SqlAlchemyUserRepository:
             date_of_birth=model.date_of_birth,
             hashed_password=model.hashed_password,
             google_sub=model.google_sub,
+            upi_id=model.upi_id,
             created_at=model.created_at,
             conversation_storage_enabled=model.conversation_storage_enabled,
+            account_tier=UserTier(model.account_tier),
         )

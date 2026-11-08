@@ -37,9 +37,15 @@ function completedResult(status: ChatTurnStatusResponse): ChatResponse | null {
 
 function permanentRequestError(error: unknown): Error | null {
   if (!error || typeof error !== 'object' || !('status' in error)) return null;
-  const status = (error as { status?: unknown }).status;
-  if (typeof status !== 'number' || status < 400 || status >= 500 || status === 408 || status === 429) {
+  const apiError = error as { status?: unknown; data?: unknown };
+  const status = apiError.status;
+  if (typeof status !== 'number' || status < 400 || status >= 500 || status === 408) {
     return null;
+  }
+  if (status === 429) {
+    const data = apiError.data as { detail?: { message?: unknown } } | undefined;
+    const message = data?.detail?.message;
+    return new Error(typeof message === 'string' ? message : 'You have reached today\'s chat limit.');
   }
   return new Error('The chat turn could not be submitted. Please try again with a new message.');
 }

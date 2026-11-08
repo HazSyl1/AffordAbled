@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from typing import Protocol
 
 from app.application.dto import CreateTransactionInput, UpdateTransactionInput
+from app.application.services.user_usage_service import AI_TRANSACTION, UserUsageService
 from app.domain.entities import Account, CategoryType, Transaction, TransactionType
 from app.domain.exceptions import (
     AccountNotFoundError,
@@ -38,6 +39,17 @@ class TransactionService:
     category_repository: CategoryRepository
     split_repository: LinkedSplitLookup | None = None
     memory_event_writer: MemoryEventWriter | None = None
+    usage_service: UserUsageService | None = None
+
+    @staticmethod
+    def _chat_usage_key(data: CreateTransactionInput) -> str | None:
+        if data.source_turn_id is None or data.source_task_id is None or data.source_item_index is None:
+            return None
+        return f'{data.source_turn_id}:{data.source_task_id}:{data.source_item_index}'
+
+    async def ensure_ai_transaction_capacity(self, user_id: uuid.UUID, keys: list[str]) -> None:
+        if self.usage_service is not None:
+            await self.usage_service.ensure_capacity(user_id, AI_TRANSACTION, len(keys), keys=keys)
 
     async def create_transaction(self, data: CreateTransactionInput) -> Transaction:
         if data.source_turn_id is not None and data.source_task_id is not None and data.source_item_index is not None:
@@ -64,6 +76,12 @@ class TransactionService:
             category_id=data.category_id,
             to_account_id=data.to_account_id,
         )
+
+        usage_key = self._chat_usage_key(data)
+        if usage_key is not None and self.usage_service is not None:
+            await self.usage_service.consume(
+                data.user_id, AI_TRANSACTION, usage_key, commit=False,
+            )
 
         now = datetime.now(UTC)
         transaction = Transaction(
@@ -125,6 +143,10 @@ class TransactionService:
                 })
                 # The transaction itself is still important. Re-stage and
                 # commit it without optional memory work after rolling back.
+                if usage_key is not None and self.usage_service is not None:
+                    await self.usage_service.consume(
+                        data.user_id, AI_TRANSACTION, usage_key, commit=False,
+                    )
                 await self.transaction_repository.create(transaction)
                 commit = getattr(self.transaction_repository, 'commit', None)
                 if commit is not None:

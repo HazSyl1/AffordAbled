@@ -1,5 +1,5 @@
 import { ImagePlus, LoaderCircle, Mic } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { useAppSelector } from '../../app/hooks';
@@ -32,7 +32,9 @@ import {
 } from '../chat/chatDrafts';
 import { useVoiceCapture } from '../chat/useVoiceCapture';
 import { useListTransactionsQuery } from '../transactions/transactionsApi';
-import { useListSplitsQuery } from '../splits/splitsApi';
+import {
+  useLazyListSplitsQuery, useListSplitContactDetailsQuery, useListSplitsQuery, type Split,
+} from '../splits/splitsApi';
 import { useListMemorySuggestionsQuery } from '../memory/memoryApi';
 import type { TransactionType } from '../transactions/transactionsApi';
 import {
@@ -44,6 +46,7 @@ import {
 } from '../../constants';
 import { formatPaiseAsInr } from '../../lib/money';
 import { useBodyScrollLock } from '../../lib/useBodyScrollLock';
+import { NotificationConfirmDialog } from '../../pages/SplitsPage/NotificationConfirmDialog';
 
 interface PendingSplit {
   id: string;
@@ -88,6 +91,8 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
   const { data: accounts, isLoading: isLoadingAccounts } = useListAccountsQuery();
   const { data: transactions, isLoading: isLoadingTransactions } = useListTransactionsQuery();
   const { data: splits, isLoading: isLoadingSplits } = useListSplitsQuery();
+  const { data: splitContacts = [] } = useListSplitContactDetailsQuery();
+  const [getSplits] = useLazyListSplitsQuery();
   const { data: categories } = useListCategoriesQuery();
   const { runTurn, isProcessingTurn } = useDurableChatTurn();
   const [transcribeVoice, { isLoading: isTranscribingVoice }] = useTranscribeVoiceMutation();
@@ -107,6 +112,8 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
   const [chatTransactionId, setChatTransactionId] = useState<string | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatError, setChatError] = useState<string | null>(null);
+  const [notificationNotice, setNotificationNotice] = useState<string | null>(null);
+  const [pendingSplitReminders, setPendingSplitReminders] = useState<{ split: Split }[]>([]);
   const [manualFallbackMessage, setManualFallbackMessage] = useState<string | null>(null);
   const receiptUploadRef = useRef(false);
   const [transactionSuccess, setTransactionSuccess] = useState<{ message: string; expiresAt: number; transactionId: string | null } | null>(null);
@@ -155,6 +162,17 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
     () => (proposalForSheet ? mapProposalToCreateTransactionValues(proposalForSheet) : undefined),
     [proposalForSheet],
   );
+
+  const prepareSplitReminders = useCallback(async (splitIds: string[] | undefined) => {
+    if (!splitIds?.length) return;
+    const latestSplits = await getSplits(undefined, false).unwrap();
+    const requestedIds = new Set(splitIds);
+    const reminders = latestSplits
+      .filter((split) => requestedIds.has(split.id) && split.direction === 'to_you'
+        && split.participants.some((participant) => participant.share_paise > participant.settled_paise))
+      .map((split) => ({ split }));
+    setPendingSplitReminders((current) => [...current, ...reminders]);
+  }, [getSplits]);
 
   const openManualTransactionFallback = (message: string) => {
     receiptUploadRef.current = false;
@@ -372,6 +390,9 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
         thread_id: threadId,
         message: normalizedMessage,
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      });
+      void prepareSplitReminders(response.created_split_ids).catch(() => {
+        setChatError('The split was created, but reminder details could not be loaded.');
       });
 
       setChatThreadId(response.thread_id);
@@ -669,6 +690,9 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
         <p className='text-sm text-[var(--negative)]' role='alert'>
           {chatError}
         </p>
+      ) : null}
+      {notificationNotice ? (
+        <p className='text-sm text-[var(--positive)]' role='status'>{notificationNotice}</p>
       ) : null}
 
       <div className='flex items-center gap-2'>
@@ -1130,6 +1154,14 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
           }}
         />
       </BottomSheet>
+      {pendingSplitReminders[0] ? (
+        <NotificationConfirmDialog
+          split={pendingSplitReminders[0].split}
+          contacts={splitContacts}
+          onQueued={setNotificationNotice}
+          onClose={() => setPendingSplitReminders((current) => current.slice(1))}
+        />
+      ) : null}
     </div>
   );
 }

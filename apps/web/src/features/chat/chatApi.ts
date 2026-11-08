@@ -52,6 +52,7 @@ export interface ChatResponse {
   pending_transaction_proposals?: ChatTransactionProposal[] | null;
   transaction_logged?: boolean;
   created_transaction_id?: string | null;
+  created_split_ids?: string[];
   manual_transaction_input_required?: boolean;
   insights?: ChatInsight[] | null;
 }

@@ -35,6 +35,9 @@ class SplitParticipantModel(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     split_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('splits.id', ondelete='CASCADE'), index=True)
+    contact_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey('split_contacts.id', ondelete='SET NULL'), nullable=True, index=True,
+    )
     name: Mapped[str] = mapped_column(String(100))
     share_paise: Mapped[int] = mapped_column(BigInteger)
     settled_paise: Mapped[int] = mapped_column(BigInteger, default=0)

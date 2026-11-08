@@ -3,6 +3,13 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime
+from enum import Enum
+
+
+class UserTier(str, Enum):
+    FREE = 'free'
+    SUBSCRIBED = 'subscribed'
+    TEST = 'test'
 
 
 @dataclass
@@ -14,4 +21,6 @@ class User:
     hashed_password: str | None
     google_sub: str | None
     created_at: datetime
+    upi_id: str | None = None
     conversation_storage_enabled: bool = True
+    account_tier: UserTier = UserTier.FREE

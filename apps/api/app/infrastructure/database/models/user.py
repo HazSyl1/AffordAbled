@@ -4,7 +4,7 @@ import uuid
 from datetime import date, datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, Date, DateTime, String, func, text
+from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, String, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.infrastructure.database.base import Base
@@ -17,6 +17,9 @@ if TYPE_CHECKING:
 
 class UserModel(Base):
     __tablename__ = "users"
+    __table_args__ = (
+        CheckConstraint("account_tier IN ('free', 'subscribed', 'test')", name='ck_users_account_tier'),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
@@ -24,7 +27,9 @@ class UserModel(Base):
     date_of_birth: Mapped[date | None] = mapped_column(Date, nullable=True)
     hashed_password: Mapped[str | None] = mapped_column(String(255), nullable=True)
     google_sub: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True)
+    upi_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     conversation_storage_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('true'))
+    account_tier: Mapped[str] = mapped_column(String(20), nullable=False, server_default='free', default='free')
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     accounts: Mapped[list[AccountModel]] = relationship(back_populates="user")

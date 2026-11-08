@@ -1,4 +1,4 @@
-import { CalendarDays, ChevronDown, ChevronLeft, ChevronRight, LogOut, Mail, Sparkles, UserRound } from 'lucide-react';
+import { CalendarDays, ChevronDown, ChevronLeft, ChevronRight, Landmark, LogOut, Mail, Sparkles, UserRound } from 'lucide-react';
 import { useEffect, useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 
@@ -8,6 +8,7 @@ import { Card } from '../../components/atoms/Card';
 import { Input } from '../../components/atoms/Input';
 import {
   useLazyGetProfileTransactionSummaryQuery,
+  useGetProfileUsageQuery,
   useLogoutMutation,
   useUpdateProfileMutation,
 } from '../../features/auth/authApi';
@@ -29,13 +30,15 @@ export function ProfilePage() {
   const currentUser = useAppSelector((state) => state.auth.user);
   const [nameDraft, setNameDraft] = useState<string | null>(null);
   const [dateOfBirthDraft, setDateOfBirthDraft] = useState<string | null>(null);
+  const [upiIdDraft, setUpiIdDraft] = useState<string | null>(null);
   const name = nameDraft ?? currentUser?.name ?? '';
   const dateOfBirth = dateOfBirthDraft ?? currentUser?.date_of_birth ?? '';
+  const upiId = upiIdDraft ?? currentUser?.upi_id ?? '';
   const normalizedName = name.trim().replace(/\s+/g, ' ');
   const hasChanges = Boolean(
     currentUser &&
       (normalizedName !== currentUser.name.trim().replace(/\s+/g, ' ') ||
-        dateOfBirth !== (currentUser.date_of_birth ?? '')),
+        dateOfBirth !== (currentUser.date_of_birth ?? '') || upiId.trim() !== (currentUser.upi_id ?? '')),
   );
   const [formError, setFormError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -44,6 +47,7 @@ export function ProfilePage() {
   const [loadSummary, { data: summary, isFetching: isLoadingSummary, isError: summaryFailed }] =
     useLazyGetProfileTransactionSummaryQuery();
   const { data: memorySuggestions = [] } = useListMemorySuggestionsQuery();
+  const { data: usage, isLoading: isLoadingUsage } = useGetProfileUsageQuery();
   const { data: memories = [] } = useListMemoriesQuery();
   const { data: categories = [] } = useListCategoriesQuery();
   const { data: accounts = [] } = useListAccountsQuery();
@@ -71,13 +75,20 @@ export function ProfilePage() {
       setFormError('Date of birth must be in the past.');
       return;
     }
+    if (upiId.trim() && (!upiId.includes('@') || /\s/.test(upiId.trim()))) {
+      setFormError('Enter a valid UPI ID, such as name@bank.');
+      return;
+    }
     setFormError(null);
     setSaved(false);
     try {
-      const updated = await updateProfile({ name: normalizedName, date_of_birth: dateOfBirth || null }).unwrap();
+      const updated = await updateProfile({
+        name: normalizedName, date_of_birth: dateOfBirth || null, upi_id: upiId.trim() || null,
+      }).unwrap();
       dispatch(setUser(updated));
       setNameDraft(null);
       setDateOfBirthDraft(null);
+      setUpiIdDraft(null);
       setSaved(true);
     } catch {
       setFormError('Could not save your profile. Please try again.');
@@ -119,6 +130,14 @@ export function ProfilePage() {
             <h3 className='text-base font-semibold text-[var(--text-primary)]'>Personal details</h3>
             <p className='mt-1 text-sm text-[var(--text-muted)]'>Update how your name appears across AffordAbled.</p>
           </div>
+          <label className='block min-w-0 space-y-2'>
+            <span className='flex items-center gap-2 text-sm font-medium text-[var(--text-secondary)]'>
+              <Landmark className='h-4 w-4' aria-hidden='true' /> UPI ID <span className='font-normal text-[var(--text-muted)]'>(optional)</span>
+            </span>
+            <Input value={upiId} maxLength={255} autoComplete='off' placeholder='name@bank'
+              onChange={(event) => { setUpiIdDraft(event.target.value); setSaved(false); }} />
+            <span className='block text-xs text-[var(--text-muted)]'>Used only when you confirm a split payment reminder.</span>
+          </label>
           <div className='grid min-w-0 gap-4 md:grid-cols-2'>
             <label className='block min-w-0 space-y-2'>
               <span className='flex items-center gap-2 text-sm font-medium text-[var(--text-secondary)]'>
@@ -154,6 +173,46 @@ export function ProfilePage() {
       </Card>
 
       <Card className='p-5 md:p-6'>
+        <div className='flex flex-col gap-4 md:flex-row md:items-start md:justify-between'>
+          <div>
+            <p className='text-xs font-semibold uppercase tracking-[0.16em] text-[var(--brand-primary)]'>
+              {usage?.account_tier === 'test' ? 'Test account' : usage?.account_tier === 'subscribed' ? 'Subscribed' : 'Free plan'}
+            </p>
+            <h2 className='mt-1 text-base font-semibold text-[var(--text-primary)]'>Daily AI usage</h2>
+            <p className='mt-1 text-sm text-[var(--text-muted)]'>Usage resets daily at midnight UTC.</p>
+          </div>
+          {usage?.account_tier === 'test' ? (
+            <span className='w-fit rounded-full bg-[var(--brand-subtle)] px-3 py-1 text-xs font-semibold text-[var(--brand-primary)]'>Limits disabled</span>
+          ) : null}
+        </div>
+        {isLoadingUsage ? (
+          <p className='mt-4 text-sm text-[var(--text-muted)]'>Loading today&apos;s usage…</p>
+        ) : usage ? (
+          <div className='mt-5 grid gap-3 sm:grid-cols-2'>
+            {[
+              ['Chat messages', usage.chat_turns],
+              ['AI-created transactions', usage.ai_transactions],
+            ].map(([label, metric]) => {
+              const value = metric as typeof usage.chat_turns;
+              return (
+                <div key={label as string} className='rounded-xl border border-[var(--bg-border)] bg-[var(--bg-elevated)] p-4'>
+                  <p className='text-sm font-medium text-[var(--text-secondary)]'>{label as string}</p>
+                  <p className='mt-2 text-xl font-bold tabular-nums text-[var(--text-primary)]'>
+                    {value.unlimited ? `${value.used} used` : `${value.used} / ${value.limit}`}
+                  </p>
+                  <p className='mt-1 text-xs text-[var(--text-muted)]'>
+                    {value.unlimited ? 'Unlimited for this account' : `${value.remaining} remaining today`}
+                  </p>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <p className='mt-4 text-sm text-[var(--text-muted)]'>Usage details are unavailable right now.</p>
+        )}
+      </Card>
+
+      <Card className='p-5 md:p-6'>
         <div className='flex items-start gap-3'>
           <div className='flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[var(--brand-subtle)] text-[var(--brand-primary)]'>
             <Sparkles className='h-5 w-5' aria-hidden='true' />
@@ -175,7 +234,9 @@ export function ProfilePage() {
           <h2 className='text-base font-semibold text-[var(--text-primary)]'>Done for now?</h2>
           <p className='mt-1 text-sm text-[var(--text-muted)]'>You can always pick up where you left off.</p>
         </div>
-        <Button type='button' variant='secondary' className='w-full md:w-auto' isLoading={isLoggingOut} onClick={() => { void handleLogout(); }}>
+        <Button type='button' variant='ghost'
+          className='w-full border border-red-400/50 bg-red-500/15 text-red-200 hover:bg-red-500 hover:text-white md:w-auto'
+          isLoading={isLoggingOut} onClick={() => { void handleLogout(); }}>
           <LogOut className='h-4 w-4' aria-hidden='true' /> Log out
         </Button>
       </Card>

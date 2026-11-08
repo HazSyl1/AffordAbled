@@ -2818,7 +2818,19 @@ class AgenticChatOrchestrator:
                 },
             )
         transaction_id: str | None = (result.get("created_transaction_ids") or [None])[-1]
+        created_split_ids: list[str] = []
         for specialist_result in reversed(result.get("results") or []):
+            if specialist_result.get("specialist") == "split":
+                data = specialist_result.get("data") or {}
+                candidates = [data.get("split"), *(data.get("splits") or [])]
+                candidates.extend(
+                    (action.get("data") or {}).get("split")
+                    for action in (data.get("observed_actions") or [])
+                    if action.get("tool") in {"create_split", "create_owed", "create_owed_batch"}
+                )
+                for candidate in candidates:
+                    if isinstance(candidate, dict) and candidate.get("id"):
+                        created_split_ids.append(str(candidate["id"]))
             if specialist_result.get("specialist") != "transaction":
                 continue
             created_transactions = (specialist_result.get("data") or {}).get("created_transactions") or []
@@ -2833,4 +2845,5 @@ class AgenticChatOrchestrator:
             and bool(result.get("show_completion_popup")),
             transaction_logged=transaction_id is not None,
             created_transaction_id=transaction_id,
+            created_split_ids=list(dict.fromkeys(created_split_ids)),
         )

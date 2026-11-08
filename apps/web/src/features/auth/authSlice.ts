@@ -6,6 +6,8 @@ export interface AuthUser {
   email: string;
   name: string;
   date_of_birth: string | null;
+  upi_id: string | null;
+  account_tier: 'free' | 'subscribed' | 'test';
 }
 
 export interface AuthState {

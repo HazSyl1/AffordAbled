@@ -1,10 +1,11 @@
 import {
   ArrowDown, ArrowRight, BarChart3, Bot, Camera, Check, CircleHelp, FileDown, Mail, Mic,
-  Plus, ReceiptText, ShieldCheck, Split, Wallet, Users, BadgePercent, Scale, ListChecks, Repeat2,
+  Plus, ReceiptText, ShieldCheck, Split, Wallet, Users, BadgePercent, Scale, ListChecks, Repeat2, QrCode, Gauge,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 import { APP_NAME } from '../../constants';
+import { FeatureCarousel } from './FeatureCarousel';
 
 const features = [
   {
@@ -92,6 +93,20 @@ const features = [
     location: 'Transactions',
   },
   {
+    icon: QrCode,
+    title: 'Send UPI payment reminders',
+    description: 'Email everyone who still owes you a branded request with the amount, a Pay with UPI button, and a QR code.',
+    how: 'Save your UPI ID in Profile, then open a split and choose Send reminders. Missing emails are collected first.',
+    location: 'Splits',
+  },
+  {
+    icon: Gauge,
+    title: 'Plans and daily usage',
+    description: 'See your plan and how much of today’s AI chat and AI-created transaction allowance is left.',
+    how: 'Open Profile to view usage. Allowances reset every day at midnight UTC.',
+    location: 'Profile',
+  },
+  {
     icon: ShieldCheck,
     title: 'Choose what gets remembered',
     description: 'Review suggested preferences before they guide future assistance. Remove saved preferences when they change.',
@@ -129,6 +144,7 @@ export function LandingPage() {
           </span>
         </Link>
         <nav aria-label='Main navigation' className='flex items-center gap-2 sm:gap-3'>
+          <a href='#whats-new' className='hidden rounded-lg px-3 py-2 text-sm text-[var(--text-secondary)] transition-colors hover:text-white md:inline-flex'>What’s new</a>
           <a href='#features' className='hidden rounded-lg px-3 py-2 text-sm text-[var(--text-secondary)] transition-colors hover:text-white md:inline-flex'>Features</a>
           <a href='#how-it-works' className='hidden rounded-lg px-3 py-2 text-sm text-[var(--text-secondary)] transition-colors hover:text-white md:inline-flex'>How to use it</a>
           <Link to='/login' className='rounded-xl px-3 py-2 text-sm font-semibold text-[var(--text-secondary)] transition-colors hover:bg-white/5 hover:text-white'>Log in</Link>
@@ -185,6 +201,8 @@ export function LandingPage() {
           </div>
         </div>
       </section>
+
+      <FeatureCarousel />
 
       <section id='features' className='border-y border-white/[0.06] bg-white/[0.015]'>
         <div className='mx-auto max-w-7xl px-5 py-16 sm:px-8 lg:px-10 lg:py-20'>

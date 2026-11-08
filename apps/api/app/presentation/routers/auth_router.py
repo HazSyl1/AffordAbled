@@ -5,12 +5,14 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from app.application.dto import LoginInput, RegisterUserInput
 from app.application.services.auth_service import AuthService
 from app.application.services.profile_summary_service import ProfileSummaryService
+from app.application.services.user_usage_service import UserUsageService
 from app.core.config import Settings
 from app.core.dependencies import (
     get_auth_service,
     get_current_user,
     get_profile_summary_service,
     get_settings_dependency,
+    get_user_usage_service,
 )
 from app.core.security import REFRESH_TOKEN_COOKIE_NAME
 from app.domain.entities import User
@@ -22,6 +24,7 @@ from app.presentation.schemas.auth import (
     RegisterRequest,
     UpdateProfileRequest,
     UserResponse,
+    UserUsageResponse,
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -124,6 +127,8 @@ async def me(current_user: User = Depends(get_current_user)) -> UserResponse:
         email=current_user.email,
         name=current_user.name,
         date_of_birth=current_user.date_of_birth,
+        upi_id=current_user.upi_id,
+        account_tier=current_user.account_tier.value,
     )
 
 
@@ -134,13 +139,25 @@ async def update_me(
     auth_service: AuthService = Depends(get_auth_service),
 ) -> UserResponse:
     updated = await auth_service.update_profile(
-        current_user.id, name=payload.name, date_of_birth=payload.date_of_birth
+        current_user.id, name=payload.name, date_of_birth=payload.date_of_birth, upi_id=payload.upi_id,
     )
     if updated is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='User not found')
     return UserResponse(
-        id=str(updated.id), email=updated.email, name=updated.name, date_of_birth=updated.date_of_birth
+        id=str(updated.id), email=updated.email, name=updated.name,
+        date_of_birth=updated.date_of_birth, upi_id=updated.upi_id,
+        account_tier=updated.account_tier.value,
     )
+
+
+@router.get('/me/usage', response_model=UserUsageResponse)
+async def profile_usage(
+    response: Response,
+    current_user: User = Depends(get_current_user),
+    usage_service: UserUsageService = Depends(get_user_usage_service),
+) -> UserUsageResponse:
+    response.headers['Cache-Control'] = 'private, no-store'
+    return UserUsageResponse.model_validate(await usage_service.summary(current_user.id))
 
 
 @router.get('/me/transaction-summary', response_model=ProfileTransactionSummaryResponse)

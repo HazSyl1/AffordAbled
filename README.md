@@ -40,6 +40,7 @@ AffordAbled brings those workflows together. **Financial arithmetic is performed
 - **Expense shares and settlement transfers are separate concepts:** a person's share describes consumption; a transfer describes who must pay whom after contributions and debts.
 - Integer-paise calculations reconcile shares to the bill and net balances to zero.
 - Standalone “someone owes me” records and repayment flows link owner payments to wallet transactions.
+- Optional UPI IDs and contact phone numbers support user-confirmed SMS payment requests, with cooldown, lifetime, and daily limits enforced by the API.
 
 ### User-controlled preference memory
 
@@ -115,6 +116,22 @@ uvicorn app.main:app --reload
 
 Configure PostgreSQL in `.env` before running Alembic or the API. Configure Azure OpenAI, OCR, and speech credentials for the features you want to use. Keep `.env` and real credentials out of Git. The API defaults to `http://localhost:8000`; OpenAPI documentation is at `/docs`.
 
+To enable email split reminders, set `EMAIL_ENABLED=true`, `EMAIL_PROVIDER=azure_acs`, `ACS_CONNECTION_STRING`, and `EMAIL_SENDER_ADDRESS`. The API process runs a durable database-backed dispatcher; queued reminders survive restarts. Relevant authenticated endpoints are:
+
+- `PUT /api/v1/splits/contacts/details` to save optional email and phone contact details.
+- `GET /api/v1/splits/{split_id}/notifications` for split-level availability, recipients, and history.
+- `POST /api/v1/splits/{split_id}/notifications` with an `Idempotency-Key` header to queue one reminder campaign.
+
+One campaign creates a separate delivery row and transaction-specific email for every unpaid participant. Cooldown and the three-reminder cap are counted once per split campaign. The frontend never sends automatically: it collects missing emails and requires explicit confirmation, while the worker revalidates each recipient, amount, UPI link, and repayment state immediately before dispatch.
+
+User accounts have `free`, `subscribed`, or `test` tiers. Daily UTC limits default to 50 chat turns and 20 AI-created transactions for free users, 250 and 100 for subscribed users, and unlimited application usage for test users. Test users also bypass application reminder cooldown and count limits, although Azure provider quotas still apply. Operators can change a tier from `apps/api`:
+
+```text
+python scripts/set_user_tier.py --user-id <uuid> --tier <free|subscribed|test>
+```
+
+Tier assignment is never accepted from the public profile API. Users can review their current daily usage at `GET /api/v1/auth/me/usage` and on the Profile page.
+
 ### Web
 
 ```bash
@@ -140,6 +157,7 @@ From `apps/web`:
 
 ```text
 npm run lint
+npm test
 npm run build
 ```
 

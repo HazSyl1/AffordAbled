@@ -21,11 +21,27 @@ export interface LoginRequest {
 export interface UpdateProfileRequest {
   name: string;
   date_of_birth: string | null;
+  upi_id: string | null;
 }
 
 export interface ProfileTransactionSummary {
   message: string;
   transaction_count: number;
+}
+
+export interface UsageMetric {
+  used: number;
+  limit: number | null;
+  remaining: number | null;
+  unlimited: boolean;
+}
+
+export interface UserUsage {
+  account_tier: 'free' | 'subscribed' | 'test';
+  reset_at: string;
+  chat_turns: UsageMetric;
+  ai_transactions: UsageMetric;
+  notification_limits_bypassed: boolean;
 }
 
 const authApi = apiClient.injectEndpoints({
@@ -52,6 +68,9 @@ const authApi = apiClient.injectEndpoints({
       query: () => '/auth/me/transaction-summary',
       providesTags: ['Transaction'],
     }),
+    getProfileUsage: builder.query<UserUsage, void>({
+      query: () => '/auth/me/usage',
+    }),
   }),
 });
 
@@ -63,4 +82,5 @@ export const {
   useLazyGetMeQuery,
   useUpdateProfileMutation,
   useLazyGetProfileTransactionSummaryQuery,
+  useGetProfileUsageQuery,
 } = authApi;

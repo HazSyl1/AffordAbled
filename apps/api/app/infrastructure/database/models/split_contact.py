@@ -17,6 +17,8 @@ class SplitContactModel(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('users.id', ondelete='CASCADE'), index=True)
     name: Mapped[str] = mapped_column(String(100))
     normalized_name: Mapped[str] = mapped_column(String(100))
+    phone_e164: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    email: Mapped[str | None] = mapped_column(String(320), nullable=True)
     dietary_preference: Mapped[str | None] = mapped_column(String(24), nullable=True)
     preference_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

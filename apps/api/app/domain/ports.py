@@ -103,6 +103,7 @@ class ChatTurnResult:
     pending_transaction_proposals: list[PendingTransactionProposal] | None = None
     transaction_logged: bool = False
     created_transaction_id: str | None = None
+    created_split_ids: list[str] | None = None
     manual_transaction_input_required: bool = False
     intent: str | None = None
     guardrail_decision: str = GuardrailDecision.ALLOW.value
