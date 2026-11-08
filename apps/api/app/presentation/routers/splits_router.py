@@ -58,7 +58,8 @@ def get_split_notification_service(
         provider_name=settings.email_provider if email_configured else settings.sms_provider,
         cooldown_hours=max(1, settings.notification_cooldown_hours),
         max_per_participant=max(1, settings.max_notifications_per_participant),
-        max_per_user_daily=max(1, settings.max_sms_per_user_daily), channel='email' if email_configured else 'sms',
+        max_per_user_daily=max(1, settings.max_sms_per_user_per_day),
+        channel='email' if email_configured else 'sms',
     )
 
 
