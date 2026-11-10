@@ -179,6 +179,22 @@ class TransactionService:
             raise TransactionNotFoundError(str(transaction_id))
         return transaction
 
+    async def deletion_status(self, user_id: uuid.UUID, transaction_id: uuid.UUID) -> dict:
+        await self.get_transaction(user_id, transaction_id)
+        linked_expense = (
+            await self.split_repository.linked_expense_split_id(user_id, transaction_id)
+            if self.split_repository is not None else None
+        )
+        if linked_expense:
+            return {'can_delete': True, 'kind': 'split_expense', 'message': 'Deleting also hides this split.'}
+        if self.split_repository is not None and await self.split_repository.is_linked(user_id, transaction_id):
+            return {
+                'can_delete': False,
+                'kind': 'protected_linked_transaction',
+                'message': 'This repayment or settlement transaction cannot be deleted.',
+            }
+        return {'can_delete': True, 'kind': 'ordinary', 'message': None}
+
     async def update_transaction(
         self,
         user_id: uuid.UUID,
@@ -198,10 +214,9 @@ class TransactionService:
         to_account_id = data.to_account_id if data.to_account_id is not None else transaction.to_account_id
 
         if self.split_repository is not None and await self.split_repository.is_linked(user_id, transaction_id):
-            if (account_id != transaction.account_id or transaction_type != transaction.type or
-                    amount_paise != transaction.amount_paise or category_id != transaction.category_id):
+            if transaction_type != transaction.type or amount_paise != transaction.amount_paise:
                 raise InvalidTransactionError(
-                    'Remove the split before changing its linked transaction amount, type, account, or category.'
+                    'Update this transaction\'s split shares before changing its amount or type.'
                 )
 
         await self._validate_transaction(
@@ -262,11 +277,26 @@ class TransactionService:
 
     async def soft_delete_transaction(self, user_id: uuid.UUID, transaction_id: uuid.UUID) -> None:
         transaction = await self.get_transaction(user_id, transaction_id)
-        if self.split_repository is not None and await self.split_repository.is_linked(user_id, transaction_id):
-            raise InvalidTransactionError('Remove the split before deleting its linked transaction.')
-        await self._revert_balance_effect(transaction)
-
-        deleted = await self.transaction_repository.soft_delete_for_user(transaction_id, user_id)
+        linked_expense = (
+            await self.split_repository.linked_expense_split_id(user_id, transaction_id)
+            if self.split_repository is not None else None
+        )
+        if (
+            self.split_repository is not None
+            and await self.split_repository.is_linked(user_id, transaction_id)
+            and not linked_expense
+        ):
+            raise InvalidTransactionError(
+                'This transaction is part of a repayment or settlement and cannot be deleted.'
+            )
+        if linked_expense:
+            await self.split_repository.soft_delete_linked_expense(user_id, transaction_id)
+            await self._revert_balance_effect(transaction, commit=False)
+            deleted = await self.transaction_repository.soft_delete_for_user(transaction_id, user_id, commit=False)
+            await self.transaction_repository.commit()
+        else:
+            await self._revert_balance_effect(transaction)
+            deleted = await self.transaction_repository.soft_delete_for_user(transaction_id, user_id)
         if not deleted:
             raise TransactionNotFoundError(str(transaction_id))
 
@@ -287,9 +317,16 @@ class TransactionService:
             category_id=transaction.category_id,
             to_account_id=transaction.to_account_id,
         )
-        await self._apply_balance_effect(transaction)
-
-        restored = await self.transaction_repository.restore_for_user(transaction_id, user_id)
+        restore_split = self.split_repository is not None and await self.split_repository.restore_linked_expense(
+            user_id, transaction_id,
+        )
+        if restore_split:
+            await self._apply_balance_effect(transaction, commit=False)
+            restored = await self.transaction_repository.restore_for_user(transaction_id, user_id, commit=False)
+            await self.transaction_repository.commit()
+        else:
+            await self._apply_balance_effect(transaction)
+            restored = await self.transaction_repository.restore_for_user(transaction_id, user_id)
         if not restored:
             raise TransactionNotFoundError(str(transaction_id))
 
@@ -344,7 +381,7 @@ class TransactionService:
         ):
             raise InvalidTransactionError('income and refund transactions require an income category')
 
-    async def _apply_balance_effect(self, transaction: Transaction) -> None:
+    async def _apply_balance_effect(self, transaction: Transaction, *, commit: bool = True) -> None:
         if transaction.type == TransactionType.TRANSFER:
             source_account = await self._get_account_for_user(transaction.user_id, transaction.account_id)
             destination_account_id = transaction.to_account_id
@@ -357,8 +394,8 @@ class TransactionService:
 
             source_account.balance_paise -= transaction.amount_paise
             destination_account.balance_paise += transaction.amount_paise
-            await self._save_account(source_account)
-            await self._save_account(destination_account)
+            await self._save_account(source_account, commit=commit)
+            await self._save_account(destination_account, commit=commit)
             return
 
         source_account = await self._get_account_for_user(transaction.user_id, transaction.account_id)
@@ -366,9 +403,9 @@ class TransactionService:
             source_account.balance_paise -= transaction.amount_paise
         else:
             source_account.balance_paise += transaction.amount_paise
-        await self._save_account(source_account)
+        await self._save_account(source_account, commit=commit)
 
-    async def _revert_balance_effect(self, transaction: Transaction) -> None:
+    async def _revert_balance_effect(self, transaction: Transaction, *, commit: bool = True) -> None:
         if transaction.type == TransactionType.TRANSFER:
             source_account = await self._get_account_for_user(transaction.user_id, transaction.account_id)
             destination_account_id = transaction.to_account_id
@@ -378,8 +415,8 @@ class TransactionService:
 
             source_account.balance_paise += transaction.amount_paise
             destination_account.balance_paise -= transaction.amount_paise
-            await self._save_account(source_account)
-            await self._save_account(destination_account)
+            await self._save_account(source_account, commit=commit)
+            await self._save_account(destination_account, commit=commit)
             return
 
         source_account = await self._get_account_for_user(transaction.user_id, transaction.account_id)
@@ -387,7 +424,7 @@ class TransactionService:
             source_account.balance_paise += transaction.amount_paise
         else:
             source_account.balance_paise -= transaction.amount_paise
-        await self._save_account(source_account)
+        await self._save_account(source_account, commit=commit)
 
     async def _get_account_for_user(self, user_id: uuid.UUID, account_id: uuid.UUID) -> Account:
         account = await self.account_repository.get_for_user(account_id, user_id)
@@ -395,6 +432,6 @@ class TransactionService:
             raise AccountNotFoundError(str(account_id))
         return account
 
-    async def _save_account(self, account: Account) -> None:
+    async def _save_account(self, account: Account, *, commit: bool = True) -> None:
         account.updated_at = datetime.now(UTC)
-        await self.account_repository.update(account)
+        await self.account_repository.update(account, commit=commit)

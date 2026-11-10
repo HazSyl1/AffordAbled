@@ -21,7 +21,6 @@ from app.infrastructure.database.repositories.sqlalchemy_split_notification_repo
 )
 from app.infrastructure.email.message import (
     LOGO_CONTENT_ID,
-    QR_CONTENT_ID,
     render_payment_request_email,
 )
 from app.infrastructure.email.provider import AzureAcsEmailProvider
@@ -125,6 +124,54 @@ async def test_split_contact_details_can_be_added_renamed_searched_client_side_a
     assert removed.status_code == 204, removed.text
     contacts_after = await client.get('/api/v1/splits/contacts/details', headers=headers)
     assert contacts_after.json() == []
+
+
+async def test_balance_statement_queues_only_for_saved_person_with_an_outstanding_balance(
+    client: AsyncClient, app: FastAPI, db_session: AsyncSession,
+) -> None:
+    token = await register_and_get_token(client, 'balance-statement@example.com')
+    headers = auth_headers(token)
+    app.dependency_overrides[get_split_notification_service] = lambda: _service(db_session, channel='email')
+    try:
+        contact = await client.put('/api/v1/splits/contacts/details', json={
+            'name': 'Isha', 'email': 'isha@example.com',
+        }, headers=headers)
+        assert contact.status_code == 200
+        transaction_id = await _expense(client, token)
+        split = await client.post('/api/v1/splits', json={
+            'transaction_id': transaction_id, 'title': 'Dinner', 'amount_paise': 10000,
+            'mode': 'custom', 'owner_share_paise': 4000,
+            'participants': [{'name': 'Isha', 'share_paise': 6000, 'contact_id': contact.json()['id']}],
+        }, headers=headers)
+        assert split.status_code == 201, split.text
+        queued = await client.post(
+            f"/api/v1/splits/balances/{contact.json()['id']}/email",
+            headers={**headers, 'Idempotency-Key': str(uuid.uuid4())},
+        )
+        assert queued.status_code == 202, queued.text
+        assert queued.json()['status'] == 'queued'
+        status_url = f"/api/v1/splits/balances/{contact.json()['id']}/email-status"
+        pending = await client.get(status_url, headers=headers)
+        assert pending.json()['blocked_reason'] == 'request_in_progress'
+        repeated = await client.post(
+            f"/api/v1/splits/balances/{contact.json()['id']}/email",
+            headers={**headers, 'Idempotency-Key': str(uuid.uuid4())},
+        )
+        assert repeated.status_code == 429
+        repository = SqlAlchemySplitNotificationRepository(db_session)
+        await repository.complete(uuid.UUID(queued.json()['notification_id']), status='sent', message_id='test')
+        cooldown = await client.get(status_url, headers=headers)
+        assert cooldown.json()['can_notify'] is False
+        assert cooldown.json()['blocked_reason'] == 'cooldown_active'
+        assert cooldown.json()['next_available_at'] is not None
+        blocked = await client.post(
+            f"/api/v1/splits/balances/{contact.json()['id']}/email",
+            headers={**headers, 'Idempotency-Key': str(uuid.uuid4())},
+        )
+        assert blocked.status_code == 429
+        assert blocked.json()['detail']['code'] == 'cooldown_active'
+    finally:
+        app.dependency_overrides.pop(get_split_notification_service, None)
 
 
 async def test_split_scoped_campaign_queues_one_email_per_unpaid_participant_and_counts_once(
@@ -471,7 +518,7 @@ async def test_public_pay_page_serves_upi_handoff_and_hides_unavailable_requests
         return SplitNotificationModel(
             id=uuid.uuid4(), sent_by_user_id=user_id, idempotency_key=uuid.uuid4(), channel='email',
             provider='azure_acs', recipient_name='Isha', amount_paise=50000, message_body='m', upi_link=link,
-            status=status,
+            settlement_details='Dinner: they owe you ₹100.00\nCab: they owe you ₹400.00', status=status,
         )
 
     sent, cancelled = make('sent'), make('cancelled')
@@ -483,6 +530,9 @@ async def test_public_pay_page_serves_upi_handoff_and_hides_unavailable_requests
         assert page.status_code == 200
         assert 'href="upi://pay?' in page.text and '₹500.00' in page.text
         assert 'Sar<b>' not in page.text  # payee name is escaped
+        assert '<details class="details">' in page.text
+        assert 'View all settlement transactions (2)' in page.text
+        assert 'Dinner: they owe you' in page.text and 'Cab: they owe you' in page.text
         assert page.headers['cache-control'] == 'private, no-store'
         assert (await client.get(f'/api/v1/pay/{cancelled.id}')).status_code == 404
         assert (await client.get(f'/api/v1/pay/{uuid.uuid4()}')).status_code == 404

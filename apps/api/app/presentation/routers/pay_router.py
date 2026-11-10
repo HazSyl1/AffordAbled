@@ -37,10 +37,14 @@ body{{margin:0;background:#f5f3f8;font-family:Arial,Helvetica,sans-serif;color:#
 .qr{{margin:24px auto 8px;width:200px;height:200px;border:1px solid #e5e7eb;border-radius:12px;padding:8px;background:#fff}}
 .divider{{margin:20px 0;color:#9ca3af;font-size:13px}}
 .box{{margin-top:18px;background:#f4efff;border-radius:12px;padding:12px;font-size:14px;word-break:break-all}}
+.details{{margin-top:18px;background:#faf9fc;border:1px solid #e8e3ee;border-radius:12px;text-align:left;overflow:hidden}}
+.details summary{{cursor:pointer;padding:14px;font-weight:700;color:#4c1d95;list-style-position:inside}}
+.details-content{{padding:0 14px 14px;font-size:14px;line-height:22px}}
 </style></head><body><div class="card"><div class="head">AffordAbled</div><div class="body">
 <div class="muted">{greeting}</div>
 <div class="amount">{amount}</div>
 <div class="muted">to <strong>{payee}</strong></div>
+{settlement_details}
 <a class="btn" href="{link}">Open my UPI app</a>
 <div class="muted">If nothing opens, you are probably on a computer.</div>
 <div class="divider">&mdash; or scan this QR code &mdash;</div>
@@ -65,6 +69,14 @@ def render_pay_page(data: dict) -> str:
         upi_id=escape(data['payee_upi_id']),
         qr_data_uri=f'data:image/png;base64,{qr_b64}',
         js_link=json.dumps(data['upi_link']).replace('<', r'<'),
+        settlement_details=(
+            '<details class="details"><summary>View all settlement transactions ('
+            + str(len(data.get('settlement_details', [])))
+            + ')</summary><div class="details-content">'
+            + '<br />'.join(escape(item) for item in data.get('settlement_details', []))
+            + '</div></details>'
+            if data.get('settlement_details') else ''
+        ),
     )
 
 

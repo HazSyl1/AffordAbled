@@ -33,12 +33,13 @@ function errorMessage(error: unknown): string {
 }
 
 export function NotificationConfirmDialog({
-  split, contacts, onClose, onQueued,
+  split, contacts, onClose, onQueued, initialParticipantIds,
 }: {
   split: Split;
   contacts: SplitContactDetails[];
   onClose: () => void;
   onQueued: (message: string) => void;
+  initialParticipantIds?: string[];
 }) {
   const [loadStatus, { data: notificationStatus, isFetching }] = useLazyGetSplitNotificationStatusQuery();
   const [queueNotification, { isLoading }] = useQueueSplitNotificationMutation();
@@ -46,6 +47,7 @@ export function NotificationConfirmDialog({
   const [description, setDescription] = useState(split.title);
   const [setContactDetails, { isLoading: isSavingEmails }] = useSetSplitContactDetailsMutation();
   const [emails, setEmails] = useState<Record<string, string>>({});
+  const [selectedParticipantIds, setSelectedParticipantIds] = useState<string[]>(initialParticipantIds ?? []);
   const [error, setError] = useState('');
   const [clockMs, setClockMs] = useState(() => Date.now());
 
@@ -62,6 +64,13 @@ export function NotificationConfirmDialog({
       }, {}),
     }));
   }, [notificationStatus?.missing_recipients]);
+
+  useEffect(() => {
+    if (!notificationStatus) return;
+    setSelectedParticipantIds((current) => current.length > 0 || initialParticipantIds?.length ? current : notificationStatus.recipients
+      .filter((recipient) => Boolean(recipient.recipient))
+      .map((recipient) => recipient.participant_id));
+  }, [initialParticipantIds?.length, notificationStatus]);
 
   useEffect(() => {
     if (!notificationStatus?.next_available_at) return;
@@ -81,6 +90,9 @@ export function NotificationConfirmDialog({
     ? Math.max(0, Math.ceil((new Date(notificationStatus.next_available_at).getTime() - clockMs) / 1000))
     : notificationStatus?.cooldown_remaining_seconds ?? 0;
   const missing = notificationStatus?.missing_recipients ?? [];
+  const missingToEdit = initialParticipantIds?.length
+    ? missing.filter((recipient) => initialParticipantIds.includes(recipient.participant_id))
+    : missing;
   const blocked = notificationStatus?.blocked_reason;
   const blockedMessage = blocked && blocked !== 'participant_emails_required'
     ? blockedMessages[blocked] ?? 'This reminder cannot be sent right now.' : null;
@@ -88,7 +100,7 @@ export function NotificationConfirmDialog({
   const saveEmails = async () => {
     setError('');
     try {
-      for (const recipient of missing) {
+      for (const recipient of missingToEdit) {
         const email = emails[recipient.participant_id]?.trim().toLowerCase();
         if (!email) throw new Error('email_required');
         const contact = contacts.find((item) => item.id === recipient.contact_id) ?? contacts.find((item) =>
@@ -118,10 +130,11 @@ export function NotificationConfirmDialog({
         await renameSplit({ splitId: split.id, title: cleanDescription }).unwrap();
       }
       const result = await queueNotification({
-        splitId: split.id, idempotencyKey: crypto.randomUUID(),
+        splitId: split.id, idempotencyKey: crypto.randomUUID(), participantIds: selectedParticipantIds,
       }).unwrap();
       const count = result.notification_ids.length;
-      onQueued(`${count} payment reminder${count === 1 ? '' : 's'} queued for ${cleanDescription}.`);
+      const skipped = result.skipped_recipients.length;
+      onQueued(`${count} payment reminder${count === 1 ? '' : 's'} queued for ${cleanDescription}.${skipped ? ` ${skipped} person${skipped === 1 ? '' : 's'} skipped because no email is registered.` : ''}`);
       onClose();
     } catch (failure) {
       setError(errorMessage(failure));
@@ -155,20 +168,27 @@ export function NotificationConfirmDialog({
       {notificationStatus?.recipients.length ? <ul className='space-y-2'>
         {notificationStatus.recipients.map((recipient) => <li key={recipient.participant_id}
           className='flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--bg-border)] p-3 text-sm'>
+          <label className='flex min-w-0 items-center gap-3'><input type='checkbox'
+            disabled={!recipient.recipient}
+            checked={selectedParticipantIds.includes(recipient.participant_id)}
+            onChange={(event) => setSelectedParticipantIds((current) => event.target.checked
+              ? [...current, recipient.participant_id]
+              : current.filter((id) => id !== recipient.participant_id))} />
           <span><strong className='text-[var(--text-primary)]'>{recipient.name}</strong>
             <span className='block text-xs text-[var(--text-muted)]'>{recipient.recipient ?? 'Email required'}</span></span>
+          </label>
           <span className='font-medium text-[var(--text-primary)]'>{formatPaiseAsInr(recipient.amount_paise)}</span>
         </li>)}
       </ul> : null}
-      {missing.length > 0 && <form className='space-y-3 rounded-xl border border-amber-400/30 bg-amber-400/10 p-4'
+      {missingToEdit.length > 0 && <form className='space-y-3 rounded-xl border border-amber-400/30 bg-amber-400/10 p-4'
         onSubmit={(event) => { event.preventDefault(); void saveEmails(); }}>
         <div>
           <p className='font-medium text-amber-200'>Add missing email addresses</p>
           <p className='mt-1 text-xs text-amber-100/80'>
-            These addresses are saved under Manage people and used only for split reminders you confirm.
+            These people will be skipped until you add an email. You can still send reminders to the selected people above.
           </p>
         </div>
-        {missing.map((recipient) => <label key={recipient.participant_id}
+        {missingToEdit.map((recipient) => <label key={recipient.participant_id}
           className='block space-y-1 text-sm text-[var(--text-secondary)]'>{recipient.name}
           <input className='w-full rounded-xl border border-[var(--bg-border)] bg-[var(--bg-elevated)] px-3 py-2 text-[var(--text-primary)]'
             type='email' required maxLength={320} value={emails[recipient.participant_id] ?? ''}
@@ -188,9 +208,9 @@ export function NotificationConfirmDialog({
         className='rounded-lg bg-amber-500/10 p-3 text-sm text-amber-300'>{blockedMessage}</p>}
       {error && <p role='alert' className='text-sm text-[var(--negative)]'>{error}</p>}
       <div className='grid grid-cols-1 gap-2 sm:grid-cols-2'>
-        <Button type='button' disabled={!notificationStatus?.can_notify || isSavingEmails || !description.trim()} isLoading={isLoading || isRenaming}
+        <Button type='button' disabled={!notificationStatus?.can_notify || isSavingEmails || !description.trim() || selectedParticipantIds.length === 0} isLoading={isLoading || isRenaming}
           onClick={() => { void send(); }}>
-          Send {notificationStatus?.recipients.length ?? 0} email{notificationStatus?.recipients.length === 1 ? '' : 's'}
+          Send {selectedParticipantIds.length} email{selectedParticipantIds.length === 1 ? '' : 's'}
         </Button>
         <Button type='button' variant='secondary' disabled={isLoading || isSavingEmails} onClick={onClose}>Not now</Button>
       </div>

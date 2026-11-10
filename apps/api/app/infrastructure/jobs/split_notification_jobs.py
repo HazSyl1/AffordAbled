@@ -15,7 +15,7 @@ from app.infrastructure.database.repositories.sqlalchemy_split_notification_repo
     SqlAlchemySplitNotificationRepository,
 )
 from app.infrastructure.database.session import SessionLocal
-from app.infrastructure.email.message import render_payment_request_email
+from app.infrastructure.email.message import render_balance_statement_email, render_payment_request_email
 from app.infrastructure.sms_scheduler_signal import clear_sms_scheduler_wakeup, install_sms_scheduler_wakeup
 
 logger = logging.getLogger(__name__)
@@ -31,6 +31,32 @@ async def run_split_notification_batch_once(
             batch_size=max(1, batch_size), stale_after_seconds=max(30, stale_after_seconds), channel=channel,
         )
         for notification in claimed:
+            # Aggregate balance statements have no split or participant FK. A queued split reminder can also
+            # lose its split FK, but retains its participant FK and is cancelled below.
+            if notification.split_id is None and notification.split_participant_id is None and channel == 'email':
+                try:
+                    email = render_balance_statement_email(
+                        subject=notification.email_subject or 'AffordAbled: your current balance summary',
+                        plain_text=notification.message_body,
+                        pay_url=(f'{pay_base_url.rstrip("/")}/api/v1/pay/{notification.id}'
+                                 if pay_base_url and notification.upi_link else None),
+                        app_url=app_url or None,
+                    )
+                    result = await provider.send(
+                        recipient_email=notification.recipient_email, email=email, notification_id=notification.id,
+                    )
+                    if result.successful:
+                        await repository.complete(notification.id, status='sent', message_id=result.message_id)
+                    else:
+                        await repository.complete(notification.id, status='failed', message_id=result.message_id,
+                                                  error_code=result.error_code, error_message=result.error_message)
+                except Exception as error:
+                    logger.exception(
+                        'balance_statement.dispatch.failed', extra={'notification_id': str(notification.id)},
+                    )
+                    await repository.complete(notification.id, status='uncertain', error_code='provider_exception',
+                                              error_message=type(error).__name__)
+                continue
             if notification.split_id is None or notification.split_participant_id is None:
                 await repository.complete(
                     notification.id, status='cancelled', error_code='split_removed',

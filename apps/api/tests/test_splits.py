@@ -52,8 +52,6 @@ async def test_equal_split_remainder_settlement_and_balance(client: AsyncClient)
         f'/api/v1/transactions/{transaction_id}', json={'amount_paise': 1200}, headers=headers,
     )
     assert changed.status_code == 400
-    deleted_expense = await client.delete(f'/api/v1/transactions/{transaction_id}', headers=headers)
-    assert deleted_expense.status_code == 400
     income_category = await client.post(
         '/api/v1/categories', json={'name': 'Repayments', 'type': 'income'}, headers=headers,
     )
@@ -88,6 +86,57 @@ async def test_equal_split_remainder_settlement_and_balance(client: AsyncClient)
     removed = await client.delete(f"/api/v1/splits/{split['id']}", headers=headers)
     assert removed.status_code == 204
     assert (await client.get(f'/api/v1/transactions/{transaction_id}', headers=headers)).status_code == 200
+
+
+async def test_deleting_split_expense_hides_split_reverses_balance_and_restore_brings_both_back(
+    client: AsyncClient,
+) -> None:
+    token = await register_and_get_token(client, 'reversible-split@example.com')
+    headers = auth_headers(token)
+    account_id, transaction_id = await _expense(client, token, amount=1001)
+    created = await client.post('/api/v1/splits', json={
+        'transaction_id': transaction_id, 'title': 'Lunch', 'amount_paise': 1001,
+        'mode': 'equal', 'participants': [{'name': 'A'}, {'name': 'B'}],
+    }, headers=headers)
+    assert created.status_code == 201, created.text
+    split_id = created.json()['id']
+
+    status = await client.get(f'/api/v1/transactions/{transaction_id}/deletion-status', headers=headers)
+    assert status.status_code == 200
+    assert status.json() == {
+        'can_delete': True, 'kind': 'split_expense', 'message': 'Deleting also hides this split.',
+    }
+    assert (await client.delete(f'/api/v1/transactions/{transaction_id}', headers=headers)).status_code == 204
+    assert (await client.get(f'/api/v1/transactions/{transaction_id}', headers=headers)).status_code == 404
+    assert (await client.get(f'/api/v1/splits/{split_id}', headers=headers)).status_code == 404
+    assert (await client.get(f'/api/v1/accounts/{account_id}', headers=headers)).json()['balance_paise'] == 20000
+
+    assert (await client.post(f'/api/v1/transactions/{transaction_id}/restore', headers=headers)).status_code == 204
+    assert (await client.get(f'/api/v1/transactions/{transaction_id}', headers=headers)).status_code == 200
+    assert (await client.get(f'/api/v1/splits/{split_id}', headers=headers)).status_code == 200
+    assert (await client.get(f'/api/v1/accounts/{account_id}', headers=headers)).json()['balance_paise'] == 18999
+
+
+async def test_editing_split_can_atomically_update_linked_expense_total(client: AsyncClient) -> None:
+    token = await register_and_get_token(client, 'edit-linked-split@example.com')
+    headers = auth_headers(token)
+    account_id, transaction_id = await _expense(client, token, amount=1000)
+    created = await client.post('/api/v1/splits', json={
+        'transaction_id': transaction_id, 'title': 'Lunch', 'amount_paise': 1000,
+        'mode': 'equal', 'participants': [{'name': 'A'}, {'name': 'B'}],
+    }, headers=headers)
+    split = created.json()
+    updated = await client.patch(f"/api/v1/splits/{split['id']}", json={
+        'title': 'Long lunch', 'owner_share_paise': 400, 'transaction_amount_paise': 1200,
+        'participants': [
+            {'id': split['participants'][0]['id'], 'name': 'A', 'share_paise': 400},
+            {'id': split['participants'][1]['id'], 'name': 'B', 'share_paise': 400},
+        ],
+    }, headers=headers)
+    assert updated.status_code == 200, updated.text
+    assert updated.json()['total_paise'] == 1200
+    assert (await client.get(f'/api/v1/transactions/{transaction_id}', headers=headers)).json()['amount_paise'] == 1200
+    assert (await client.get(f'/api/v1/accounts/{account_id}', headers=headers)).json()['balance_paise'] == 18800
 
 
 async def test_settle_balance_offsets_open_split_and_records_net_cash(client: AsyncClient) -> None:

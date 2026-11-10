@@ -49,6 +49,12 @@ export interface UpdateTransactionRequest {
   review_event?: CreateTransactionRequest['review_event'];
 }
 
+export interface TransactionDeletionStatus {
+  can_delete: boolean;
+  kind: 'ordinary' | 'split_expense' | 'protected_linked_transaction';
+  message: string | null;
+}
+
 const transactionsApi = apiClient.injectEndpoints({
   endpoints: (builder) => ({
     listTransactions: builder.query<Transaction[], void>({
@@ -72,11 +78,15 @@ const transactionsApi = apiClient.injectEndpoints({
     }),
     deleteTransaction: builder.mutation<void, string>({
       query: (transactionId) => ({ url: `/transactions/${transactionId}`, method: 'DELETE' }),
-      invalidatesTags: ['Transaction', 'Account'],
+      invalidatesTags: ['Transaction', 'Account', 'Split', 'SplitNotification'],
+    }),
+    getTransactionDeletionStatus: builder.query<TransactionDeletionStatus, string>({
+      query: (transactionId) => `/transactions/${transactionId}/deletion-status`,
+      providesTags: ['Transaction', 'Split'],
     }),
     restoreTransaction: builder.mutation<void, string>({
       query: (transactionId) => ({ url: `/transactions/${transactionId}/restore`, method: 'POST' }),
-      invalidatesTags: ['Transaction', 'Account'],
+      invalidatesTags: ['Transaction', 'Account', 'Split', 'SplitNotification'],
     }),
   }),
 });
@@ -86,5 +96,6 @@ export const {
   useCreateTransactionMutation,
   useUpdateTransactionMutation,
   useDeleteTransactionMutation,
+  useGetTransactionDeletionStatusQuery,
   useRestoreTransactionMutation,
 } = transactionsApi;

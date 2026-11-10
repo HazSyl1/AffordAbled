@@ -12,6 +12,7 @@ import { TRANSACTION_UI_TEXT } from '../../../constants';
 import { formatPaiseAsInr } from '../../../lib/money';
 import { Badge } from '../../atoms/Badge';
 import { Card } from '../../atoms/Card';
+import { TransactionDeleteAction } from './TransactionDeleteAction';
 
 const TYPE_ICON: Record<TransactionType, string> = {
   expense: '🧾',
@@ -104,9 +105,10 @@ function groupTransactionsByDate(transactions: Transaction[]): Array<{ label: st
 
 export interface TransactionListProps {
   onTransactionSelect?: (transaction: Transaction) => void;
+  onTransactionDeleted?: (transactionId: string) => void;
 }
 
-export function TransactionList({ onTransactionSelect }: TransactionListProps) {
+export function TransactionList({ onTransactionSelect, onTransactionDeleted }: TransactionListProps) {
   const { data: transactions, isLoading, isError } = useListTransactionsQuery();
   const { data: accounts } = useListAccountsQuery();
   const { data: categories } = useListCategoriesQuery();
@@ -229,6 +231,8 @@ export function TransactionList({ onTransactionSelect }: TransactionListProps) {
                       </div>
                     </div>
                     <div className='mt-3 flex flex-wrap items-center justify-end gap-2'>
+                      <TransactionDeleteAction transactionId={transaction.id}
+                        onDeleted={() => onTransactionDeleted?.(transaction.id)} />
                       {transaction.recurring_rule_id ? <Link
                         to='/transactions?tab=recurring'
                         className='inline-flex items-center rounded-full border border-[var(--info)]/50 px-2.5 py-1 text-xs font-semibold text-[var(--info)]'

@@ -34,6 +34,12 @@ class UpdateTransactionRequest(BaseModel):
     review_event: dict[str, Any] | None = None
 
 
+class TransactionDeletionStatusResponse(BaseModel):
+    can_delete: bool
+    kind: str
+    message: str | None = None
+
+
 class TransactionResponse(BaseModel):
     id: str
     account_id: str

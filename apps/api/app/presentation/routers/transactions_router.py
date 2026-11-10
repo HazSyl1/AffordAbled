@@ -10,6 +10,7 @@ from app.core.dependencies import get_current_user, get_transaction_service
 from app.domain.entities import User
 from app.presentation.schemas.transaction import (
     CreateTransactionRequest,
+    TransactionDeletionStatusResponse,
     TransactionResponse,
     UpdateTransactionRequest,
 )
@@ -58,6 +59,17 @@ async def get_transaction(
 ) -> TransactionResponse:
     transaction = await transaction_service.get_transaction(current_user.id, transaction_id)
     return TransactionResponse.from_entity(transaction)
+
+
+@router.get('/{transaction_id}/deletion-status', response_model=TransactionDeletionStatusResponse)
+async def transaction_deletion_status(
+    transaction_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    transaction_service: TransactionService = Depends(get_transaction_service),
+) -> TransactionDeletionStatusResponse:
+    return TransactionDeletionStatusResponse.model_validate(
+        await transaction_service.deletion_status(current_user.id, transaction_id),
+    )
 
 
 @router.patch('/{transaction_id}', response_model=TransactionResponse)

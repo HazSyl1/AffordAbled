@@ -22,6 +22,7 @@ import { useListTransactionsQuery } from '../../features/transactions/transactio
 import { formatPaiseAsInr } from '../../lib/money';
 import { ComplexSettlementPlanner } from './ComplexSettlementPlanner';
 import { NotificationConfirmDialog } from './NotificationConfirmDialog';
+import { BalanceEmailButton } from './BalanceEmailButton';
 
 type Person = { name: string; amount: string | null; isNew: boolean };
 type ManagedPerson = {
@@ -67,9 +68,12 @@ function unpaidCount(split: Split): number {
 
 type EditPerson = { id?: string; name: string; amount: string; hasRepayment: boolean; contactId?: string };
 
-function EditSplitForm({ split, onCancel }: { split: Split; onCancel: () => void }) {
+function EditSplitForm({ split, onCancel, proposedTotalPaise }: {
+  split: Split; onCancel: () => void; proposedTotalPaise?: number;
+}) {
   const [updateSplit, { isLoading: saving }] = useUpdateSplitMutation();
   const [title, setTitle] = useState(split.title);
+  const [totalAmount, setTotalAmount] = useState(((proposedTotalPaise ?? split.total_paise) / 100).toFixed(2));
   const [ownerAmount, setOwnerAmount] = useState((split.owner_share_paise / 100).toFixed(2));
   const [people, setPeople] = useState<EditPerson[]>(() => split.participants.map((person) => ({
     id: person.id, name: person.name, amount: (person.share_paise / 100).toFixed(2),
@@ -79,10 +83,12 @@ function EditSplitForm({ split, onCancel }: { split: Split; onCancel: () => void
   const [showValidation, setShowValidation] = useState(false);
   const [error, setError] = useState('');
   const ownShare = paise(ownerAmount);
+  const targetTotalPaise = paise(totalAmount);
   const shares = people.map((person) => paise(person.amount));
   const allocatedPaise = (ownShare ?? 0) + shares.reduce<number>((sum, share) => sum + (share ?? 0), 0);
-  const remainingPaise = split.total_paise - allocatedPaise;
-  const invalidAmounts = ownShare === null || shares.some((share) => share === null || share <= 0) || remainingPaise !== 0;
+  const remainingPaise = (targetTotalPaise ?? 0) - allocatedPaise;
+  const invalidAmounts = targetTotalPaise === null || ownShare === null ||
+    shares.some((share) => share === null || share <= 0) || remainingPaise !== 0;
   const names = people.map((person) => person.name.trim());
   const invalidNames = names.map((name, index) => !name ||
     names.some((other, row) => row !== index && other.toLowerCase() === name.toLowerCase()));
@@ -104,6 +110,7 @@ function EditSplitForm({ split, onCancel }: { split: Split; onCancel: () => void
         splitId: split.id,
         body: {
           title: title.trim(), owner_share_paise: ownShare!,
+          ...(targetTotalPaise !== split.total_paise ? { transaction_amount_paise: targetTotalPaise! } : {}),
           participants: people.map((person, index) => ({
             ...(person.id ? { id: person.id } : {}), name: person.name.trim(), share_paise: shares[index]!,
             ...(person.contactId ? { contact_id: person.contactId } : {}),
@@ -119,6 +126,12 @@ function EditSplitForm({ split, onCancel }: { split: Split; onCancel: () => void
     <label className='block space-y-1 text-sm text-[var(--text-secondary)]'>Title
       <input className={`${inputClass} ${showValidation && !title.trim() ? 'border-red-400/70' : ''}`}
         maxLength={255} value={title} onChange={(event) => { setTitle(event.target.value); setError(''); }} />
+    </label>
+    <label className='block space-y-1 text-sm text-[var(--text-secondary)]'>Expense total (₹)
+      <input className={`${inputClass} ${showValidation && targetTotalPaise === null ? 'border-red-400/70' : ''}`}
+        inputMode='decimal' aria-invalid={showValidation && targetTotalPaise === null}
+        value={totalAmount} onChange={(event) => { setTotalAmount(event.target.value); setError(''); }} />
+      <span className='block text-xs text-[var(--text-muted)]'>Changing this also updates the linked expense and account balance.</span>
     </label>
     <label className='block space-y-1 text-sm text-[var(--text-secondary)]'>Your share (₹)
       <input className={`${inputClass} ${showValidation && ownShare === null ? 'border-red-400/70' : ''}`}
@@ -154,7 +167,7 @@ function EditSplitForm({ split, onCancel }: { split: Split; onCancel: () => void
         }}>+ Add person</button>}
     </div>
     <div role='status' className='rounded-lg border border-[var(--bg-border)] p-3 text-sm text-[var(--text-secondary)]'>
-      <p>Total: {formatPaiseAsInr(split.total_paise)}</p>
+      <p>Total: {targetTotalPaise === null ? 'Enter a valid total' : formatPaiseAsInr(targetTotalPaise)}</p>
       <p>Allocated: {formatPaiseAsInr(allocatedPaise)}</p>
       <p className={`font-semibold ${invalidAmounts ? 'text-red-400' : ''}`}>Remaining: {formatPaiseAsInr(remainingPaise)}</p>
       {invalidAmounts && <p className='mt-1 text-xs text-red-400'>Enter valid shares that add up to the total.</p>}
@@ -208,7 +221,11 @@ export function SplitsPage() {
   const [settlingPlanTransferId, setSettlingPlanTransferId] = useState<string | null>(null);
   const [settlementFeedback, setSettlementFeedback] = useState<Record<string, string>>({});
   const [repayingAllSplitId, setRepayingAllSplitId] = useState<string | null>(null);
-  const [editingSplitId, setEditingSplitId] = useState<string | null>(null);
+  const [editingSplitId, setEditingSplitId] = useState<string | null>(
+    searchParams.get('edit') === '1' ? focusedSplitId : null,
+  );
+  const [balancesOpen, setBalancesOpen] = useState(false);
+  const [settlementsOpen, setSettlementsOpen] = useState(Boolean(focusedPlanId));
   const [owedOpen, setOwedOpen] = useState(false);
   const [complexOpen, setComplexOpen] = useState(Boolean(searchParams.get('draft')));
   const [owedName, setOwedName] = useState('');
@@ -230,7 +247,7 @@ export function SplitsPage() {
   const [contactPendingRemoval, setContactPendingRemoval] = useState<ManagedPerson | null>(null);
   const [removeContactError, setRemoveContactError] = useState('');
   const [contactFeedback, setContactFeedback] = useState('');
-  const [notificationQueue, setNotificationQueue] = useState<{ split: Split }[]>([]);
+  const [notificationQueue, setNotificationQueue] = useState<{ split: Split; participantIds?: string[] }[]>([]);
   const [notificationFeedback, setNotificationFeedback] = useState('');
   const expenseSplitOwedPaise = splits.filter((split) => split.kind === 'expense_split')
     .reduce((total, split) => total + split.outstanding_paise, 0);
@@ -613,19 +630,29 @@ export function SplitsPage() {
         </div>
         <p className='mt-1 text-xs text-[var(--text-muted)]'>Group settlement plans are listed separately below and are not included in this total.</p>
       </div>
-      <div className='grid min-w-0 grid-cols-1 gap-2 min-[480px]:grid-cols-2 md:grid-cols-4'>
-        <Button className='min-w-0 whitespace-normal text-center text-sm' onClick={() => {
-          setOpen(true); setOwedOpen(false); setComplexOpen(false); setReview(null);
+      <div className='grid min-w-0 grid-cols-1 gap-2 min-[480px]:grid-cols-2 md:grid-cols-3'>
+        <Button type='button' aria-pressed={open} variant={open ? 'primary' : 'secondary'}
+          className='min-w-0 border whitespace-normal text-center text-sm' onClick={() => {
+          setOpen((value) => !value); setOwedOpen(false); setComplexOpen(false); setReview(null);
         }}>Split an expense</Button>
-        <Button variant='secondary' className='min-w-0 whitespace-normal text-center text-sm' onClick={() => {
+        <Button type='button' aria-pressed={owedOpen} variant={owedOpen ? 'primary' : 'secondary'}
+          className='min-w-0 border whitespace-normal text-center text-sm' onClick={() => {
           setOwedOpen((value) => !value); setOpen(false); setComplexOpen(false); setReview(null);
         }}>Record money owed</Button>
-        <Button variant='secondary' className='min-w-0 whitespace-normal text-center text-sm'
+        <Button type='button' aria-pressed={complexOpen} variant={complexOpen ? 'primary' : 'secondary'}
+          className='min-w-0 border whitespace-normal text-center text-sm'
           onClick={() => {
             setComplexOpen((value) => !value); setOpen(false); setOwedOpen(false); setReview(null);
           }}>Plan group settlement</Button>
-        <Button variant='secondary' className='min-w-0 whitespace-normal text-center text-sm'
+        <Button type='button' aria-pressed={managePeopleOpen} variant={managePeopleOpen ? 'primary' : 'secondary'}
+          className='min-w-0 border whitespace-normal text-center text-sm'
           onClick={() => setManagePeopleOpen((value) => !value)}>Manage people</Button>
+        <Button type='button' aria-pressed={balancesOpen} variant={balancesOpen ? 'primary' : 'secondary'}
+          className='min-w-0 border whitespace-normal text-center text-sm'
+          onClick={() => setBalancesOpen((value) => !value)}>Balances by person</Button>
+        <Button type='button' aria-pressed={settlementsOpen} variant={settlementsOpen ? 'primary' : 'secondary'}
+          className='min-w-0 border whitespace-normal text-center text-sm'
+          onClick={() => setSettlementsOpen((value) => !value)}>Group settlements</Button>
       </div>
     </div>
     {managePeopleOpen && <Card className='space-y-4 p-5'>
@@ -813,12 +840,14 @@ export function SplitsPage() {
     </Card>}
     {error && <p role='alert' className='text-sm text-red-400'>{error}</p>}
     {error && <p role='alert' className='rounded-xl bg-red-500/10 p-3 text-sm text-red-300'>{error}</p>}
-    {personBalances.length > 0 && <details className='space-y-3'>
-      <summary className='cursor-pointer list-none rounded-xl border border-[var(--bg-border)] bg-[var(--bg-surface)] p-4'>
-        <h2 className='font-semibold text-[var(--text-primary)]'>Balances by person</h2>
-        <p className='mt-1 text-xs text-[var(--text-muted)]'>Expand to review mutual balances and settle them. Smaller balances are listed first.</p>
-      </summary>
-      <Card className='space-y-3 p-4'>
+    {balancesOpen && <section className='space-y-3'>
+      <div className='rounded-xl border border-[var(--bg-border)] bg-[var(--bg-surface)] p-4'>
+        <div className='flex flex-wrap items-center justify-between gap-3'>
+          <div><h2 className='font-semibold text-[var(--text-primary)]'>Balances by person</h2>
+            <p className='mt-1 text-xs text-[var(--text-muted)]'>Review mutual balances and settle them. Smaller balances are listed first.</p></div>
+        </div>
+      </div>
+      {balancesOpen && <Card className='space-y-3 p-4'>
         <p className='text-xs text-[var(--text-muted)]'>Matching amounts in both directions are offset before any cash repayment. Review the details before confirming.</p>
       <ul className='grid grid-cols-2 gap-2'>
         {personBalances.map((balance) => <li key={balance.person.toLocaleLowerCase()} className='min-w-0 rounded-xl border border-[var(--bg-border)] p-3'>
@@ -848,17 +877,32 @@ export function SplitsPage() {
               setBalanceSettlementAmount(balance.net_paise === 0 ? '' : (Math.abs(balance.net_paise) / 100).toFixed(2));
               setBalanceSettlementAccountId(defaultAccountId);
             }}>{balance.net_paise === 0 ? 'Review offset' : 'Settle balance'}</button>
+          {(() => {
+            const contact = contactDetails.find((item) => item.name.trim().toLowerCase() === balance.person.trim().toLowerCase());
+            if (contact?.email) return <BalanceEmailButton contactId={contact.id} name={balance.person}
+              onFeedback={setNotificationFeedback} />;
+            return <button type='button'
+              className='mt-2 w-full rounded-lg border border-[var(--brand-primary)]/40 px-3 py-1.5 text-xs font-semibold text-[var(--brand-primary)]'
+              onClick={() => {
+                setManagePeopleOpen(true);
+                if (contact) editContact({ id: contact.id, contactId: contact.id, name: contact.name,
+                  phone_e164: contact.phone_e164, email: contact.email });
+                setContactFeedback(`Add ${balance.person}'s email to send their current balance summary.`);
+              }}>Add email to send summary</button>;
+          })()}
         </li>)}
       </ul>
-      </Card>
-    </details>}
+      </Card>}
+    </section>}
     {loadingPersonBalances && <p className='text-xs text-[var(--text-muted)]'>Loading balances by person…</p>}
-    <details className='space-y-3'>
-      <summary className='cursor-pointer list-none rounded-xl border border-[var(--bg-border)] bg-[var(--bg-surface)] p-4'>
-        <h2 id='group-settlements-heading' className='font-semibold text-[var(--text-primary)]'>Group settlements</h2>
-        <p className='mt-1 text-xs text-[var(--text-muted)]'>Expand to review saved plans and repayments.</p>
-      </summary>
-      <section className='space-y-3' aria-labelledby='group-settlements-heading'>
+    {settlementsOpen && <section className='space-y-3'>
+      <div className='rounded-xl border border-[var(--bg-border)] bg-[var(--bg-surface)] p-4'>
+        <div className='flex flex-wrap items-center justify-between gap-3'>
+          <div><h2 id='group-settlements-heading' className='font-semibold text-[var(--text-primary)]'>Group settlements</h2>
+            <p className='mt-1 text-xs text-[var(--text-muted)]'>Review saved plans and repayments.</p></div>
+        </div>
+      </div>
+      {settlementsOpen && <section className='space-y-3' aria-labelledby='group-settlements-heading'>
         <p className='text-xs text-[var(--text-muted)]'>Confirmed plans stay here. Only payments you made or received appear in Transactions.</p>
       {loadingSettlementPlans ? <p className='text-sm text-[var(--text-muted)]'>Loading group settlements…</p>
         : settlementPlansError ? <p role='alert' className='text-sm text-red-400'>Could not load group settlements. Try refreshing this page.</p>
@@ -943,8 +987,8 @@ export function SplitsPage() {
               </div>}
             </Card>;
           })}
-      </section>
-    </details>
+      </section>}
+    </section>}
     <section className='space-y-3'><h2 className='font-semibold text-[var(--text-primary)]'>Your split and IOU tracker</h2>
       {isLoading ? <p className='text-sm text-[var(--text-muted)]'>Loading splits…</p> : splits.length === 0 ?
         <Card className='p-5 text-sm text-[var(--text-muted)]'>No splits yet.</Card> : orderedSplits.map((split) =>
@@ -994,7 +1038,9 @@ export function SplitsPage() {
                     disabled={deleting}
                     onClick={() => removeSplit(split.id)}>Remove split</button>
                 </div></div></div>
-            {editingSplitId === split.id ? <EditSplitForm key={split.id} split={split} onCancel={() => setEditingSplitId(null)} /> : <>
+            {editingSplitId === split.id ? <EditSplitForm key={split.id} split={split}
+              proposedTotalPaise={searchParams.get('edit') === '1' ? paise(searchParams.get('transactionAmount') ?? '') ?? undefined : undefined}
+              onCancel={() => setEditingSplitId(null)} /> : <>
             {split.item_breakdown && <details className='border-t border-[var(--bg-border)] pt-2 text-xs text-[var(--text-secondary)]'>
               <summary className='cursor-pointer text-[var(--brand-primary)]'>View item breakdown</summary>
               <ul className='mt-2 space-y-2'>
@@ -1090,6 +1136,15 @@ export function SplitsPage() {
                           value={amountText} onChange={(event) => setPaymentAmounts((current) => ({ ...current, [person.id]: event.target.value }))} />
                       </label>}
                       <div className='flex w-full flex-wrap justify-end gap-2'>
+                        {!ownerPays && <button type='button'
+                          disabled={notificationStatuses[split.id]?.blocked_reason === 'cooldown_active' ||
+                            notificationStatuses[split.id]?.blocked_reason === 'split_limit_reached' ||
+                            notificationStatuses[split.id]?.blocked_reason === 'daily_limit_reached' ||
+                            notificationStatuses[split.id]?.request_in_progress}
+                          title={!notificationStatuses[split.id]?.recipients.find((recipient) => recipient.participant_id === person.id)?.recipient
+                            ? 'Add this person\'s email, then send their reminder.' : undefined}
+                          className='rounded-lg border border-[var(--brand-primary)]/40 px-3 py-1.5 text-xs font-semibold text-[var(--brand-primary)] disabled:opacity-50'
+                          onClick={() => setNotificationQueue([{ split, participantIds: [person.id] }])}>Send reminder</button>}
                         <button type='button' disabled={recordingSplitPayment || repayingAllSplitId !== null}
                           className='rounded-lg border border-[var(--brand-primary)]/40 px-3 py-1.5 text-xs font-semibold text-[var(--brand-primary)] disabled:opacity-50'
                           onClick={() => {
@@ -1156,6 +1211,7 @@ export function SplitsPage() {
     {notificationQueue[0] && <NotificationConfirmDialog
       split={notificationQueue[0].split}
       contacts={contactDetails}
+      initialParticipantIds={notificationQueue[0].participantIds}
       onQueued={(message) => setNotificationFeedback(message)}
       onClose={() => setNotificationQueue((current) => current.slice(1))}
     />}

@@ -38,6 +38,10 @@ class SplitNotificationModel(Base):
     amount_paise: Mapped[int] = mapped_column(BigInteger, nullable=False)
     currency: Mapped[str] = mapped_column(String(3), nullable=False, default='INR', server_default='INR')
     message_body: Mapped[str] = mapped_column(Text, nullable=False)
+    # Full settlement history for balance-summary payment pages. The email body
+    # intentionally contains only a short preview, while the hosted page can
+    # show every outstanding record.
+    settlement_details: Mapped[str | None] = mapped_column(Text, nullable=True)
     upi_link: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String(24), nullable=False, index=True)
     blocked_reason: Mapped[str | None] = mapped_column(String(50), nullable=True)
