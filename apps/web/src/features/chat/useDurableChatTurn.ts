@@ -1,7 +1,8 @@
 import { useCallback, useState } from 'react';
 
-import { useAppDispatch } from '../../app/hooks';
+import { useAppDispatch, useAppSelector } from '../../app/hooks';
 import { apiClient } from '../../lib/apiClient';
+import { API_BASE_URL } from '../../lib/env';
 import {
   type ChatResponse,
   type ChatTurnStatusResponse,
@@ -10,7 +11,9 @@ import {
   useSubmitChatTurnMutation,
 } from './chatApi';
 
-const POLL_INTERVAL_MS = 1_500;
+// A completed turn should appear promptly after the worker saves it. The API
+// only polls while this chat is visible, so this stays bounded per active turn.
+const POLL_INTERVAL_MS = 500;
 
 function waitForNextCheck(): Promise<void> {
   if (document.visibilityState === 'visible') {
@@ -37,6 +40,43 @@ function completedResult(status: ChatTurnStatusResponse): ChatResponse | null {
   return null;
 }
 
+async function waitForTurnStream(
+  turnId: string,
+  accessToken: string,
+  signal: AbortSignal,
+): Promise<ChatResponse | null> {
+  const response = await fetch(`${API_BASE_URL}/api/v1/chat/turns/${encodeURIComponent(turnId)}/events`, {
+    headers: { Accept: 'text/event-stream', Authorization: `Bearer ${accessToken}` },
+    credentials: 'include',
+    signal,
+  });
+  if (!response.ok || !response.body) return null;
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) return null;
+      buffer += decoder.decode(value, { stream: true });
+      let boundary = buffer.indexOf('\n\n');
+      while (boundary >= 0) {
+        const event = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        boundary = buffer.indexOf('\n\n');
+        const data = event.split('\n').find((line) => line.startsWith('data:'))?.slice(5);
+        if (!data) continue;
+        const status = JSON.parse(data.trim()) as ChatTurnStatusResponse;
+        const result = completedResult(status);
+        if (result) return result;
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 function permanentRequestError(error: unknown): Error | null {
   if (!error || typeof error !== 'object' || !('status' in error)) return null;
   const apiError = error as { status?: unknown; data?: unknown };
@@ -54,6 +94,7 @@ function permanentRequestError(error: unknown): Error | null {
 
 export function useDurableChatTurn() {
   const dispatch = useAppDispatch();
+  const accessToken = useAppSelector((state) => state.auth.accessToken);
   const [submitChatTurn] = useSubmitChatTurnMutation();
   const [getChatTurnStatus] = useLazyGetChatTurnStatusQuery();
   const [isProcessingTurn, setIsProcessingTurn] = useState(false);
@@ -85,6 +126,30 @@ export function useDurableChatTurn() {
         return immediateResult;
       }
 
+      // Fetch streaming supports the Authorization header that native EventSource
+      // cannot send. A hidden mobile browser aborts the stream; durable polling
+      // below resumes when the app becomes visible again.
+      if (accessToken && document.visibilityState === 'visible') {
+        const controller = new AbortController();
+        const stopWhenHidden = () => {
+          if (document.visibilityState === 'hidden') controller.abort();
+        };
+        document.addEventListener('visibilitychange', stopWhenHidden, { once: true });
+        try {
+          const streamed = await waitForTurnStream(request.turn_id, accessToken, controller.signal);
+          if (streamed) {
+            invalidateFinanceCaches();
+            return streamed;
+          }
+        } catch {
+          // The durable status endpoint below handles expired credentials,
+          // reconnects and deployments with a separate API worker process.
+        } finally {
+          controller.abort();
+          document.removeEventListener('visibilitychange', stopWhenHidden);
+        }
+      }
+
       while (true) {
         await waitForNextCheck();
         try {
@@ -105,7 +170,7 @@ export function useDurableChatTurn() {
     } finally {
       setIsProcessingTurn(false);
     }
-  }, [getChatTurnStatus, invalidateFinanceCaches, submitChatTurn]);
+  }, [accessToken, getChatTurnStatus, invalidateFinanceCaches, submitChatTurn]);
 
   return { runTurn, isProcessingTurn };
 }

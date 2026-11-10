@@ -23,6 +23,8 @@ export interface ChatTurnStatusResponse {
   error_message?: string | null;
   created_at: string;
   updated_at: string;
+  claimed_at?: string | null;
+  completed_at?: string | null;
 }
 
 export interface ChatTransactionProposal {

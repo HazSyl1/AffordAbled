@@ -118,6 +118,12 @@ async def test_chat_turn_worker_persists_the_normal_chat_response(
     assert completed.status_code == 200
     assert completed.json()['status'] == 'succeeded'
     assert completed.json()['result']['message'] == 'Recorded ₹500 spent at Reliance.'
+    assert completed.json()['claimed_at'] is not None
+    assert completed.json()['completed_at'] is not None
+    stream = await client.get(f'/api/v1/chat/turns/{turn_id}/events', headers=headers)
+    assert stream.status_code == 200
+    assert 'event: status' in stream.text
+    assert '"status":"succeeded"' in stream.text
 
 
 @pytest.mark.asyncio
@@ -162,3 +168,28 @@ async def test_only_one_turn_per_thread_can_be_processing(
         )
         assert second is not None
         assert second.id != first.id
+
+
+async def test_fresh_turn_lookup_observes_completion_from_another_session(
+    client: AsyncClient, db_session: AsyncSession,
+) -> None:
+    token = await register_and_get_token(client, 'durable-fresh-status@example.com')
+    headers = auth_headers(token)
+    user_id = uuid.UUID((await client.get('/api/v1/auth/me', headers=headers)).json()['id'])
+    turn_id = uuid.uuid4()
+    created = await client.post('/api/v1/chat/turns', json={
+        'turn_id': str(turn_id), 'thread_id': str(uuid.uuid4()), 'message': 'Check my accounts', 'timezone': 'UTC',
+    }, headers=headers)
+    assert created.status_code == 202
+    session_factory = async_sessionmaker(bind=db_session.bind, expire_on_commit=False)
+    async with session_factory() as stream_session:
+        stream_repository = SqlAlchemyChatTurnJobRepository(stream_session)
+        initial = await stream_repository.get_for_user(user_id, turn_id)
+        assert initial is not None and initial.status == 'queued'
+        async with session_factory() as worker_session:
+            await SqlAlchemyChatTurnJobRepository(worker_session).mark_succeeded(turn_id, {
+                'thread_id': created.json()['thread_id'], 'message': 'Done.',
+                'tasks_completed': False, 'show_completion_popup': False,
+            })
+        fresh = await stream_repository.get_for_user_fresh(user_id, turn_id)
+        assert fresh is not None and fresh.status == 'succeeded'

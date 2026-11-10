@@ -72,6 +72,14 @@ class SqlAlchemyChatTurnJobRepository:
             )
         )
 
+    async def get_for_user_fresh(self, user_id: uuid.UUID, turn_id: uuid.UUID) -> ChatTurnJobModel | None:
+        """Read current durable state when a request remains open for streaming."""
+        return await self._session.scalar(
+            select(ChatTurnJobModel)
+            .where(ChatTurnJobModel.id == turn_id, ChatTurnJobModel.user_id == user_id)
+            .execution_options(populate_existing=True)
+        )
+
     async def get(self, turn_id: uuid.UUID) -> ChatTurnJobModel | None:
         return await self._session.get(ChatTurnJobModel, turn_id)
 
