@@ -47,6 +47,7 @@ class UpdateSplitRequest(BaseModel):
     title: str = Field(min_length=1, max_length=255)
     owner_share_paise: int = Field(ge=0)
     participants: list[UpdateParticipantRequest] = Field(min_length=1, max_length=20)
+    transaction_amount_paise: int | None = Field(default=None, gt=0)
 
 
 class SplitPaymentResponse(BaseModel):
@@ -140,11 +141,24 @@ class SplitNotificationQueueResponse(BaseModel):
     created_at: datetime
 
 
+class SplitNotificationSkippedRecipientResponse(BaseModel):
+    participant_id: uuid.UUID
+    contact_id: uuid.UUID | None
+    name: str
+    amount_paise: int
+    reason: str
+
+
 class SplitNotificationBatchQueueResponse(BaseModel):
     campaign_id: uuid.UUID
     notification_ids: list[uuid.UUID]
     status: str
     created_at: datetime
+    skipped_recipients: list[SplitNotificationSkippedRecipientResponse] = Field(default_factory=list)
+
+
+class SplitNotificationBatchRequest(BaseModel):
+    participant_ids: list[uuid.UUID] | None = Field(default=None, min_length=1, max_length=20)
 
 
 class SplitNotificationRecipientResponse(BaseModel):

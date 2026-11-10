@@ -21,7 +21,6 @@ from app.infrastructure.database.repositories.sqlalchemy_split_notification_repo
 )
 from app.infrastructure.email.message import (
     LOGO_CONTENT_ID,
-    QR_CONTENT_ID,
     render_payment_request_email,
 )
 from app.infrastructure.email.provider import AzureAcsEmailProvider
@@ -125,6 +124,34 @@ async def test_split_contact_details_can_be_added_renamed_searched_client_side_a
     assert removed.status_code == 204, removed.text
     contacts_after = await client.get('/api/v1/splits/contacts/details', headers=headers)
     assert contacts_after.json() == []
+
+
+async def test_balance_statement_queues_only_for_saved_person_with_an_outstanding_balance(
+    client: AsyncClient, app: FastAPI, db_session: AsyncSession,
+) -> None:
+    token = await register_and_get_token(client, 'balance-statement@example.com')
+    headers = auth_headers(token)
+    app.dependency_overrides[get_split_notification_service] = lambda: _service(db_session, channel='email')
+    try:
+        contact = await client.put('/api/v1/splits/contacts/details', json={
+            'name': 'Isha', 'email': 'isha@example.com',
+        }, headers=headers)
+        assert contact.status_code == 200
+        transaction_id = await _expense(client, token)
+        split = await client.post('/api/v1/splits', json={
+            'transaction_id': transaction_id, 'title': 'Dinner', 'amount_paise': 10000,
+            'mode': 'custom', 'owner_share_paise': 4000,
+            'participants': [{'name': 'Isha', 'share_paise': 6000, 'contact_id': contact.json()['id']}],
+        }, headers=headers)
+        assert split.status_code == 201, split.text
+        queued = await client.post(
+            f"/api/v1/splits/balances/{contact.json()['id']}/email",
+            headers={**headers, 'Idempotency-Key': str(uuid.uuid4())},
+        )
+        assert queued.status_code == 202, queued.text
+        assert queued.json()['status'] == 'queued'
+    finally:
+        app.dependency_overrides.pop(get_split_notification_service, None)
 
 
 async def test_split_scoped_campaign_queues_one_email_per_unpaid_participant_and_counts_once(

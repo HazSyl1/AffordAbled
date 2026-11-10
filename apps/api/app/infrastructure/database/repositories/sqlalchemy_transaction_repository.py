@@ -264,7 +264,7 @@ class SqlAlchemyTransactionRepository:
         await self._session.refresh(model)
         return self._to_entity(model)
 
-    async def soft_delete_for_user(self, transaction_id: uuid.UUID, user_id: uuid.UUID) -> bool:
+    async def soft_delete_for_user(self, transaction_id: uuid.UUID, user_id: uuid.UUID, *, commit: bool = True) -> bool:
         now = datetime.now(UTC)
         result = await self._session.execute(
             update(TransactionModel)
@@ -275,10 +275,13 @@ class SqlAlchemyTransactionRepository:
             )
             .values(deleted_at=now, updated_at=now)
         )
-        await self._session.commit()
+        if commit:
+            await self._session.commit()
+        else:
+            await self._session.flush()
         return (result.rowcount or 0) > 0
 
-    async def restore_for_user(self, transaction_id: uuid.UUID, user_id: uuid.UUID) -> bool:
+    async def restore_for_user(self, transaction_id: uuid.UUID, user_id: uuid.UUID, *, commit: bool = True) -> bool:
         now = datetime.now(UTC)
         result = await self._session.execute(
             update(TransactionModel)
@@ -289,7 +292,10 @@ class SqlAlchemyTransactionRepository:
             )
             .values(deleted_at=None, updated_at=now)
         )
-        await self._session.commit()
+        if commit:
+            await self._session.commit()
+        else:
+            await self._session.flush()
         return (result.rowcount or 0) > 0
 
     @staticmethod

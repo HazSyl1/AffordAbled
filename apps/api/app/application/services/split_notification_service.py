@@ -23,6 +23,12 @@ class SplitNotificationError(Exception):
         self.next_available_at = next_available_at
 
 
+@dataclass(frozen=True)
+class SplitNotificationQueueResult:
+    notifications: list
+    skipped_recipients: list[dict]
+
+
 def build_upi_link(upi_id: str, payee_name: str, amount_paise: int, note: str) -> str:
     amount = Decimal(amount_paise) / Decimal(100)
     params = {
@@ -85,8 +91,52 @@ class SplitNotificationService:
     max_per_user_daily: int
     channel: str = 'sms'
 
+    async def queue_balance_statement(
+        self, user_id: uuid.UUID, contact_id: uuid.UUID, balance: dict, idempotency_key: uuid.UUID,
+        *, now: datetime | None = None,
+    ):
+        if not self.enabled or self.channel != 'email':
+            raise SplitNotificationError(
+                'notification_unavailable', 'Email reminders are not configured.', status_code=503,
+            )
+        context = await self.repository.get_contact_with_user(user_id, contact_id)
+        if context is None:
+            raise SplitNotificationError('contact_not_found', 'Saved person was not found.', status_code=404)
+        if not context.contact.email:
+            raise SplitNotificationError(
+                'email_required', 'Add this person\'s email before sending a balance summary.', status_code=422,
+            )
+        owed = int(balance['owed_to_you_paise'])
+        you_owe = int(balance['you_owe_paise'])
+        net = owed - you_owe
+        settlement = 'You are settled.' if net == 0 else (
+            f'{context.contact.name} owes you Rs.{Decimal(net) / Decimal(100):.2f}.' if net > 0 else
+            f'You owe {context.contact.name} Rs.{Decimal(-net) / Decimal(100):.2f}.'
+        )
+        message = (
+            f'Hi {context.contact.name},\n\n{context.user.name} shared your current AffordAbled balance summary.\n\n'
+            f'You owe {context.user.name}: Rs.{Decimal(owed) / Decimal(100):.2f}\n'
+            f'{context.user.name} owes you: Rs.{Decimal(you_owe) / Decimal(100):.2f}\n'
+            f'Net settlement: {settlement}\n\n'
+            'This summary includes only currently outstanding split records; paid records are not included.\n\n'
+            'This is an automated message from AffordAbled. Please do not reply to this email.'
+        )
+        now = now or datetime.now(UTC)
+        result = await self.repository.reserve_balance_statement(
+            user_id=user_id, contact_id=contact_id, idempotency_key=idempotency_key,
+            recipient_name=context.contact.name, recipient_email=context.contact.email,
+            amount_paise=abs(net), message_body=message,
+            upi_link='', provider=self.provider_name, now=now, max_per_user_daily=self.max_per_user_daily,
+        )
+        if result.blocked_reason:
+            raise SplitNotificationError(
+                'daily_limit_reached', 'Your daily notification limit has been reached.', status_code=429,
+            )
+        return result.notification
+
     async def queue_split(
         self, user_id: uuid.UUID, split_id: uuid.UUID, idempotency_key: uuid.UUID,
+        participant_ids: list[uuid.UUID] | None = None,
         *, now: datetime | None = None,
     ):
         if not self.enabled:
@@ -101,7 +151,7 @@ class SplitNotificationService:
                     existing[0].blocked_reason or 'rate_limited', 'This reminder request was rate limited.',
                     status_code=429,
                 )
-            return existing
+            return SplitNotificationQueueResult(existing, [])
         contexts = await self.repository.get_split_contexts(user_id, split_id)
         if not contexts:
             raise SplitNotificationError('split_not_found', 'Split was not found.', status_code=404)
@@ -109,14 +159,35 @@ class SplitNotificationService:
         unpaid = [item for item in contexts if item.participant.share_paise > item.participant.settled_paise]
         if not unpaid:
             raise SplitNotificationError('already_settled', 'This split is already settled.', status_code=409)
-        missing = [item.participant.name for item in unpaid if not self._recipient(item)]
-        if missing:
+        requested_ids = set(participant_ids or [item.participant.id for item in unpaid])
+        known_ids = {item.participant.id for item in contexts}
+        if requested_ids - known_ids:
             raise SplitNotificationError(
-                'participant_emails_required',
-                f'Add contact details for: {", ".join(missing)}.', status_code=422,
+                'participant_not_found', 'A selected participant does not belong to this split.', status_code=404,
+            )
+        selected = [item for item in unpaid if item.participant.id in requested_ids]
+        if not selected:
+            raise SplitNotificationError(
+                'already_settled', 'The selected people have already repaid their shares.', status_code=409,
+            )
+        eligible = [item for item in selected if self._recipient(item)]
+        skipped = [
+            {
+                'participant_id': item.participant.id,
+                'contact_id': item.contact.id if item.contact else None,
+                'name': item.participant.name,
+                'amount_paise': item.participant.share_paise - item.participant.settled_paise,
+                'reason': 'email_required' if self.channel == 'email' else 'phone_required',
+            }
+            for item in selected if not self._recipient(item)
+        ]
+        if not eligible:
+            raise SplitNotificationError(
+                'participant_emails_required' if self.channel == 'email' else 'participant_phones_required',
+                'Add contact details for at least one selected person.', status_code=422,
             )
         notifications = []
-        for context in unpaid:
+        for context in eligible:
             amount = context.participant.share_paise - context.participant.settled_paise
             link = build_upi_link(context.user.upi_id, context.user.name, amount, context.split.title)
             message = (
@@ -158,7 +229,7 @@ class SplitNotificationService:
                 status_code=409 if result.blocked_reason == 'request_in_progress' else 429,
                 retry_after_seconds=retry, next_available_at=next_at,
             )
-        return result.notifications
+        return SplitNotificationQueueResult(result.notifications, skipped)
 
     async def payment_page_data(self, notification_id: uuid.UUID) -> dict | None:
         """Details for the public pay page opened from a reminder email; None when it should not be shown."""
@@ -214,8 +285,6 @@ class SplitNotificationService:
                 missing_recipients.append(item)
         if not unpaid:
             blocked_reason = 'already_settled'
-        elif missing_recipients:
-            blocked_reason = 'participant_emails_required' if self.channel == 'email' else 'participant_phones_required'
         blocked_reason = summary.get('blocked_reason') or blocked_reason
         history = [{
             'id': item.id, 'status': item.status, 'channel': item.channel,

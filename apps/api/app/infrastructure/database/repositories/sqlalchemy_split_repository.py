@@ -60,7 +60,8 @@ class SqlAlchemySplitRepository:
     async def is_linked(self, user_id: uuid.UUID, transaction_id: uuid.UUID) -> bool:
         split_id = await self.session.scalar(
             select(SplitModel.id).where(
-                SplitModel.user_id == user_id, SplitModel.transaction_id == transaction_id
+                SplitModel.user_id == user_id, SplitModel.transaction_id == transaction_id,
+                SplitModel.deleted_at.is_(None),
             )
         )
         if split_id is not None:
@@ -178,7 +179,7 @@ class SqlAlchemySplitRepository:
 
     async def list_for_user(self, user_id: uuid.UUID) -> list[SplitModel]:
         rows = await self.session.scalars(
-            select(SplitModel).where(SplitModel.user_id == user_id)
+            select(SplitModel).where(SplitModel.user_id == user_id, SplitModel.deleted_at.is_(None))
             .options(selectinload(SplitModel.participants).selectinload(SplitParticipantModel.payments))
             .order_by(SplitModel.created_at.desc(), SplitModel.id.desc())
             .execution_options(populate_existing=True)
@@ -187,7 +188,9 @@ class SqlAlchemySplitRepository:
 
     async def get_for_user(self, user_id: uuid.UUID, split_id: uuid.UUID) -> SplitModel | None:
         return await self.session.scalar(
-            select(SplitModel).where(SplitModel.id == split_id, SplitModel.user_id == user_id)
+            select(SplitModel).where(
+                SplitModel.id == split_id, SplitModel.user_id == user_id, SplitModel.deleted_at.is_(None),
+            )
             .options(selectinload(SplitModel.participants).selectinload(SplitParticipantModel.payments))
             .execution_options(populate_existing=True)
         )
@@ -203,6 +206,7 @@ class SqlAlchemySplitRepository:
     async def update(
         self, user_id: uuid.UUID, split_id: uuid.UUID, title: str,
         owner_share_paise: int, participants: list[ParticipantEditShare],
+        transaction_amount_paise: int | None = None,
     ) -> SplitModel | None:
         contact_ids = await self._validate_participant_contacts(user_id, participants)
         split = await self.get_for_user(user_id, split_id)
@@ -210,17 +214,19 @@ class SqlAlchemySplitRepository:
             return None
         if split.transaction_id is None:
             raise ValueError('Edit standalone money owed entries from the owed amount form.')
-        amount_paise = await self.session.scalar(
-            select(TransactionModel.amount_paise).where(
+        transaction = await self.session.scalar(
+            select(TransactionModel).where(
                 TransactionModel.id == split.transaction_id,
                 TransactionModel.user_id == user_id,
                 TransactionModel.deleted_at.is_(None),
                 TransactionModel.type == 'expense',
             )
         )
-        if amount_paise is None:
+        if transaction is None:
             raise LookupError('Expense transaction was not found.')
-        if owner_share_paise + sum(person.share_paise for person in participants) != amount_paise:
+        amount_paise = transaction.amount_paise
+        target_amount_paise = transaction_amount_paise if transaction_amount_paise is not None else amount_paise
+        if owner_share_paise + sum(person.share_paise for person in participants) != target_amount_paise:
             raise ValueError('Split shares must match the current expense amount.')
 
         existing = {person.id: person for person in split.participants}
@@ -229,7 +235,8 @@ class SqlAlchemySplitRepository:
             raise ValueError('A participant does not belong to this split.')
         requested = {person.id: person for person in participants if person.id is not None}
         same_allocations = (
-            owner_share_paise == split.owner_share_paise
+            target_amount_paise == amount_paise
+            and owner_share_paise == split.owner_share_paise
             and len(participants) == len(split.participants)
             and all(
                 person.id in existing
@@ -265,6 +272,18 @@ class SqlAlchemySplitRepository:
 
             split.title = title
             split.owner_share_paise = owner_share_paise
+            if target_amount_paise != amount_paise:
+                account = await self.session.scalar(select(AccountModel).where(
+                    AccountModel.id == transaction.account_id,
+                    AccountModel.user_id == user_id,
+                    AccountModel.is_active.is_(True),
+                ))
+                if account is None:
+                    raise LookupError('Expense account was not found or is inactive.')
+                # This is an expense: an increased total deducts the difference; a lower total returns it.
+                account.balance_paise -= target_amount_paise - amount_paise
+                transaction.amount_paise = target_amount_paise
+                transaction.updated_at = datetime.now(UTC)
             if not same_allocations:
                 split.item_breakdown = None
                 split.settlement_breakdown = None
@@ -683,6 +702,37 @@ class SqlAlchemySplitRepository:
             return False
         await self.session.delete(split)
         await self.session.commit()
+        return True
+
+    async def linked_expense_split_id(self, user_id: uuid.UUID, transaction_id: uuid.UUID) -> uuid.UUID | None:
+        return await self.session.scalar(select(SplitModel.id).where(
+            SplitModel.user_id == user_id,
+            SplitModel.transaction_id == transaction_id,
+            SplitModel.deleted_at.is_(None),
+        ))
+
+    async def soft_delete_linked_expense(self, user_id: uuid.UUID, transaction_id: uuid.UUID) -> bool:
+        split = await self.session.scalar(select(SplitModel).where(
+            SplitModel.user_id == user_id,
+            SplitModel.transaction_id == transaction_id,
+            SplitModel.deleted_at.is_(None),
+        ).with_for_update())
+        if split is None:
+            return False
+        split.deleted_at = datetime.now(UTC)
+        await self.session.flush()
+        return True
+
+    async def restore_linked_expense(self, user_id: uuid.UUID, transaction_id: uuid.UUID) -> bool:
+        split = await self.session.scalar(select(SplitModel).where(
+            SplitModel.user_id == user_id,
+            SplitModel.transaction_id == transaction_id,
+            SplitModel.deleted_at.is_not(None),
+        ).with_for_update())
+        if split is None:
+            return False
+        split.deleted_at = None
+        await self.session.flush()
         return True
 
     async def contact_names(self, user_id: uuid.UUID) -> list[str]:

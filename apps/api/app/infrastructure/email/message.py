@@ -212,3 +212,30 @@ def render_payment_request_email(
             ),
         ),
     )
+
+
+def render_balance_statement_email(*, subject: str, plain_text: str, contact_name: str,
+                                   creator_name: str, app_url: str | None = None) -> RenderedEmail:
+    """A concise, branded statement containing only the current net balance."""
+    safe_contact = escape(contact_name)
+    safe_creator = escape(creator_name)
+    safe_body = escape(plain_text).replace('\n', '<br />')
+    safe_app_url = escape(app_url, quote=True) if app_url else None
+    cta = (f'<p style="margin:24px 0 0;"><a href="{safe_app_url}" style="color:#ffffff;background:{BRAND_PURPLE};'
+           'padding:12px 20px;border-radius:9px;text-decoration:none;font-weight:700;">Open AffordAbled</a></p>') if safe_app_url else ''
+    return RenderedEmail(
+        subject=subject,
+        plain_text=plain_text,
+        html=f'''<!doctype html><html lang="en"><body style="margin:0;background:#f5f3f8;font-family:Arial,sans-serif;color:#1f2937;">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td align="center" style="padding:30px 12px;">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:600px;background:#fff;border:1px solid #e8e3ee;border-radius:18px;overflow:hidden;">
+          <tr><td style="background:{BRAND_PURPLE};padding:20px 28px;color:#fff;font-size:22px;font-weight:700;"><img src="cid:{LOGO_CONTENT_ID}" width="34" height="34" alt="" style="vertical-align:middle;margin-right:10px;border-radius:8px;" />AffordAbled</td></tr>
+          <tr><td style="padding:32px;"><p style="margin-top:0;font-size:16px;">Hi {safe_contact},</p><p style="color:#4b5563;line-height:24px;">{safe_creator} shared your current balance summary.</p>
+          <div style="margin-top:22px;background:{BRAND_PURPLE_LIGHT};border-radius:12px;padding:20px;color:#374151;font-size:15px;line-height:24px;">{safe_body}</div>{cta}
+          <p style="margin:26px 0 0;color:#7c7485;font-size:12px;line-height:18px;">This is an automated message from AffordAbled. Please do not reply to this email.</p></td></tr>
+          </table></td></tr></table></body></html>''',
+        inline_attachments=(InlineEmailAttachment(
+            name='affordabled-logo.png', content_type='image/png', content=build_affordabled_logo_png(),
+            content_id=LOGO_CONTENT_ID,
+        ),),
+    )

@@ -23,6 +23,7 @@ class SplitModel(Base):
     owner_share_paise: Mapped[int] = mapped_column(BigInteger)
     item_breakdown: Mapped[list[dict] | None] = mapped_column(JSON(none_as_null=True), nullable=True)
     settlement_breakdown: Mapped[dict | None] = mapped_column(JSON(none_as_null=True), nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     participants: Mapped[list[SplitParticipantModel]] = relationship(
         back_populates='split', cascade='all, delete-orphan', lazy='selectin'

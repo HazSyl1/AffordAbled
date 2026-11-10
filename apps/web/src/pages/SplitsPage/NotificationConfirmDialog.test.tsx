@@ -73,7 +73,7 @@ describe('NotificationConfirmDialog', () => {
   });
 
   it('queues one split campaign containing separate recipient emails', async () => {
-    mocks.queueUnwrap.mockResolvedValue({ notification_ids: ['one', 'two'] });
+    mocks.queueUnwrap.mockResolvedValue({ notification_ids: ['one', 'two'], skipped_recipients: [] });
     const onClose = vi.fn();
     const onQueued = vi.fn();
     render(<NotificationConfirmDialog split={split} contacts={[]} onClose={onClose} onQueued={onQueued} />);
@@ -84,13 +84,14 @@ describe('NotificationConfirmDialog', () => {
 
     await waitFor(() => expect(mocks.queue).toHaveBeenCalledWith({
       splitId: 'split-1', idempotencyKey: 'campaign-key',
+      participantIds: ['participant-1', 'participant-2'],
     }));
     expect(onQueued).toHaveBeenCalledWith('2 payment reminders queued for Dinner.');
     expect(onClose).toHaveBeenCalledOnce();
   });
 
   it('lets the user edit the description, saving it to the split before queuing', async () => {
-    mocks.queueUnwrap.mockResolvedValue({ notification_ids: ['one', 'two'] });
+    mocks.queueUnwrap.mockResolvedValue({ notification_ids: ['one', 'two'], skipped_recipients: [] });
     const onQueued = vi.fn();
     render(<NotificationConfirmDialog split={split} contacts={[]} onClose={vi.fn()} onQueued={onQueued} />);
 

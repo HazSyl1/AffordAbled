@@ -45,7 +45,7 @@ class SqlAlchemyAccountRepository:
         )
         return [self._to_entity(model) for model in result.scalars().all()]
 
-    async def update(self, account: Account) -> Account:
+    async def update(self, account: Account, *, commit: bool = True) -> Account:
         model = await self._session.get(AccountModel, account.id)
         if model is None or model.user_id != account.user_id:
             raise LookupError(str(account.id))
@@ -56,7 +56,10 @@ class SqlAlchemyAccountRepository:
         model.is_active = account.is_active
         model.is_default = account.is_default
         model.updated_at = account.updated_at
-        await self._session.commit()
+        if commit:
+            await self._session.commit()
+        else:
+            await self._session.flush()
         await self._session.refresh(model)
         return self._to_entity(model)
 

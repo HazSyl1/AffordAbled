@@ -36,6 +36,9 @@ from app.presentation.schemas.split import (
     SplitContactPreferenceRequest,
     SplitContactPreferenceResponse,
     SplitNotificationBatchQueueResponse,
+    SplitNotificationBatchRequest,
+    SplitNotificationQueueResponse,
+    SplitNotificationSkippedRecipientResponse,
     SplitNotificationSplitStatusResponse,
     SplitResponse,
     UpdateSplitRequest,
@@ -91,6 +94,33 @@ async def list_notification_statuses(
         payload = await notification_service.status_split(current_user.id, split.id)
         result[str(split.id)] = SplitNotificationSplitStatusResponse.model_validate(payload)
     return result
+
+
+@router.post('/balances/{contact_id}/email', response_model=SplitNotificationQueueResponse,
+             status_code=status.HTTP_202_ACCEPTED)
+async def queue_balance_statement(
+    contact_id: uuid.UUID, idempotency_key: uuid.UUID = Header(alias='Idempotency-Key'),
+    current_user: User = Depends(get_current_user), split_service: SplitService = Depends(get_split_service),
+    notification_service: SplitNotificationService = Depends(get_split_notification_service),
+) -> SplitNotificationQueueResponse:
+    contacts = await split_service.list_contact_preferences(current_user.id)
+    contact = next((item for item in contacts if item.id == contact_id), None)
+    if contact is None:
+        raise HTTPException(status_code=404, detail='Saved person was not found.')
+    balance = next((item for item in await split_service.balances_by_person(current_user.id)
+                    if item['person'].casefold() == contact.name.casefold()), None)
+    if balance is None:
+        raise HTTPException(status_code=409, detail='There is no outstanding balance with this person.')
+    try:
+        notification = await notification_service.queue_balance_statement(
+            current_user.id, contact_id, balance, idempotency_key,
+        )
+    except SplitNotificationError as error:
+        raise _notification_http_error(error) from error
+    wake_sms_scheduler()
+    return SplitNotificationQueueResponse(
+        notification_id=notification.id, status=notification.status, created_at=notification.created_at,
+    )
 
 
 @router.post('/balances/settle', response_model=dict)
@@ -312,20 +342,25 @@ async def get_split(
 )
 async def queue_split_notifications(
     split_id: uuid.UUID,
+    payload: SplitNotificationBatchRequest | None = None,
     idempotency_key: uuid.UUID = Header(alias='Idempotency-Key'),
     current_user: User = Depends(get_current_user),
     service: SplitNotificationService = Depends(get_split_notification_service),
 ) -> SplitNotificationBatchQueueResponse:
     try:
-        notifications = await service.queue_split(current_user.id, split_id, idempotency_key)
+        queued = await service.queue_split(
+            current_user.id, split_id, idempotency_key, payload.participant_ids if payload else None,
+        )
     except SplitNotificationError as error:
         raise _notification_http_error(error) from error
     wake_sms_scheduler()
-    first = notifications[0]
+    first = queued.notifications[0]
     return SplitNotificationBatchQueueResponse(
         campaign_id=idempotency_key,
-        notification_ids=[item.id for item in notifications],
+        notification_ids=[item.id for item in queued.notifications],
         status=first.status, created_at=first.created_at,
+        skipped_recipients=[SplitNotificationSkippedRecipientResponse.model_validate(item)
+                            for item in queued.skipped_recipients],
     )
 
 
@@ -368,6 +403,7 @@ async def update_split(
             current_user.id, split_id, payload.title, payload.owner_share_paise,
             [ParticipantEditShare(person.id, person.name, person.share_paise, person.contact_id)
              for person in payload.participants],
+            payload.transaction_amount_paise,
         )
     except LookupError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error

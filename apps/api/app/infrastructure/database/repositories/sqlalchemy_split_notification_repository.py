@@ -54,6 +54,7 @@ class SqlAlchemySplitNotificationRepository:
             .join(UserModel, UserModel.id == SplitModel.user_id)
             .where(
                 SplitModel.id == split_id, SplitModel.user_id == user_id,
+                SplitModel.deleted_at.is_(None),
                 SplitParticipantModel.id == participant_id,
             )
         )).first()
@@ -68,7 +69,10 @@ class SqlAlchemySplitNotificationRepository:
             .join(SplitParticipantModel, SplitParticipantModel.split_id == SplitModel.id)
             .outerjoin(SplitContactModel, SplitContactModel.id == SplitParticipantModel.contact_id)
             .join(UserModel, UserModel.id == SplitModel.user_id)
-            .where(SplitModel.id == split_id, SplitModel.user_id == user_id)
+            .where(
+                SplitModel.id == split_id, SplitModel.user_id == user_id,
+                SplitModel.deleted_at.is_(None),
+            )
             .order_by(SplitParticipantModel.name)
         )).all()
         return [SimpleNamespace(split=split, participant=participant, contact=contact, user=user)
@@ -76,6 +80,43 @@ class SqlAlchemySplitNotificationRepository:
 
     async def get_by_id(self, notification_id: uuid.UUID):
         return await self.session.get(SplitNotificationModel, notification_id)
+
+    async def get_contact_with_user(self, user_id: uuid.UUID, contact_id: uuid.UUID):
+        row = (await self.session.execute(
+            select(SplitContactModel, UserModel)
+            .join(UserModel, UserModel.id == SplitContactModel.user_id)
+            .where(SplitContactModel.id == contact_id, SplitContactModel.user_id == user_id)
+        )).first()
+        return None if row is None else SimpleNamespace(contact=row[0], user=row[1])
+
+    async def reserve_balance_statement(self, *, user_id: uuid.UUID, contact_id: uuid.UUID,
+                                        idempotency_key: uuid.UUID, recipient_name: str, recipient_email: str,
+                                        amount_paise: int, message_body: str, upi_link: str, provider: str,
+                                        now: datetime, max_per_user_daily: int) -> ReservationResult:
+        await self.session.scalar(select(UserModel.id).where(UserModel.id == user_id).with_for_update())
+        existing = await self.get_by_idempotency(user_id, idempotency_key)
+        if existing is not None:
+            return ReservationResult(existing)
+        day_start = now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+        daily_count = int(await self.session.scalar(select(func.count()).select_from(SplitNotificationModel).where(
+            SplitNotificationModel.sent_by_user_id == user_id,
+            SplitNotificationModel.status.in_(COUNTED_STATUSES),
+            SplitNotificationModel.created_at >= day_start,
+        )) or 0)
+        blocked_reason = 'daily_limit_reached' if daily_count >= max_per_user_daily else None
+        notification = SplitNotificationModel(
+            id=uuid.uuid4(), split_id=None, split_participant_id=None, sent_by_user_id=user_id,
+            idempotency_key=idempotency_key, channel='email', provider=provider,
+            recipient_name=recipient_name, recipient_email=recipient_email, recipient_phone_e164=None,
+            email_subject='AffordAbled: your current balance summary', amount_paise=amount_paise,
+            currency='INR', message_body=message_body, upi_link=upi_link,
+            status='rate_limited' if blocked_reason else 'queued', blocked_reason=blocked_reason,
+            created_at=now, completed_at=now if blocked_reason else None,
+        )
+        self.session.add(notification)
+        await self.session.commit()
+        next_available_at = day_start + timedelta(days=1) if blocked_reason else None
+        return ReservationResult(notification, blocked_reason, next_available_at)
 
     async def get_by_idempotency(self, user_id: uuid.UUID, key: uuid.UUID):
         return await self.session.scalar(select(SplitNotificationModel).where(
@@ -103,6 +144,7 @@ class SqlAlchemySplitNotificationRepository:
         await self.session.scalar(select(UserModel.id).where(UserModel.id == user_id).with_for_update())
         split = await self.session.scalar(select(SplitModel).where(
             SplitModel.id == split_id, SplitModel.user_id == user_id,
+            SplitModel.deleted_at.is_(None),
         ).with_for_update())
         if split is None:
             raise LookupError('Split was not found.')

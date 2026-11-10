@@ -230,7 +230,7 @@ export function TransactionsPage() {
       <div className='grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_380px] lg:items-start'>
         <section>
           <Card className='p-4 md:p-5'>
-            <TransactionList onTransactionSelect={handleOpenEditSheet} />
+            <TransactionList onTransactionSelect={handleOpenEditSheet} onTransactionDeleted={handleCloseEditSheet} />
           </Card>
         </section>
 

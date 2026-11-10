@@ -63,6 +63,7 @@ class SplitStore(Protocol):
     async def update(
         self, user_id: uuid.UUID, split_id: uuid.UUID, title: str,
         owner_share_paise: int, participants: list[ParticipantEditShare],
+        transaction_amount_paise: int | None = None,
     ): ...
 
     async def rename(self, user_id: uuid.UUID, split_id: uuid.UUID, title: str): ...
@@ -333,6 +334,7 @@ class SplitService:
     async def update(
         self, user_id: uuid.UUID, split_id: uuid.UUID, title: str,
         owner_share_paise: int, participants: list[ParticipantEditShare],
+        transaction_amount_paise: int | None = None,
     ):
         clean_title = title.strip()
         if not clean_title or len(clean_title) > 255:
@@ -376,7 +378,9 @@ class SplitService:
                     ],
                 },
             )
-        return await self.store.update(user_id, split_id, clean_title, owner_share_paise, cleaned)
+        return await self.store.update(
+            user_id, split_id, clean_title, owner_share_paise, cleaned, transaction_amount_paise,
+        )
 
     async def settle(
         self, user_id: uuid.UUID, split_id: uuid.UUID,

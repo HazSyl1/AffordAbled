@@ -129,6 +129,7 @@ export function CreateTransactionForm({
   const isEditing = Boolean(transactionId);
   const [splitAfterSave, setSplitAfterSave] = useState(false);
   const [isSplitPromptOpen, setIsSplitPromptOpen] = useState(false);
+  const [linkedSplitPromptOpen, setLinkedSplitPromptOpen] = useState(false);
   const [repeatTransaction, setRepeatTransaction] = useState(false);
   const [recurrenceUnit, setRecurrenceUnit] = useState<RecurrenceUnit>('monthly');
   const [weeklyInterval, setWeeklyInterval] = useState('1');
@@ -170,6 +171,7 @@ export function CreateTransactionForm({
   const sourceAccountId = useWatch({ control, name: 'accountId' });
   const destinationAccountId = useWatch({ control, name: 'toAccountId' });
   const categoryId = useWatch({ control, name: 'categoryId' });
+  const currentAmountRupees = useWatch({ control, name: 'amountRupees' });
 
   useEffect(() => {
     if (sourceAccountId || initialValues?.accountId) {
@@ -221,6 +223,10 @@ export function CreateTransactionForm({
   );
 
   const handleTypeChange = (nextType: TransactionType) => {
+    if (hasSplit && nextType !== 'expense') {
+      setFormError('A transaction with a split must remain an expense.');
+      return;
+    }
     setValue('type', nextType, { shouldDirty: true, shouldValidate: true });
     if (nextType === 'transfer') {
       setShowQuickCategory(false);
@@ -232,6 +238,12 @@ export function CreateTransactionForm({
 
   const onSubmit = handleSubmit(async (values) => {
     setFormError(null);
+
+    if (hasSplit && initialValues?.amountRupees && values.amountRupees !== initialValues.amountRupees) {
+      setFormError('Update the linked split shares before changing this expense amount.');
+      setLinkedSplitPromptOpen(true);
+      return;
+    }
 
     const payload = {
       account_id: values.accountId,
@@ -773,6 +785,22 @@ export function CreateTransactionForm({
           </section>
         </div>,
         document.body,
+      ) : null}
+      {linkedSplitPromptOpen ? createPortal(
+        <div className='fixed inset-0 z-[120] flex items-center justify-center bg-black/70 p-4' role='presentation'>
+          <section role='dialog' aria-modal='true' aria-labelledby='linked-split-update-title'
+            className='w-full max-w-md rounded-2xl border border-[var(--bg-border)] bg-[var(--bg-card)] p-5 shadow-2xl'>
+            <h2 id='linked-split-update-title' className='text-lg font-semibold text-[var(--text-primary)]'>Update split shares</h2>
+            <p className='mt-2 text-sm text-[var(--text-secondary)]'>This amount is shared with other people. Adjust the split first so every share matches the new expense total.</p>
+            <div className='mt-5 flex justify-end gap-2'>
+              <Button type='button' variant='secondary' onClick={() => setLinkedSplitPromptOpen(false)}>Keep editing</Button>
+              <Button type='button' onClick={() => {
+                const split = splits?.find((item) => item.transaction_id === transactionId);
+                if (split) navigate(`/splits?splitId=${split.id}&edit=1&transactionAmount=${encodeURIComponent(currentAmountRupees)}`);
+              }}>Adjust split</Button>
+            </div>
+          </section>
+        </div>, document.body,
       ) : null}
     </form>
   );
