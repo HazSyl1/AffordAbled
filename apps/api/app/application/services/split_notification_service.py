@@ -91,6 +91,19 @@ class SplitNotificationService:
     max_per_user_daily: int
     channel: str = 'sms'
 
+    async def balance_statement_status(self, user_id: uuid.UUID, contact_id: uuid.UUID) -> dict:
+        context = await self.repository.get_contact_with_user(user_id, contact_id)
+        if context is None:
+            raise SplitNotificationError('contact_not_found', 'Saved person was not found.', status_code=404)
+        summary = await self.repository.balance_statement_status(
+            user_id, context.contact.email or '', now=datetime.now(UTC),
+            cooldown=timedelta(hours=self.cooldown_hours), max_notifications=self.max_per_split,
+            max_daily=self.max_per_user_daily, bypass_limits=context.user.account_tier == 'test',
+        )
+        if not self.enabled or self.channel != 'email' or not context.contact.email:
+            summary.update(can_notify=False, blocked_reason='email_unavailable')
+        return summary
+
     async def queue_balance_statement(
         self, user_id: uuid.UUID, contact_id: uuid.UUID, balance: dict, idempotency_key: uuid.UUID,
         *, now: datetime | None = None,
@@ -109,16 +122,40 @@ class SplitNotificationService:
         owed = int(balance['owed_to_you_paise'])
         you_owe = int(balance['you_owe_paise'])
         net = owed - you_owe
-        settlement = 'You are settled.' if net == 0 else (
-            f'{context.contact.name} owes you Rs.{Decimal(net) / Decimal(100):.2f}.' if net > 0 else
-            f'You owe {context.contact.name} Rs.{Decimal(-net) / Decimal(100):.2f}.'
-        )
+        if net > 0:
+            settlement = f'You owe {context.user.name} ₹{Decimal(net) / Decimal(100):,.2f}.'
+            upi_link = build_upi_link(context.user.upi_id, context.user.name, net, 'AffordAbled balance settlement') \
+                if context.user.upi_id else ''
+        elif net < 0:
+            settlement = f'{context.user.name} owes you ₹{Decimal(-net) / Decimal(100):,.2f}.'
+            upi_link = ''
+        else:
+            settlement = 'Neither of you owes the other after offsetting these amounts.'
+            upi_link = ''
+        all_detail_lines = [
+            'Outstanding split details:',
+            *[
+                f"- {entry['title']}: "
+                f"{'you owe' if entry['direction'] == 'by_you' else 'they owe you'} "
+                f"₹{Decimal(entry['remaining_paise']) / Decimal(100):,.2f}"
+                for entry in balance.get('entries', []) if int(entry.get('remaining_paise') or 0) > 0
+            ],
+        ]
+        visible_detail_lines = all_detail_lines[:11]
+        if len(all_detail_lines) > 11:
+            visible_detail_lines.append(
+                f"Showing 10 of {len(all_detail_lines) - 1} unpaid split records. "
+                'Open the payment page to view the complete settlement history.'
+            )
         message = (
             f'Hi {context.contact.name},\n\n{context.user.name} shared your current AffordAbled balance summary.\n\n'
-            f'You owe {context.user.name}: Rs.{Decimal(owed) / Decimal(100):.2f}\n'
-            f'{context.user.name} owes you: Rs.{Decimal(you_owe) / Decimal(100):.2f}\n'
+            f'You owe {context.user.name}: ₹{Decimal(owed) / Decimal(100):,.2f}\n'
+            f'{context.user.name} owes you: ₹{Decimal(you_owe) / Decimal(100):,.2f}\n\n'
             f'Net settlement: {settlement}\n\n'
-            'This summary includes only currently outstanding split records; paid records are not included.\n\n'
+            + '\n'.join(visible_detail_lines) + '\n\n'
+            'This summary reflects outstanding balances when the email was requested. '
+            'Fully settled records are excluded. If you have already paid, '
+            'please contact the sender to update their records.\n\n'
             'This is an automated message from AffordAbled. Please do not reply to this email.'
         )
         now = now or datetime.now(UTC)
@@ -126,11 +163,21 @@ class SplitNotificationService:
             user_id=user_id, contact_id=contact_id, idempotency_key=idempotency_key,
             recipient_name=context.contact.name, recipient_email=context.contact.email,
             amount_paise=abs(net), message_body=message,
-            upi_link='', provider=self.provider_name, now=now, max_per_user_daily=self.max_per_user_daily,
+            upi_link=upi_link, provider=self.provider_name,
+            settlement_details='\n'.join(all_detail_lines[1:]), now=now,
+            max_per_user_daily=self.max_per_user_daily,
+            cooldown=timedelta(hours=self.cooldown_hours), max_notifications=self.max_per_split,
+            bypass_limits=context.user.account_tier == 'test',
         )
         if result.blocked_reason:
             raise SplitNotificationError(
-                'daily_limit_reached', 'Your daily notification limit has been reached.', status_code=429,
+                result.blocked_reason, {
+                    'request_in_progress': 'A balance summary for this person is already queued.',
+                    'cooldown_active': 'Wait before emailing this person another balance summary.',
+                    'person_limit_reached': 'This person has reached the balance summary reminder limit.',
+                    'daily_limit_reached': 'Your daily notification limit has been reached.',
+                }.get(result.blocked_reason, 'This reminder cannot be sent right now.'), status_code=429,
+                next_available_at=result.next_available_at,
             )
         return result.notification
 
@@ -240,12 +287,18 @@ class SplitNotificationService:
         if parsed.scheme != 'upi' or parsed.netloc != 'pay':
             return None
         params = dict(parse_qsl(parsed.query))
+        settlement_details = (
+            [line.strip() for line in notification.settlement_details.splitlines() if line.strip()]
+            if notification.settlement_details else
+            [line[2:].strip() for line in notification.message_body.splitlines() if line.startswith('- ')]
+        )
         return {
             'upi_link': notification.upi_link,
             'amount_paise': notification.amount_paise,
             'payee_upi_id': params.get('pa', ''),
             'payee_name': params.get('pn', ''),
             'recipient_name': notification.recipient_name,
+            'settlement_details': settlement_details,
         }
 
     async def status_split(

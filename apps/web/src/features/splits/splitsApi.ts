@@ -152,13 +152,21 @@ const splitsApi = apiClient.injectEndpoints({
       query: (body) => ({ url: '/splits/balances/settle', method: 'POST', body }),
       invalidatesTags: ['Split', 'Transaction', 'Account', 'Category'],
     }),
+    getBalanceEmailStatus: builder.query<{
+      can_notify: boolean; blocked_reason: string | null; next_available_at: string | null;
+      notification_count: number; max_notifications: number; request_in_progress: boolean; server_now: string;
+      limits_bypassed: boolean;
+    }, string>({
+      query: (contactId) => `/splits/balances/${contactId}/email-status`,
+      providesTags: (_result, _error, contactId) => [{ type: 'SplitNotification', id: contactId }],
+    }),
     queueBalanceStatement: builder.mutation<{ notification_id: string; status: string; created_at: string }, {
       contactId: string; idempotencyKey: string;
     }>({
       query: ({ contactId, idempotencyKey }) => ({
         url: `/splits/balances/${contactId}/email`, method: 'POST', headers: { 'Idempotency-Key': idempotencyKey },
       }),
-      invalidatesTags: ['SplitNotification'],
+      invalidatesTags: (_result, _error, { contactId }) => [{ type: 'SplitNotification', id: contactId }],
     }),
     listSplitContacts: builder.query<string[], void>({ query: () => '/splits/contacts', providesTags: ['Split'] }),
     listSplitContactDetails: builder.query<SplitContactDetails[], void>({
@@ -268,6 +276,7 @@ const splitsApi = apiClient.injectEndpoints({
 export const {
   useListSplitsQuery, useListPersonSplitBalancesQuery, useSettlePersonSplitBalanceMutation,
   useQueueBalanceStatementMutation,
+  useGetBalanceEmailStatusQuery,
   useListSplitContactsQuery, useCreateSplitMutation, useCreateOwedMutation,
   useSettleSplitParticipantMutation,
   useDeleteSplitMutation, useUpdateSplitMutation, useRepaySplitParticipantMutation,

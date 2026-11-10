@@ -96,6 +96,19 @@ async def list_notification_statuses(
     return result
 
 
+@router.get('/balances/{contact_id}/email-status', response_model=dict)
+async def balance_email_status(
+    contact_id: uuid.UUID, response: Response,
+    current_user: User = Depends(get_current_user),
+    service: SplitNotificationService = Depends(get_split_notification_service),
+) -> dict:
+    response.headers['Cache-Control'] = 'private, no-store'
+    try:
+        return await service.balance_statement_status(current_user.id, contact_id)
+    except SplitNotificationError as error:
+        raise _notification_http_error(error) from error
+
+
 @router.post('/balances/{contact_id}/email', response_model=SplitNotificationQueueResponse,
              status_code=status.HTTP_202_ACCEPTED)
 async def queue_balance_statement(

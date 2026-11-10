@@ -31,14 +31,16 @@ async def run_split_notification_batch_once(
             batch_size=max(1, batch_size), stale_after_seconds=max(30, stale_after_seconds), channel=channel,
         )
         for notification in claimed:
-            # Aggregate balance statements intentionally have no split and no UPI payment link.
-            # A queued split reminder can also lose its FK when a split is removed; that must be cancelled below.
-            if notification.split_id is None and channel == 'email' and not notification.upi_link:
+            # Aggregate balance statements have no split or participant FK. A queued split reminder can also
+            # lose its split FK, but retains its participant FK and is cancelled below.
+            if notification.split_id is None and notification.split_participant_id is None and channel == 'email':
                 try:
                     email = render_balance_statement_email(
                         subject=notification.email_subject or 'AffordAbled: your current balance summary',
-                        plain_text=notification.message_body, contact_name=notification.recipient_name,
-                        creator_name='', app_url=app_url or None,
+                        plain_text=notification.message_body,
+                        pay_url=(f'{pay_base_url.rstrip("/")}/api/v1/pay/{notification.id}'
+                                 if pay_base_url and notification.upi_link else None),
+                        app_url=app_url or None,
                     )
                     result = await provider.send(
                         recipient_email=notification.recipient_email, email=email, notification_id=notification.id,

@@ -12,7 +12,6 @@ import {
   useRecordSplitPaymentMutation,
   useDeleteSplitMutation, useUpdateSplitMutation,
   useListPersonSplitBalancesQuery, useSettlePersonSplitBalanceMutation,
-  useQueueBalanceStatementMutation,
   useListSplitContactDetailsQuery, useSetSplitContactDetailsMutation, useDeleteSplitContactDetailsMutation,
   useListSplitNotificationStatusesQuery,
   type CreateSplitRequest, type PersonSplitBalance, type Split,
@@ -23,6 +22,7 @@ import { useListTransactionsQuery } from '../../features/transactions/transactio
 import { formatPaiseAsInr } from '../../lib/money';
 import { ComplexSettlementPlanner } from './ComplexSettlementPlanner';
 import { NotificationConfirmDialog } from './NotificationConfirmDialog';
+import { BalanceEmailButton } from './BalanceEmailButton';
 
 type Person = { name: string; amount: string | null; isNew: boolean };
 type ManagedPerson = {
@@ -201,7 +201,6 @@ export function SplitsPage() {
   const [repay, { isLoading: repaying }] = useRepaySplitParticipantMutation();
   const [recordSplitPayment, { isLoading: recordingSplitPayment }] = useRecordSplitPaymentMutation();
   const [settlePersonBalance, { isLoading: settlingPersonBalance }] = useSettlePersonSplitBalanceMutation();
-  const [queueBalanceStatement, { isLoading: sendingBalanceStatement }] = useQueueBalanceStatementMutation();
   const [repaySettlementTransfer, { isLoading: repayingTransfer }] = useRepaySettlementTransferMutation();
   const [settlePlanTransfer] = useSettleSettlementPlanTransferMutation();
   const [deleteSplit, { isLoading: deleting }] = useDeleteSplitMutation();
@@ -880,22 +879,16 @@ export function SplitsPage() {
             }}>{balance.net_paise === 0 ? 'Review offset' : 'Settle balance'}</button>
           {(() => {
             const contact = contactDetails.find((item) => item.name.trim().toLowerCase() === balance.person.trim().toLowerCase());
-            return <button type='button' disabled={sendingBalanceStatement}
-              className='mt-2 w-full rounded-lg border border-[var(--brand-primary)]/40 px-3 py-1.5 text-xs font-semibold text-[var(--brand-primary)] disabled:opacity-50'
+            if (contact?.email) return <BalanceEmailButton contactId={contact.id} name={balance.person}
+              onFeedback={setNotificationFeedback} />;
+            return <button type='button'
+              className='mt-2 w-full rounded-lg border border-[var(--brand-primary)]/40 px-3 py-1.5 text-xs font-semibold text-[var(--brand-primary)]'
               onClick={() => {
-                if (!contact?.email) {
-                  setManagePeopleOpen(true);
-                  if (contact) editContact({ id: contact.id, contactId: contact.id, name: contact.name,
-                    phone_e164: contact.phone_e164, email: contact.email });
-                  setContactFeedback(`Add ${balance.person}'s email to send their current balance summary.`);
-                  return;
-                }
-                void queueBalanceStatement({ contactId: contact.id, idempotencyKey: crypto.randomUUID() }).unwrap()
-                  .then(() => setNotificationFeedback(`Current balance summary queued for ${balance.person}.`))
-                  .catch((failure) => setNotificationFeedback(detail(failure)));
-              }}>
-              {contact?.email ? 'Email balance summary' : 'Add email to send summary'}
-            </button>;
+                setManagePeopleOpen(true);
+                if (contact) editContact({ id: contact.id, contactId: contact.id, name: contact.name,
+                  phone_e164: contact.phone_e164, email: contact.email });
+                setContactFeedback(`Add ${balance.person}'s email to send their current balance summary.`);
+              }}>Add email to send summary</button>;
           })()}
         </li>)}
       </ul>

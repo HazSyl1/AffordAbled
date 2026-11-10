@@ -214,15 +214,36 @@ def render_payment_request_email(
     )
 
 
-def render_balance_statement_email(*, subject: str, plain_text: str, contact_name: str,
-                                   creator_name: str, app_url: str | None = None) -> RenderedEmail:
+def render_balance_statement_email(*, subject: str, plain_text: str,
+                                   pay_url: str | None = None, app_url: str | None = None) -> RenderedEmail:
     """A concise, branded statement containing only the current net balance."""
-    safe_contact = escape(contact_name)
-    safe_creator = escape(creator_name)
-    safe_body = escape(plain_text).replace('\n', '<br />')
+    # The saved text already contains the greeting, sender, summary, and footer.
+    # Render each paragraph once so HTML and plain-text recipients see the same message.
+    paragraphs = []
+    for paragraph in plain_text.split('\n\n'):
+        if paragraph.startswith('This is an automated message from AffordAbled.'):
+            continue
+        safe_paragraph = escape(paragraph).replace('\n', '<br />')
+        if paragraph.startswith('You owe ') and '\n' in paragraph:
+            paragraphs.append(f'<div style="margin:24px 0;background:{BRAND_PURPLE_LIGHT};border-radius:12px;padding:22px;font-size:17px;line-height:30px;">{safe_paragraph}</div>')
+        elif paragraph.startswith('Net settlement:'):
+            paragraphs.append(f'<p style="margin:24px 0;font-size:17px;font-weight:700;color:#4c1d95;line-height:26px;">{safe_paragraph}</p>')
+        elif paragraph.startswith('Outstanding split details:'):
+            paragraphs.append(f'<div style="margin:20px 0;background:#faf9fb;border:1px solid #eeeaf2;border-radius:12px;padding:18px;font-size:14px;line-height:24px;">{safe_paragraph}</div>')
+        else:
+            paragraphs.append(f'<p style="margin:0 0 18px;font-size:14px;line-height:23px;">{safe_paragraph}</p>')
+    safe_body = ''.join(paragraphs)
     safe_app_url = escape(app_url, quote=True) if app_url else None
-    cta = (f'<p style="margin:24px 0 0;"><a href="{safe_app_url}" style="color:#ffffff;background:{BRAND_PURPLE};'
-           'padding:12px 20px;border-radius:9px;text-decoration:none;font-weight:700;">Open AffordAbled</a></p>') if safe_app_url else ''
+    safe_pay_url = escape(pay_url, quote=True) if pay_url else None
+    payment_cta = (f'<p style="margin:24px 0 0;"><a href="{safe_pay_url}" style="color:#ffffff;background:{BRAND_PURPLE};'
+           'padding:12px 20px;border-radius:9px;text-decoration:none;font-weight:700;">Check settlement and Pay</a></p>'
+           '<p style="margin-top:10px;color:#7c7485;font-size:12px;line-height:18px;">The payment page also includes a QR code.</p>') if safe_pay_url else ''
+    cta = payment_cta
+    footer = f'''<tr><td align="center" style="background:{BRAND_PURPLE_LIGHT};border-top:1px solid #eeeaf2;padding:26px 28px;">
+      <div style="color:#4c1d95;font-size:16px;font-weight:800;">Meet AffordAbled</div>
+      <div style="margin-top:8px;color:#4b5563;font-size:13px;line-height:20px;">Your personal AI wallet. Track accounts, log expenses by chat or receipt, split bills, and manage settlements.</div>
+      {f'<div style="margin-top:12px;font-size:14px;"><a href="{safe_app_url}" style="display:inline-block;background:#ffffff;color:{BRAND_PURPLE};border:2px solid {BRAND_PURPLE};text-decoration:none;font-size:14px;font-weight:700;padding:10px 24px;border-radius:10px;">Try AffordAbled free &rarr;</a></div>' if safe_app_url else ''}
+    </td></tr><tr><td align="center" style="background:#faf9fb;border-top:1px solid #eeeaf2;padding:22px 28px;color:#7c7485;font-size:12px;line-height:19px;">This is an automated message from AffordAbled.<br />Please do not reply to this email.</td></tr>'''
     return RenderedEmail(
         subject=subject,
         plain_text=plain_text,
@@ -230,9 +251,7 @@ def render_balance_statement_email(*, subject: str, plain_text: str, contact_nam
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td align="center" style="padding:30px 12px;">
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:600px;background:#fff;border:1px solid #e8e3ee;border-radius:18px;overflow:hidden;">
           <tr><td style="background:{BRAND_PURPLE};padding:20px 28px;color:#fff;font-size:22px;font-weight:700;"><img src="cid:{LOGO_CONTENT_ID}" width="34" height="34" alt="" style="vertical-align:middle;margin-right:10px;border-radius:8px;" />AffordAbled</td></tr>
-          <tr><td style="padding:32px;"><p style="margin-top:0;font-size:16px;">Hi {safe_contact},</p><p style="color:#4b5563;line-height:24px;">{safe_creator} shared your current balance summary.</p>
-          <div style="margin-top:22px;background:{BRAND_PURPLE_LIGHT};border-radius:12px;padding:20px;color:#374151;font-size:15px;line-height:24px;">{safe_body}</div>{cta}
-          <p style="margin:26px 0 0;color:#7c7485;font-size:12px;line-height:18px;">This is an automated message from AffordAbled. Please do not reply to this email.</p></td></tr>
+          <tr><td style="padding:32px;">{safe_body}{cta}</td></tr>{footer}
           </table></td></tr></table></body></html>''',
         inline_attachments=(InlineEmailAttachment(
             name='affordabled-logo.png', content_type='image/png', content=build_affordabled_logo_png(),
