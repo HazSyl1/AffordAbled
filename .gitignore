@@ -45,6 +45,7 @@ apps/web/ios/App/build/
 **/*.log
 .deepeval-results/
 **/.deepeval/
+**/.performance/
 apps/web/dev_out.log
 apps/web/dev_err.log
 

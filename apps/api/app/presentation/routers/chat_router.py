@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi.responses import StreamingResponse
 
 from app.application.services.chat_service import ChatService
 from app.application.services.image_service import ImageService
@@ -18,6 +20,11 @@ from app.core.dependencies import (
     get_user_usage_service,
 )
 from app.domain.entities import User
+from app.infrastructure.chat_turn_scheduler_signal import (
+    publish_chat_turn_status,
+    wait_for_chat_turn_status,
+    wake_chat_turn_scheduler,
+)
 from app.infrastructure.database.models import ChatTurnJobModel
 from app.infrastructure.database.repositories.sqlalchemy_chat_turn_job_repository import (
     ChatTurnConflictError,
@@ -63,6 +70,8 @@ def _turn_status_response(job: ChatTurnJobModel) -> ChatTurnStatusResponse:
         error_message=job.error_message,
         created_at=job.created_at,
         updated_at=job.updated_at,
+        claimed_at=job.claimed_at,
+        completed_at=job.completed_at,
     )
 
 
@@ -88,6 +97,8 @@ async def submit_chat_turn(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except UsageLimitExceeded as exc:
         raise _quota_http_error(exc) from exc
+    wake_chat_turn_scheduler()
+    publish_chat_turn_status(str(job.id))
     return _turn_status_response(job)
 
 
@@ -101,6 +112,37 @@ async def get_chat_turn_status(
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Chat turn not found')
     return _turn_status_response(job)
+
+
+@router.get('/turns/{turn_id}/events', include_in_schema=False)
+async def stream_chat_turn_status(
+    turn_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    repository: SqlAlchemyChatTurnJobRepository = Depends(get_chat_turn_job_repository),
+) -> StreamingResponse:
+    """Authenticated status stream with DB rechecks for restart/process recovery."""
+    async def events():
+        last_payload = None
+        while True:
+            job = await repository.get_for_user_fresh(current_user.id, turn_id)
+            if job is None:
+                yield 'event: error\ndata: {"error":"not_found"}\n\n'
+                return
+            payload = _turn_status_response(job).model_dump(mode='json')
+            serialized = json.dumps(payload, separators=(',', ':'))
+            if serialized != last_payload:
+                yield f'event: status\ndata: {serialized}\n\n'
+                last_payload = serialized
+            if job.status in {'succeeded', 'failed'}:
+                return
+            changed = await wait_for_chat_turn_status(str(turn_id), timeout_seconds=1)
+            if not changed:
+                yield ': keepalive\n\n'
+
+    return StreamingResponse(
+        events(), media_type='text/event-stream',
+        headers={'Cache-Control': 'no-cache, no-store', 'X-Accel-Buffering': 'no'},
+    )
 
 
 @router.post("", response_model=ChatResponse, status_code=status.HTTP_200_OK)

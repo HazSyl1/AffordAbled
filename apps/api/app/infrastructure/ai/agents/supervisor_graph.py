@@ -8,6 +8,7 @@ from collections import Counter
 from collections.abc import Mapping
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
+from time import perf_counter
 from typing import Annotated, Any, Literal, TypedDict
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -1307,6 +1308,34 @@ def _fast_route_specialist(task: str) -> str | None:
     return specialist
 
 
+def _is_simple_account_balance_request(request: str) -> bool:
+    """Recognise the narrow read-only balance request we can answer without an LLM.
+
+    This intentionally favours false negatives: anything involving a named
+    account, transactions, spending, splits, comparison, or a second request
+    remains on the normal agent path.
+    """
+    normalized = " ".join(request.casefold().split())
+    if not normalized or _explicit_action_clauses(request) or _split_task_for_request(request):
+        return False
+    if re.search(r"\b(?:then|after that|also|and)\b", normalized):
+        return False
+    if re.search(
+        r"\b(?:transaction|history|spend(?:ing|t)?|paid|income|expense|split|owe|owed|"
+        r"settle|compare|budget|transfer|create|add|delete|update|rename)\b",
+        normalized,
+    ):
+        return False
+    # A named-account request needs the normal analytics path, which can apply
+    # its exact-name and ambiguity handling.
+    if re.search(r"\b(?:of|for|in)\s+(?:my\s+)?[\w -]{1,40}\s+account\s+balances?\b", normalized):
+        return False
+    return bool(
+        re.search(r"\baccount\s+balances?\b", normalized)
+        or re.search(r"\b(?:my|current|all)\s+balances?\b", normalized)
+    )
+
+
 def _is_receipt_upload_request(request: str) -> bool:
     """Identify the generated first-stage receipt task, before split consent."""
     normalized = request.casefold()
@@ -1691,6 +1720,7 @@ class AgentGraphState(TypedDict, total=False):
     final_response: str | None
     last_transaction_window: dict[str, str]
     active_turn_id: str | None
+    fast_path: str | None
 
 
 class AgenticSupervisorGraph:
@@ -1820,13 +1850,19 @@ class AgenticSupervisorGraph:
             ),
         }
         graph = StateGraph(AgentGraphState)
-        graph.add_node("guardrails", self._guardrails)
-        graph.add_node("supervisor", self._supervise)
+        graph.add_node("guardrails", self._timed_guardrails)
+        graph.add_node("fast_account_balances", self._fast_account_balances)
+        graph.add_node("supervisor", self._timed_supervise)
         graph.add_node("memory_review_gate", self._memory_review_gate)
         for name in self._specialists:
             graph.add_node(name, self._specialists[name].build_persistent_subgraph(AgentGraphState))
         graph.add_edge(START, "guardrails")
-        graph.add_conditional_edges("guardrails", self._after_guardrails, {"supervisor": "supervisor", END: END})
+        graph.add_conditional_edges(
+            "guardrails",
+            self._after_guardrails,
+            {"fast_account_balances": "fast_account_balances", "supervisor": "supervisor", END: END},
+        )
+        graph.add_edge("fast_account_balances", END)
         graph.add_conditional_edges(
             "supervisor",
             self._after_supervisor,
@@ -2019,15 +2055,77 @@ class AgenticSupervisorGraph:
                 "reroutes": 0,
                 "final_response": None,
                 "next_specialist": None,
+                "fast_path": None,
             },
             config=config,
         )
+
+    async def _timed_guardrails(self, state: AgentGraphState) -> dict[str, Any]:
+        started = perf_counter()
+        result = await self._guardrails(state)
+        logger.info('chat.graph.guardrail.completed', extra={
+            'turn_id': str(state.get('active_turn_id') or ''),
+            'duration_ms': round((perf_counter() - started) * 1000, 2),
+        })
+        return result
+
+    async def _timed_supervise(self, state: AgentGraphState) -> dict[str, Any]:
+        started = perf_counter()
+        result = await self._supervise(state)
+        logger.info('chat.graph.supervisor.completed', extra={
+            'turn_id': str(state.get('active_turn_id') or ''),
+            'duration_ms': round((perf_counter() - started) * 1000, 2),
+            'next_specialist': result.get('next_specialist'),
+        })
+        return result
 
     async def _guardrails(self, state: AgentGraphState) -> dict[str, Any]:
         assessment = await self._guardrail.assess(str(state["messages"][-1].content))
         if assessment.decision == GuardrailDecision.BLOCK:
             return {"final_response": "I can only help with personal-finance requests.", "tasks_completed": False}
+        if (
+            not state.get("task_queue")
+            and not state.get("completed_tasks")
+            and not state.get("contextual_followup")
+            and _is_simple_account_balance_request(str(state["messages"][-1].content))
+        ):
+            return {"fast_path": "account_balances"}
         return {}
+
+    async def _fast_account_balances(self, state: AgentGraphState) -> dict[str, Any]:
+        """Read active balances directly, while retaining the normal graph checkpoint."""
+        started = perf_counter()
+        if self._account_service is None:
+            return {"final_response": "I could not load your account balances.", "tasks_completed": False}
+
+        accounts = await self._account_service.list_accounts(uuid.UUID(state["user_id"]))
+        active_accounts = [account for account in accounts if account.is_active]
+        if not active_accounts:
+            reply = "You do not have any active accounts yet. Add an account and I can show its balance here."
+        else:
+            active_accounts.sort(key=lambda account: (not account.is_default, account.name.casefold()))
+            lines = ["Here are your current account balances:"]
+            for account in active_accounts:
+                amount = Decimal(int(account.balance_paise)) / 100
+                lines.append(f"- {account.name}: {account.currency} {amount:,.2f}")
+            reply = "\n".join(lines)
+
+        logger.info("chat.fast_path.account_balances.completed", extra={
+            "turn_id": str(state.get("active_turn_id") or ""),
+            "duration_ms": round((perf_counter() - started) * 1000, 2),
+            "account_count": len(active_accounts),
+        })
+        return {
+            "final_response": reply,
+            "tasks_completed": True,
+            "show_completion_popup": False,
+            "results": [{
+                "specialist": "analytics",
+                "status": "success",
+                "summary": reply,
+                "data": {"accounts": [{"id": str(account.id)} for account in active_accounts]},
+            }],
+        }
 
     @staticmethod
     async def _memory_review_gate(state: AgentGraphState) -> dict[str, Any]:
@@ -2070,8 +2168,12 @@ class AgenticSupervisorGraph:
         }
 
     @staticmethod
-    def _after_guardrails(state: AgentGraphState) -> Literal["supervisor", "__end__"]:
-        return END if state.get("final_response") else "supervisor"
+    def _after_guardrails(state: AgentGraphState) -> Literal["fast_account_balances", "supervisor", "__end__"]:
+        if state.get("final_response"):
+            return END
+        if state.get("fast_path") == "account_balances":
+            return "fast_account_balances"
+        return "supervisor"
 
     async def _supervise(self, state: AgentGraphState) -> dict[str, Any]:
         categories = (

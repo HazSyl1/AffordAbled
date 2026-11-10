@@ -4,6 +4,7 @@ import json
 import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -32,6 +33,7 @@ from app.infrastructure.ai.agents.supervisor_graph import (
     _is_complex_settlement_request,
     _is_owed_payment_request,
     _is_receipt_upload_request,
+    _is_simple_account_balance_request,
     _latest_current_datetime,
     _matches_observed_action,
     _obvious_specialist,
@@ -128,6 +130,25 @@ def test_complex_group_bill_routes_to_review_before_transaction() -> None:
     assert _is_complex_settlement_request(request)
     assert _obvious_specialist(request) == 'split'
     assert _required_tools(request, 'split') == {'create_settlement_draft'}
+
+
+@pytest.mark.parametrize("user_message", [
+    "Show my account balances",
+    "What are my current balances?",
+    "List all balances",
+])
+def test_simple_account_balance_request_is_eligible_for_deterministic_fast_path(user_message: str) -> None:
+    assert _is_simple_account_balance_request(user_message)
+
+
+@pytest.mark.parametrize("user_message", [
+    "Show my account balances and recent transactions",
+    "What is the balance for my HDFC account?",
+    "Compare my current balances",
+    "Show my spending balance",
+])
+def test_non_simple_balance_request_stays_on_normal_agent_path(user_message: str) -> None:
+    assert not _is_simple_account_balance_request(user_message)
     assert not _is_complex_settlement_request('spent 90 on food')
 
 
@@ -609,6 +630,50 @@ def _graph(llm: NativeTestLlm | None = None) -> AgenticSupervisorGraph:
         transaction_service=None,  # type: ignore[arg-type]
         query_tools=None,  # type: ignore[arg-type]
     )
+
+
+class _BalanceAccountService:
+    async def list_accounts(self, _user_id: uuid.UUID) -> list[SimpleNamespace]:
+        return [
+            SimpleNamespace(
+                id=uuid.uuid4(), name="Wallet", currency="INR", balance_paise=125050,
+                is_active=True, is_default=True,
+            ),
+            SimpleNamespace(
+                id=uuid.uuid4(), name="Old account", currency="INR", balance_paise=9900,
+                is_active=False, is_default=False,
+            ),
+        ]
+
+
+@pytest.mark.asyncio
+async def test_simple_balance_request_skips_supervisor_and_specialist_llms() -> None:
+    llm = NativeTestLlm()
+    graph = _graph(llm)
+    graph._account_service = _BalanceAccountService()  # type: ignore[assignment]
+
+    result = await graph.invoke(
+        user_id=uuid.uuid4(), thread_id="balance-fast-path", message="Show my account balances",
+    )
+
+    assert result["tasks_completed"] is True
+    assert result["final_response"] == "Here are your current account balances:\n- Wallet: INR 1,250.50"
+    assert result["results"][-1]["specialist"] == "analytics"
+    assert llm.bound_inputs == []
+
+
+@pytest.mark.asyncio
+async def test_simple_balance_request_does_not_replace_a_pending_task() -> None:
+    graph = _graph()
+
+    result = await graph._guardrails({  # type: ignore[arg-type]
+        "messages": [HumanMessage(content="Show my account balances")],
+        "task_queue": ["Log the expense after the user selects a category"],
+        "completed_tasks": [],
+        "contextual_followup": False,
+    })
+
+    assert result == {}
 
 
 @pytest.mark.asyncio

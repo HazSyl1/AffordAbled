@@ -1211,8 +1211,16 @@ class ToolBoundSpecialistRuntime:
                 str(state.get("task_request") or "")
             ):
                 active_model = quantity_split_model
+            started = time.perf_counter()
+            response = await active_model.ainvoke(state["specialist_messages"])
+            logger.info('chat.graph.specialist_llm.completed', extra={
+                'turn_id': str(state.get('active_turn_id') or ''),
+                'specialist': self.name,
+                'iteration': steps + 1,
+                'duration_ms': round((time.perf_counter() - started) * 1000, 2),
+            })
             return {
-                "specialist_messages": [await active_model.ainvoke(state["specialist_messages"])],
+                "specialist_messages": [response],
                 "specialist_steps": steps + 1,
             }
 
@@ -1312,7 +1320,14 @@ class ToolBoundSpecialistRuntime:
                 if str(answer).strip().casefold() not in {"yes", "y", "confirm", "confirmed", "proceed"}:
                     return json.dumps({"ok": False, "error": "destructive_action_not_confirmed"})
                 values["confirmed"] = True
+            started = time.perf_counter()
             observation = await self._call_handler(context, name, handler, values)
+            logger.info('chat.graph.tool.completed', extra={
+                'turn_id': str(state.get('active_turn_id') or ''),
+                'specialist': self.name,
+                'tool': name,
+                'duration_ms': round((time.perf_counter() - started) * 1000, 2),
+            })
             return json.dumps(observation.model_dump(), default=str)
 
         return StructuredTool.from_function(

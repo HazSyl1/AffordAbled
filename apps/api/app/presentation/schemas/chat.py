@@ -59,6 +59,8 @@ class ChatTurnStatusResponse(BaseModel):
     error_message: str | None = None
     created_at: datetime
     updated_at: datetime
+    claimed_at: datetime | None = None
+    completed_at: datetime | None = None
 
 
 class VoiceTranscriptionResponse(BaseModel):
