@@ -35,6 +35,11 @@ htmlcov/
 **/.pnpm-store/
 **/.yarn/
 
+# Capacitor native build artifacts
+apps/web/android/app/build/
+apps/web/ios/App/Pods/
+apps/web/ios/App/build/
+
 # Logs / runtime files
 **/logs/
 **/*.log

@@ -9,6 +9,7 @@ import { Input } from '../../components/atoms/Input';
 import { FormField } from '../../components/molecules/FormField';
 import { AuthPageShell } from '../../components/molecules/AuthPageShell/AuthPageShell';
 import { useLoginMutation } from '../../features/auth/authApi';
+import { persistAccessToken } from '../../features/auth/authStorage';
 import { setCredentials } from '../../features/auth/authSlice';
 import { setAuthNotice } from '../../features/auth/authSlice';
 import { useAppDispatch, useAppSelector } from '../../app/hooks';
@@ -60,6 +61,7 @@ export function LoginPage() {
     try {
       const result = await login(values).unwrap();
       dispatch(apiClient.util.resetApiState());
+      await persistAccessToken(result.access_token);
       dispatch(setCredentials({ accessToken: result.access_token }));
       navigate('/dashboard', { replace: true });
     } catch (error) {

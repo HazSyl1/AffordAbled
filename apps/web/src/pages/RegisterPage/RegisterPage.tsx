@@ -10,6 +10,7 @@ import { FormField } from '../../components/molecules/FormField';
 import { AuthPageShell } from '../../components/molecules/AuthPageShell/AuthPageShell';
 import { AUTH_UI_TEXT } from '../../constants';
 import { useRegisterMutation } from '../../features/auth/authApi';
+import { persistAccessToken } from '../../features/auth/authStorage';
 import { setCredentials } from '../../features/auth/authSlice';
 import { registerSchema } from './RegisterPage.schema';
 import type { RegisterFormValues } from './RegisterPage.schema';
@@ -32,6 +33,7 @@ export function RegisterPage() {
     try {
       const result = await registerUser(values).unwrap();
       dispatch(apiClient.util.resetApiState());
+      await persistAccessToken(result.access_token);
       dispatch(setCredentials({ accessToken: result.access_token }));
       navigate('/dashboard', { replace: true });
     } catch {

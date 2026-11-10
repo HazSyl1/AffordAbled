@@ -21,7 +21,7 @@ export function AccountsPage() {
 
   return (
     <div className='mx-auto w-full max-w-[1100px] px-4 py-4 md:px-6 md:py-6'>
-      <header className='sticky top-[env(safe-area-inset-top)] z-10 -mx-4 mb-5 border-b border-[var(--bg-border)] bg-[color:rgba(9,9,11,0.9)] px-4 py-4 backdrop-blur-xl md:static md:mx-0 md:border-none md:bg-transparent md:px-0 md:py-0'>
+      <header className='-mx-4 mb-5 border-b border-[var(--bg-border)] bg-[color:rgba(9,9,11,0.9)] px-4 py-4 backdrop-blur-xl md:mx-0 md:border-none md:bg-transparent md:px-0 md:py-0'>
         <div className='flex items-start justify-between gap-3'>
           <div>
             <h1 className='text-xl font-bold text-[var(--text-primary)]'>Accounts</h1>

@@ -773,7 +773,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
   };
 
   return (
-    <div className='flex h-[calc(100vh-5.5rem)] w-full flex-col px-4 py-4 md:h-[calc(100vh-2rem)] md:px-4 md:pb-0 md:pt-0'>
+    <div className='flex h-[calc(100dvh-env(safe-area-inset-top)-4rem-env(safe-area-inset-bottom))] min-h-0 w-full flex-col overflow-hidden px-4 py-4 md:h-[calc(100vh-2rem)] md:px-4 md:pb-0 md:pt-0'>
       <header className='mb-4 md:hidden'>
         <div>
           <h1 className='text-xl font-bold text-[var(--text-primary)]'>Finance Chat</h1>

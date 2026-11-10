@@ -750,7 +750,7 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
 
   return (
     <div className='mx-auto w-full max-w-[1200px] px-4 py-4 md:px-6 md:py-6'>
-      <header className='sticky top-[env(safe-area-inset-top)] z-20 -mx-4 mb-4 border-b border-[var(--bg-border)] bg-[color:rgba(9,9,11,0.8)] px-4 py-4 pt-[calc(1rem+env(safe-area-inset-top))] backdrop-blur-xl md:static md:mx-0 md:mb-5 md:border-none md:bg-transparent md:px-0 md:pt-0'>
+      <header className='-mx-4 mb-4 border-b border-[var(--bg-border)] bg-[color:rgba(9,9,11,0.8)] px-4 py-4 pt-[calc(1rem+env(safe-area-inset-top))] backdrop-blur-xl md:mx-0 md:mb-5 md:border-none md:bg-transparent md:px-0 md:pt-0'>
         <div className='flex items-center justify-between'>
           <div>
             <h1 className='text-lg font-semibold text-[var(--text-secondary)]'>
