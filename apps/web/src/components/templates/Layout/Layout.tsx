@@ -32,6 +32,7 @@ export function Layout({ children }: LayoutProps) {
   const desktopSidebarWidthClass = isDesktopSidebarCollapsed ? 'md:w-16' : 'md:w-56';
   const desktopMainOffsetClass = isDesktopSidebarCollapsed ? 'md:ml-24' : 'md:ml-64';
   const desktopMotionClass = 'md:transition-[width,margin] md:duration-500 md:ease-[cubic-bezier(0.22,1,0.36,1)]';
+  const isChatPage = location.pathname === '/chat';
   const desktopNavItemClass = 'justify-start gap-2 px-3';
   const accountIconClass = 'h-[18px] w-[18px] shrink-0';
   const AccountIcon = ACCOUNTS_NAV_ITEM.icon;
@@ -62,7 +63,7 @@ export function Layout({ children }: LayoutProps) {
   }, [accessToken, currentUser, dispatch, loadMe]);
 
   return (
-    <div className='min-h-screen bg-[var(--bg-app)]'>
+    <div className='min-h-[100dvh] bg-[var(--bg-app)]'>
       <aside
         className={[
           'fixed bottom-4 left-4 top-4 z-30 hidden rounded-3xl border border-[var(--bg-border)] bg-[color:rgba(15,15,17,0.86)] shadow-[0_18px_60px_rgba(0,0,0,0.35)] backdrop-blur-xl md:flex md:flex-col',
@@ -177,7 +178,8 @@ export function Layout({ children }: LayoutProps) {
 
       <main
         className={[
-          'pb-[calc(5rem+env(safe-area-inset-bottom))] md:mr-4 md:pb-0 md:pt-4',
+          isChatPage ? 'pb-0' : 'pb-[calc(5rem+env(safe-area-inset-bottom))]',
+          'md:mr-4 md:pb-0 md:pt-4',
           desktopMotionClass,
           desktopMainOffsetClass,
         ].join(' ')}
@@ -217,10 +219,10 @@ export function Layout({ children }: LayoutProps) {
         </ul>
       </nav>
 
-      {location.pathname !== '/chat' ? <div className='md:hidden'>
+      {!isChatPage ? <div className='md:hidden'>
         <button
           type='button'
-          className='fixed bottom-[88px] right-4 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-[var(--brand-primary)] text-white shadow-[0_4px_20px_rgba(168,85,247,0.4)] active:scale-[0.98]'
+          className='fixed bottom-[calc(4rem+env(safe-area-inset-bottom)+1rem)] right-4 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-[var(--brand-primary)] text-white shadow-[0_4px_20px_rgba(168,85,247,0.4)] active:scale-[0.98]'
           aria-label={LAYOUT_UI_TEXT.openChatAriaLabel}
           onClick={() => navigate('/chat')}
         >
@@ -228,7 +230,7 @@ export function Layout({ children }: LayoutProps) {
         </button>
         <button
           type='button'
-          className='fixed bottom-[152px] right-4 z-40 flex h-11 w-11 items-center justify-center rounded-full border border-[var(--bg-border)] bg-[var(--bg-elevated)] text-[var(--text-secondary)] active:scale-[0.98]'
+          className='fixed bottom-[calc(8.5rem+env(safe-area-inset-bottom))] right-4 z-40 flex h-11 w-11 items-center justify-center rounded-full border border-[var(--bg-border)] bg-[var(--bg-elevated)] text-[var(--text-secondary)] active:scale-[0.98]'
           aria-label={LAYOUT_UI_TEXT.startVoiceAriaLabel}
           onClick={() => {
             const detail = { handled: false };

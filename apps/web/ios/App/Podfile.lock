@@ -1,0 +1,53 @@
+PODS:
+  - AparajitaCapacitorSecureStorage (8.0.1):
+    - Capacitor
+    - KeychainSwift (~> 21.0)
+  - Capacitor (8.6.0):
+    - CapacitorCordova
+  - CapacitorApp (8.1.2):
+    - Capacitor
+  - CapacitorCordova (8.6.0)
+  - CapacitorSplashScreen (8.0.2):
+    - Capacitor
+  - CapacitorStatusBar (8.0.4):
+    - Capacitor
+  - KeychainSwift (21.0.0)
+
+DEPENDENCIES:
+  - "AparajitaCapacitorSecureStorage (from `../../node_modules/@aparajita/capacitor-secure-storage`)"
+  - "Capacitor (from `../../node_modules/@capacitor/ios`)"
+  - "CapacitorApp (from `../../node_modules/@capacitor/app`)"
+  - "CapacitorCordova (from `../../node_modules/@capacitor/ios`)"
+  - "CapacitorSplashScreen (from `../../node_modules/@capacitor/splash-screen`)"
+  - "CapacitorStatusBar (from `../../node_modules/@capacitor/status-bar`)"
+
+SPEC REPOS:
+  trunk:
+    - KeychainSwift
+
+EXTERNAL SOURCES:
+  AparajitaCapacitorSecureStorage:
+    :path: "../../node_modules/@aparajita/capacitor-secure-storage"
+  Capacitor:
+    :path: "../../node_modules/@capacitor/ios"
+  CapacitorApp:
+    :path: "../../node_modules/@capacitor/app"
+  CapacitorCordova:
+    :path: "../../node_modules/@capacitor/ios"
+  CapacitorSplashScreen:
+    :path: "../../node_modules/@capacitor/splash-screen"
+  CapacitorStatusBar:
+    :path: "../../node_modules/@capacitor/status-bar"
+
+SPEC CHECKSUMS:
+  AparajitaCapacitorSecureStorage: 64fcd783a62dce106dd73d54caa2d7232589eabe
+  Capacitor: 62cab4ab4ba04ea925576ddd1be188869e90d9ea
+  CapacitorApp: 7b7e43debe505bc61beedb83796aa1368c86078b
+  CapacitorCordova: 922f0a94dae286165215f0c7cf16fbde662d5ee4
+  CapacitorSplashScreen: 7bf61c2001557ff9e195e601c6b87344480d3c65
+  CapacitorStatusBar: ff844df1f126da6c4fbc4028272425fa3a91e7e3
+  KeychainSwift: 4a71a45c802fd9e73906457c2dcbdbdc06c9419d
+
+PODFILE CHECKSUM: a3181c8c22a602f46d5130b1ed990e2e2fb7a276
+
+COCOAPODS: 1.17.0

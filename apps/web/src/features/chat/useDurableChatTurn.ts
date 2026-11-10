@@ -1,5 +1,7 @@
 import { useCallback, useState } from 'react';
 
+import { useAppDispatch } from '../../app/hooks';
+import { apiClient } from '../../lib/apiClient';
 import {
   type ChatResponse,
   type ChatTurnStatusResponse,
@@ -51,9 +53,14 @@ function permanentRequestError(error: unknown): Error | null {
 }
 
 export function useDurableChatTurn() {
+  const dispatch = useAppDispatch();
   const [submitChatTurn] = useSubmitChatTurnMutation();
   const [getChatTurnStatus] = useLazyGetChatTurnStatusQuery();
   const [isProcessingTurn, setIsProcessingTurn] = useState(false);
+
+  const invalidateFinanceCaches = useCallback(() => {
+    dispatch(apiClient.util.invalidateTags(['Category', 'Transaction', 'Account', 'Split', 'Memory']));
+  }, [dispatch]);
 
   const runTurn = useCallback(async (request: ChatTurnSubmitRequest): Promise<ChatResponse> => {
     setIsProcessingTurn(true);
@@ -73,14 +80,20 @@ export function useDurableChatTurn() {
       }
 
       const immediateResult = completedResult(submitted);
-      if (immediateResult) return immediateResult;
+      if (immediateResult) {
+        invalidateFinanceCaches();
+        return immediateResult;
+      }
 
       while (true) {
         await waitForNextCheck();
         try {
           const current = await getChatTurnStatus(request.turn_id, false).unwrap();
           const result = completedResult(current);
-          if (result) return result;
+          if (result) {
+            invalidateFinanceCaches();
+            return result;
+          }
         } catch (error) {
           if (error instanceof Error) throw error;
           const permanentError = permanentRequestError(error);
@@ -92,7 +105,7 @@ export function useDurableChatTurn() {
     } finally {
       setIsProcessingTurn(false);
     }
-  }, [getChatTurnStatus, submitChatTurn]);
+  }, [getChatTurnStatus, invalidateFinanceCaches, submitChatTurn]);
 
   return { runTurn, isProcessingTurn };
 }

@@ -1,0 +1,40 @@
+// Top-level build file where you can add configuration options common to all sub-projects/modules.
+
+buildscript {
+
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath 'com.android.tools.build:gradle:8.7.2'
+        classpath 'com.google.gms:google-services:4.4.2'
+
+        // NOTE: Do not place your application dependencies here; they belong
+        // in the individual module build.gradle files
+    }
+}
+
+apply from: "variables.gradle"
+
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+
+    // The secure-storage plugin and older AndroidX dependencies can request
+    // different Kotlin stdlib variants. Keep the native dependency graph on
+    // one stdlib version so Gradle does not package duplicate Kotlin classes.
+    configurations.configureEach {
+        resolutionStrategy.eachDependency { dependency ->
+            if (dependency.requested.group == 'org.jetbrains.kotlin') {
+                dependency.useVersion '1.8.22'
+            }
+        }
+    }
+}
+
+task clean(type: Delete) {
+    delete rootProject.buildDir
+}

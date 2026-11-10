@@ -13,6 +13,7 @@ import {
   useUpdateProfileMutation,
 } from '../../features/auth/authApi';
 import { clearCredentials, setUser } from '../../features/auth/authSlice';
+import { clearStoredAccessToken } from '../../features/auth/authStorage';
 import { apiClient } from '../../lib/apiClient';
 import { MemorySuggestionsPanel } from '../../components/molecules/MemorySuggestionsPanel/MemorySuggestionsPanel';
 import { useListAccountsQuery } from '../../features/accounts/accountsApi';
@@ -97,6 +98,7 @@ export function ProfilePage() {
 
   const handleLogout = async () => {
     await logout().unwrap().catch(() => undefined);
+    await clearStoredAccessToken();
     dispatch(clearCredentials());
     dispatch(apiClient.util.resetApiState());
     navigate('/login', { replace: true });

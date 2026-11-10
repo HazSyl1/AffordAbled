@@ -3,6 +3,7 @@ import { createApi, fetchBaseQuery } from '@reduxjs/toolkit/query/react';
 
 import { API_BASE_URL } from './env';
 import type { RootState } from '../app/store';
+import { clearStoredAccessToken, persistAccessToken } from '../features/auth/authStorage';
 import { clearCredentials, setAuthNotice, setCredentials } from '../features/auth/authSlice';
 import { AUTH_UI_TEXT } from '../constants';
 
@@ -41,14 +42,17 @@ const baseQueryWithReauth: BaseQueryFn<string | FetchArgs, unknown, FetchBaseQue
 
     if (refreshResult.data) {
       const { access_token: accessToken } = refreshResult.data as { access_token: string };
+      await persistAccessToken(accessToken);
       api.dispatch(setCredentials({ accessToken }));
       result = await rawBaseQuery(args, api, extraOptions);
       if (result.error?.status === 401) {
+        await clearStoredAccessToken();
         api.dispatch(clearCredentials());
         api.dispatch(setAuthNotice(AUTH_UI_TEXT.sessionExpiredError));
         api.dispatch(apiClient.util.resetApiState());
       }
     } else {
+      await clearStoredAccessToken();
       api.dispatch(clearCredentials());
       if (hadAccessToken) {
         api.dispatch(setAuthNotice(AUTH_UI_TEXT.sessionExpiredError));

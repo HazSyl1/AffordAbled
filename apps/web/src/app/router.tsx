@@ -9,12 +9,18 @@ import { ProfilePage } from '../pages/ProfilePage';
 import { RegisterPage } from '../pages/RegisterPage';
 import { SplitsPage } from '../pages/SplitsPage';
 import { TransactionsPage } from '../pages/TransactionsPage';
+import { PublicOnlyRoute } from './PublicOnlyRoute';
 import { ProtectedRoute } from './ProtectedRoute';
 
 export const router = createBrowserRouter([
-  { path: '/', element: <LandingPage /> },
-  { path: '/login', element: <LoginPage /> },
-  { path: '/register', element: <RegisterPage /> },
+  {
+    element: <PublicOnlyRoute />,
+    children: [
+      { path: '/', element: <LandingPage /> },
+      { path: '/login', element: <LoginPage /> },
+      { path: '/register', element: <RegisterPage /> },
+    ],
+  },
   {
     element: <ProtectedRoute />,
     children: [

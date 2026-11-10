@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 
 import { PageLoader } from '../components/molecules/PageLoader';
 import { useRefreshSessionMutation } from '../features/auth/authApi';
+import { getStoredAccessToken, persistAccessToken } from '../features/auth/authStorage';
 import { setCredentials } from '../features/auth/authSlice';
 import { useAppDispatch } from './hooks';
 
@@ -19,21 +20,29 @@ export function AppInitializer({ children }: { children: ReactNode }) {
   useEffect(() => {
     let isMounted = true;
 
-    refreshSession()
-      .unwrap()
-      .then((result) => {
+    const restoreSession = async () => {
+      const storedAccessToken = await getStoredAccessToken();
+
+      try {
+        const result = await refreshSession().unwrap();
+        await persistAccessToken(result.access_token);
         if (isMounted) {
           dispatch(setCredentials({ accessToken: result.access_token }));
         }
-      })
-      .catch(() => {
-        // No valid session cookie — the user will see the login page.
-      })
-      .finally(() => {
+      } catch {
+        // Capacitor WebViews can lose the refresh cookie between launches.
+        // Fall back to the Keychain/Keystore-backed access token in that case.
+        if (isMounted && storedAccessToken) {
+          dispatch(setCredentials({ accessToken: storedAccessToken }));
+        }
+      } finally {
         if (isMounted) {
           setIsChecking(false);
         }
-      });
+      }
+    };
+
+    void restoreSession();
 
     return () => {
       isMounted = false;
