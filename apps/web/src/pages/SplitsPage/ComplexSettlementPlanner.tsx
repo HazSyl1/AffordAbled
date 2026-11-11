@@ -552,7 +552,7 @@ function PlannerForm({ savedDraft, restoringDraft, reloadDraft, onDraftId }: {
         <button type='button' className={smallButton} onClick={() => setValue('bills', [...bills, newBill()],
           { shouldDirty: true })}>Add bill</button>
         <button type='submit' disabled={previewing || restoringDraft || needsReload}
-          className='min-w-0 rounded-lg bg-[var(--brand-primary)] px-4 py-2 text-center text-sm font-semibold whitespace-normal text-white disabled:opacity-50'>
+          className='min-w-0 rounded-lg bg-[var(--brand-primary)] px-4 py-2 text-center text-sm font-semibold whitespace-normal text-[var(--on-accent)] disabled:opacity-50'>
           {previewing ? 'Calculating…' : restoringDraft ? 'Opening latest preview…' : 'Review settlement'}</button>
       </div>
     </form>
@@ -560,7 +560,7 @@ function PlannerForm({ savedDraft, restoringDraft, reloadDraft, onDraftId }: {
     {needsReload && <button type='button' className={smallButton} onClick={() => {
       void reloadDraft().catch((error: unknown) => setMessage(detail(error)));
     }}>Reload latest preview</button>}
-    {draft && <div className='min-w-0 space-y-4 break-words rounded-xl border border-purple-400/30 p-4'>
+    {draft && <div className='min-w-0 space-y-4 break-words rounded-xl border border-[var(--accent)] p-4'>
       <h3 className='flex items-center gap-2 font-semibold text-[var(--text-primary)]'>
         <CheckCircle2 className='h-4 w-4 text-[var(--brand-primary)]' aria-hidden='true' /> Review {draft.data.title}</h3>
       <p className='text-xs text-[var(--text-muted)]'>This is a preview. Check each bill total, the discounts, who paid, and the final transfers before saving.</p>
@@ -586,7 +586,7 @@ function PlannerForm({ savedDraft, restoringDraft, reloadDraft, onDraftId }: {
       {formState.isDirty && <p className='text-xs text-amber-300'>You changed the form. Review again before saving.</p>}
       {missingWalletDetails && <p className='text-xs text-amber-300'>Choose an account and expense category for each new payment you made, then review again.</p>}
       <button type='button' disabled={confirming || restoringDraft || needsReload || formState.isDirty || missingWalletDetails || draft.status !== 'draft'}
-        className='max-w-full rounded-lg bg-[var(--brand-primary)] px-4 py-2 text-center text-sm font-semibold whitespace-normal text-white disabled:opacity-50'
+        className='max-w-full rounded-lg bg-[var(--brand-primary)] px-4 py-2 text-center text-sm font-semibold whitespace-normal text-[var(--on-accent)] disabled:opacity-50'
         onClick={confirm}>{confirming ? 'Saving…' : 'Save plan and wallet expenses'}</button>
     </div>}
     {plans.length > 0 && <div className='space-y-3 border-t border-[var(--bg-border)] pt-4'>

@@ -5,7 +5,7 @@ export type InputProps = InputHTMLAttributes<HTMLInputElement>;
 
 export const Input = forwardRef<HTMLInputElement, InputProps>(function Input({ className, ...rest }, ref) {
   const classes = [
-    'w-full min-h-12 rounded-xl border border-[var(--bg-border)] bg-[var(--bg-elevated)] px-3 py-3 text-base text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-[var(--brand-primary)] focus:ring-1 focus:ring-[var(--brand-primary)]',
+    'min-h-11 w-full rounded-[var(--input-radius)] border border-[color:var(--border)] bg-[var(--surface)] px-3 py-2.5 text-base text-[var(--ink)] shadow-[var(--shadow-inset)] outline-none transition-[border-color,box-shadow] duration-200 placeholder:text-[var(--ink-muted)] focus:border-[var(--accent)] focus:shadow-[0_0_0_3px_var(--accent-soft),var(--shadow-inset)]',
     className,
   ]
     .filter(Boolean)

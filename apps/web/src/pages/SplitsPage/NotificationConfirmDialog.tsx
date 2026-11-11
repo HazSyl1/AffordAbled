@@ -47,7 +47,7 @@ export function NotificationConfirmDialog({
   const [description, setDescription] = useState(split.title);
   const [setContactDetails, { isLoading: isSavingEmails }] = useSetSplitContactDetailsMutation();
   const [emails, setEmails] = useState<Record<string, string>>({});
-  const [selectedParticipantIds, setSelectedParticipantIds] = useState<string[]>(initialParticipantIds ?? []);
+  const [selectedParticipantIds, setSelectedParticipantIds] = useState<string[] | null>(initialParticipantIds ?? null);
   const [error, setError] = useState('');
   const [clockMs, setClockMs] = useState(() => Date.now());
 
@@ -57,20 +57,16 @@ export function NotificationConfirmDialog({
 
   useEffect(() => {
     if (!notificationStatus?.missing_recipients.length) return;
-    setEmails((current) => ({
-      ...notificationStatus.missing_recipients.reduce<Record<string, string>>((result, recipient) => {
-        result[recipient.participant_id] = current[recipient.participant_id] ?? '';
-        return result;
-      }, {}),
-    }));
+    const syncTimer = window.setTimeout(() => {
+      setEmails((current) => ({
+        ...notificationStatus.missing_recipients.reduce<Record<string, string>>((result, recipient) => {
+          result[recipient.participant_id] = current[recipient.participant_id] ?? '';
+          return result;
+        }, {}),
+      }));
+    }, 0);
+    return () => window.clearTimeout(syncTimer);
   }, [notificationStatus?.missing_recipients]);
-
-  useEffect(() => {
-    if (!notificationStatus) return;
-    setSelectedParticipantIds((current) => current.length > 0 || initialParticipantIds?.length ? current : notificationStatus.recipients
-      .filter((recipient) => Boolean(recipient.recipient))
-      .map((recipient) => recipient.participant_id));
-  }, [initialParticipantIds?.length, notificationStatus]);
 
   useEffect(() => {
     if (!notificationStatus?.next_available_at) return;
@@ -90,6 +86,9 @@ export function NotificationConfirmDialog({
     ? Math.max(0, Math.ceil((new Date(notificationStatus.next_available_at).getTime() - clockMs) / 1000))
     : notificationStatus?.cooldown_remaining_seconds ?? 0;
   const missing = notificationStatus?.missing_recipients ?? [];
+  const effectiveSelectedParticipantIds = selectedParticipantIds ?? notificationStatus?.recipients
+    .filter((recipient) => Boolean(recipient.recipient))
+    .map((recipient) => recipient.participant_id) ?? [];
   const missingToEdit = initialParticipantIds?.length
     ? missing.filter((recipient) => initialParticipantIds.includes(recipient.participant_id))
     : missing;
@@ -130,7 +129,7 @@ export function NotificationConfirmDialog({
         await renameSplit({ splitId: split.id, title: cleanDescription }).unwrap();
       }
       const result = await queueNotification({
-        splitId: split.id, idempotencyKey: crypto.randomUUID(), participantIds: selectedParticipantIds,
+        splitId: split.id, idempotencyKey: crypto.randomUUID(), participantIds: effectiveSelectedParticipantIds,
       }).unwrap();
       const count = result.notification_ids.length;
       const skipped = result.skipped_recipients.length;
@@ -170,10 +169,10 @@ export function NotificationConfirmDialog({
           className='flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--bg-border)] p-3 text-sm'>
           <label className='flex min-w-0 items-center gap-3'><input type='checkbox'
             disabled={!recipient.recipient}
-            checked={selectedParticipantIds.includes(recipient.participant_id)}
-            onChange={(event) => setSelectedParticipantIds((current) => event.target.checked
-              ? [...current, recipient.participant_id]
-              : current.filter((id) => id !== recipient.participant_id))} />
+            checked={effectiveSelectedParticipantIds.includes(recipient.participant_id)}
+            onChange={(event) => setSelectedParticipantIds(event.target.checked
+              ? [...effectiveSelectedParticipantIds, recipient.participant_id]
+              : effectiveSelectedParticipantIds.filter((id) => id !== recipient.participant_id))} />
           <span><strong className='text-[var(--text-primary)]'>{recipient.name}</strong>
             <span className='block text-xs text-[var(--text-muted)]'>{recipient.recipient ?? 'Email required'}</span></span>
           </label>
@@ -208,9 +207,9 @@ export function NotificationConfirmDialog({
         className='rounded-lg bg-amber-500/10 p-3 text-sm text-amber-300'>{blockedMessage}</p>}
       {error && <p role='alert' className='text-sm text-[var(--negative)]'>{error}</p>}
       <div className='grid grid-cols-1 gap-2 sm:grid-cols-2'>
-        <Button type='button' disabled={!notificationStatus?.can_notify || isSavingEmails || !description.trim() || selectedParticipantIds.length === 0} isLoading={isLoading || isRenaming}
+        <Button type='button' disabled={!notificationStatus?.can_notify || isSavingEmails || !description.trim() || effectiveSelectedParticipantIds.length === 0} isLoading={isLoading || isRenaming}
           onClick={() => { void send(); }}>
-          Send {selectedParticipantIds.length} email{selectedParticipantIds.length === 1 ? '' : 's'}
+          Send {effectiveSelectedParticipantIds.length} email{effectiveSelectedParticipantIds.length === 1 ? '' : 's'}
         </Button>
         <Button type='button' variant='secondary' disabled={isLoading || isSavingEmails} onClick={onClose}>Not now</Button>
       </div>

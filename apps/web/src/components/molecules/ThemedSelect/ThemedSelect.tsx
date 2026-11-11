@@ -69,7 +69,7 @@ export function ThemedSelect({ id, value, placeholder, options, onChange, invali
             aria-selected={option.value === value}
             disabled={option.disabled}
             className={[
-              'w-full rounded-lg px-3 py-2 text-left text-sm transition-all',
+              'w-full rounded-lg px-3 py-2 text-left text-sm transition-[background-color,color]',
               option.disabled
                 ? 'cursor-not-allowed text-[var(--text-muted)]'
                 : option.value === value

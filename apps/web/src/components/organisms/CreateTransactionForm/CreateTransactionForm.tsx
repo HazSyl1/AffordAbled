@@ -427,9 +427,9 @@ export function CreateTransactionForm({
               type='button'
               onClick={() => handleTypeChange(typeOption.value)}
               className={[
-                'min-h-11 flex-1 rounded-xl px-3 py-2 text-xs font-semibold transition-all',
+                'min-h-11 flex-1 rounded-xl px-3 py-2 text-xs font-semibold transition-[background-color,border-color,color,transform]',
                 transactionType === typeOption.value
-                  ? 'bg-[var(--brand-primary)] text-white'
+                  ? 'bg-[var(--brand-primary)] text-[var(--on-accent)]'
                   : 'border border-[var(--bg-border)] bg-[var(--bg-elevated)] text-[var(--text-secondary)]',
               ].join(' ')}
             >

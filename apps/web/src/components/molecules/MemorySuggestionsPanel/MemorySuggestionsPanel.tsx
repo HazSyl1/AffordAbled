@@ -29,7 +29,7 @@ export function MemorySuggestionsPanel({ suggestions, compact = false }: MemoryS
   }
 
   return (
-    <Card className={compact ? 'border-[color:rgba(168,85,247,0.35)] p-4' : 'border-[color:rgba(168,85,247,0.35)] p-5'}>
+    <Card className={compact ? 'border-[var(--accent)] p-4' : 'border-[var(--accent)] p-5'}>
       <div className='flex items-start gap-3'>
         <Lightbulb className='mt-0.5 h-5 w-5 shrink-0 text-[var(--brand-primary)]' aria-hidden='true' />
         <div className='min-w-0 flex-1'>

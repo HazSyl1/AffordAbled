@@ -5,10 +5,10 @@ export interface CardProps extends HTMLAttributes<HTMLDivElement> {
 }
 
 const VARIANT_CLASSES: Record<NonNullable<CardProps['variant']>, string> = {
-  default: 'border border-[var(--bg-border)] bg-[var(--bg-card)]',
-  elevated: 'border border-[var(--bg-border)] bg-[var(--bg-elevated)]',
+  default: 'surface-card bg-[var(--surface)] shadow-[var(--shadow-soft)]',
+  elevated: 'surface-card bg-[var(--surface-subtle)] shadow-[var(--shadow-raised)]',
   hero:
-    'border border-[color:rgba(168,85,247,0.35)] bg-[linear-gradient(160deg,rgba(168,85,247,0.22),rgba(15,15,17,0.95)_45%,rgba(15,15,17,1)_100%)]',
+    'surface-card surface-card--decorated bg-[var(--brand-panel)] text-[var(--brand-panel-ink)] shadow-[var(--shadow-soft)]',
 };
 
 export function Card({ variant = 'default', className, ...rest }: CardProps) {

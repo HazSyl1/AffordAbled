@@ -1,4 +1,4 @@
-import { ImagePlus, LoaderCircle, Mic } from 'lucide-react';
+import { Bell, ImagePlus, LoaderCircle, Mic, UserRound, Users } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
@@ -11,6 +11,7 @@ import { Input } from '../../components/atoms/Input';
 import { AssistantReplyIndicator } from '../../components/molecules/AssistantReplyIndicator';
 import { AssistantMessageContent } from '../../components/molecules/AssistantMessageContent';
 import { BottomSheet } from '../../components/molecules/BottomSheet';
+import { ModalDialog } from '../../components/molecules/ModalDialog';
 import { VoiceCaptureModal } from '../../components/molecules/VoiceCaptureModal';
 import { TransactionSuccessOverlay } from '../../components/molecules/TransactionSuccessOverlay/TransactionSuccessOverlay';
 import { MemorySuggestionsPanel } from '../../components/molecules/MemorySuggestionsPanel/MemorySuggestionsPanel';
@@ -46,6 +47,7 @@ import {
 } from '../../constants';
 import { formatPaiseAsInr } from '../../lib/money';
 import { useBodyScrollLock } from '../../lib/useBodyScrollLock';
+import './DashboardPage.css';
 import { NotificationConfirmDialog } from '../../pages/SplitsPage/NotificationConfirmDialog';
 
 interface PendingSplit {
@@ -62,8 +64,8 @@ interface ChatMessage {
   content: string;
 }
 
-const TYPE_BADGE_TONE: Record<TransactionType, 'negative' | 'positive' | 'info'> = {
-  expense: 'negative',
+const TYPE_BADGE_TONE: Record<TransactionType, 'neutral' | 'positive' | 'info'> = {
+  expense: 'neutral',
   income: 'positive',
   transfer: 'info',
   refund: 'positive',
@@ -123,7 +125,7 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
   const [isNotificationCenterOpen, setIsNotificationCenterOpen] = useState(false);
   const { data: memorySuggestions = [] } = useListMemorySuggestionsQuery(undefined, { pollingInterval: 10_000 });
   const isNotificationModalOpen = (isNotificationCenterOpen || (showMemorySuggestions && memorySuggestions.length > 0)) && !transactionSuccess;
-  useBodyScrollLock(isNotificationModalOpen || Boolean(transactionSuccess));
+  useBodyScrollLock(Boolean(transactionSuccess));
   useEffect(() => {
     if (memorySuggestions.length === 0) return;
     const reminderTimer = window.setInterval(() => {
@@ -148,7 +150,7 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
         const key = participant.name.toLocaleLowerCase();
         const current = byName.get(key) ?? {
           id: key, name: participant.name, split_count: 0,
-          total_pending_paise: 0, avatar_color: '#a855f7',
+          total_pending_paise: 0, avatar_color: '#9a8cf5',
         };
         current.split_count += 1;
         current.total_pending_paise += due;
@@ -670,7 +672,7 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
               key={message.id}
               className={`max-w-[92%] rounded-xl px-3 py-2 text-sm ${
                 message.role === 'user'
-                  ? 'ml-auto bg-[var(--brand-primary)] text-white'
+                  ? 'ml-auto bg-[var(--brand-primary)] text-[var(--on-accent)]'
                   : 'bg-[var(--bg-card)] text-[var(--text-primary)]'
               }`}
             >
@@ -733,7 +735,7 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
         />
         <button
           type='button'
-          className='inline-flex h-12 min-w-16 items-center justify-center rounded-xl bg-[var(--brand-primary)] px-4 text-sm font-semibold text-white transition-colors hover:bg-[var(--brand-hover)] active:bg-[var(--brand-active)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)] disabled:cursor-not-allowed disabled:opacity-60'
+          className='inline-flex h-12 min-w-16 items-center justify-center rounded-xl bg-[var(--brand-primary)] px-4 text-sm font-semibold text-[var(--on-accent)] transition-colors hover:bg-[var(--brand-hover)] active:bg-[var(--brand-active)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)] disabled:cursor-not-allowed disabled:opacity-60'
           disabled={chatInput.trim().length === 0 || isProcessingTurn}
           onClick={() => {
             void handleChatSubmit();
@@ -749,76 +751,83 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
   );
 
   return (
-    <div className='mx-auto w-full max-w-[1200px] px-4 py-4 md:px-6 md:py-6'>
-      <header className='-mx-4 mb-4 border-b border-[var(--bg-border)] bg-[color:rgba(9,9,11,0.8)] px-4 py-4 pt-[calc(1rem+env(safe-area-inset-top))] backdrop-blur-xl md:mx-0 md:mb-5 md:border-none md:bg-transparent md:px-0 md:pt-0'>
+    <div className='dashboard-soft mx-auto w-full max-w-[1440px] px-4 py-4 md:px-6 md:py-6'>
+      <header className='mb-5 py-4 md:py-2'>
         <div className='flex items-center justify-between'>
           <div>
-            <h1 className='text-lg font-semibold text-[var(--text-secondary)]'>
-              {greeting}, {greetingName} 👋
+            <h1 className='text-2xl font-semibold tracking-[-0.025em] text-[var(--ink)]'>
+              {greeting}, {greetingName}
             </h1>
-            <p className='mt-0.5 text-xs text-[var(--text-muted)]'>Here is your wallet snapshot for today.</p>
+            <p className='mt-1 text-sm text-[var(--ink-muted)]'>Your money, shared costs, and next actions in one place.</p>
           </div>
-          <button
-            type='button'
-            className='relative flex h-11 w-11 items-center justify-center rounded-full border border-[var(--bg-border)] bg-[var(--bg-card)] text-lg text-[var(--text-secondary)] active:scale-[0.98]'
-            aria-label='Notifications'
-            onClick={() => {
-              setIsNotificationCenterOpen(true);
-              setShowMemorySuggestions(true);
-            }}
-          >
-            🔔
-            {memorySuggestions.length > 0 ? (
-              <span className='absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-[var(--brand-primary)] px-1 text-[10px] font-bold text-white'>
-                {memorySuggestions.length}
-              </span>
-            ) : null}
-          </button>
+          <div className='flex items-center gap-1'>
+            <button type='button' className='dashboard-icon-button flex h-11 w-11 items-center justify-center rounded-xl md:hidden' aria-label='Open settings' onClick={() => navigate('/profile')}>
+              <UserRound className='h-5 w-5' aria-hidden='true' />
+            </button>
+            <button
+              type='button'
+              className='dashboard-icon-button relative flex h-11 w-11 items-center justify-center rounded-xl'
+              aria-label='Notifications'
+              onClick={() => {
+                setIsNotificationCenterOpen(true);
+                setShowMemorySuggestions(true);
+              }}
+            >
+              <Bell className='h-5 w-5' aria-hidden='true' />
+              {memorySuggestions.length > 0 ? (
+                <span className='absolute right-1 top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--negative)] px-1 text-[9px] font-bold text-white'>
+                  {memorySuggestions.length}
+                </span>
+              ) : null}
+            </button>
+          </div>
         </div>
       </header>
 
       {isLoading ? (
         <div className='space-y-4'>
-          <div className='h-44 rounded-3xl border border-[var(--bg-border)] bg-[var(--bg-card)] animate-pulse' />
-          <div className='space-y-3 rounded-2xl border border-[var(--bg-border)] bg-[var(--bg-card)] p-4'>
+          <div className='dashboard-loading-surface h-44 rounded-2xl animate-pulse' />
+          <div className='dashboard-loading-surface space-y-3 rounded-2xl p-4'>
             {[1, 2, 3].map((item) => (
               <div key={item} className='flex items-center gap-3'>
-                <div className='h-10 w-10 rounded-full bg-[var(--bg-elevated)] animate-pulse' />
+                <div className='dashboard-loading-well h-10 w-10 rounded-full animate-pulse' />
                 <div className='flex-1 space-y-2'>
-                  <div className='h-3 w-2/3 rounded-full bg-[var(--bg-elevated)] animate-pulse' />
-                  <div className='h-2 w-1/2 rounded-full bg-[var(--bg-elevated)] animate-pulse' />
+                  <div className='dashboard-loading-well h-3 w-2/3 rounded-full animate-pulse' />
+                  <div className='dashboard-loading-well h-2 w-1/2 rounded-full animate-pulse' />
                 </div>
-                <div className='h-3 w-16 rounded-full bg-[var(--bg-elevated)] animate-pulse' />
+                <div className='dashboard-loading-well h-3 w-16 rounded-full animate-pulse' />
               </div>
             ))}
           </div>
         </div>
       ) : (
         <>
-          <section className='mb-4'>
-            <Card variant='hero' className='relative overflow-hidden p-5'>
-              <div className='absolute -right-8 -top-8 h-28 w-28 rounded-full bg-[color:rgba(168,85,247,0.18)]' />
-              <div className='absolute -bottom-10 right-12 h-24 w-24 rounded-full bg-[color:rgba(96,165,250,0.12)]' />
-
-              <p className='relative text-xs uppercase tracking-wide text-[var(--text-secondary)]'>Total Balance</p>
-              <p className='relative mt-2 text-4xl font-bold text-[var(--text-primary)]'>{formatPaiseAsInr(totalBalancePaise)}</p>
-              <p className='relative mt-1 text-sm text-[var(--text-secondary)]'>Across {(accounts ?? []).length} accounts</p>
-
-              <div className='relative mt-4 flex flex-wrap gap-2'>
+          <section className='dashboard-balance-surface mb-5 overflow-hidden rounded-2xl p-5 md:p-6'>
+            <div className='grid gap-5 md:grid-cols-[1.35fr_1fr] md:items-end'>
+              <div>
+                <p className='text-sm text-[var(--dash-muted)]'>Across your wallet</p>
+                <p className='money mt-2 text-4xl font-semibold tracking-[-0.03em]'>{formatPaiseAsInr(totalBalancePaise)}</p>
+                <p className='mt-1 text-sm text-[var(--dash-muted)]'>{(accounts ?? []).length} active {(accounts ?? []).length === 1 ? 'account' : 'accounts'}</p>
+              </div>
+              <div className='dashboard-balance-metrics grid grid-cols-2 gap-4 rounded-xl p-4'>
+                <div><p className='text-xs text-[var(--dash-muted)]'>Income this month</p><p className='money mt-1 font-semibold text-[var(--dash-positive-text)]'>{formatPaiseAsInr(thisMonthSummary.incomePaise)}</p></div>
+                <div><p className='text-xs text-[var(--dash-muted)]'>Spent this month</p><p className='money mt-1 font-semibold text-[var(--dash-warning-text)]'>{formatPaiseAsInr(thisMonthSummary.expensesPaise)}</p></div>
+              </div>
+            </div>
+            <div className='mt-5 flex flex-wrap gap-2 border-t border-[var(--dash-border)] pt-4'>
                 {(accounts ?? []).slice(0, 4).map((account) => (
                   <span
                     key={account.id}
-                    className='rounded-full border border-[color:rgba(168,85,247,0.35)] bg-[color:rgba(168,85,247,0.12)] px-2.5 py-1 text-xs text-[var(--text-primary)]'
+                    className='dashboard-account-chip rounded-full px-2.5 py-1 text-xs'
                   >
                     {account.name}
                   </span>
                 ))}
-              </div>
-            </Card>
+            </div>
           </section>
 
           <section className='mb-4 space-y-2'>
-            <div className='grid grid-cols-4 gap-2'>
+            <div className='dashboard-well flex gap-1 overflow-x-auto rounded-xl p-1.5'>
               {DASHBOARD_QUICK_ACTIONS.map((action) => {
                 const isDisabled =
                   (action.key === 'voice' && (isVoiceCaptureOpen || isTranscribingVoice)) ||
@@ -830,11 +839,11 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
                     key={action.key}
                     type='button'
                     variant='ghost'
-                    className='min-h-12 flex-col gap-1 rounded-2xl px-2 py-2 text-sm'
+                    className='min-w-20 flex-1 gap-2 whitespace-nowrap px-3 text-sm'
                     disabled={isDisabled}
                     onClick={() => handleQuickActionClick(action.key)}
                   >
-                    <Icon className='h-[18px] w-[18px]' strokeWidth={2.2} aria-hidden='true' />
+                    <Icon className='h-[18px] w-[18px]' strokeWidth={2} aria-hidden='true' />
                     {action.label}
                   </Button>
                 );
@@ -844,22 +853,22 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
             {chatError ? <p className='text-xs text-[var(--negative)]'>{chatError}</p> : null}
           </section>
 
-          <div className='space-y-4 lg:grid lg:grid-cols-2 lg:items-stretch lg:gap-4 lg:space-y-0'>
+          <div className='space-y-4 lg:grid lg:grid-cols-[0.82fr_1.18fr] lg:items-stretch lg:gap-5 lg:space-y-0'>
             <section className='h-full'>
-              <Card className='h-full p-4'>
+              <Card className='dashboard-surface h-full p-4'>
                 <div className='mb-3 flex items-center justify-between'>
                   <h2 className='text-base font-semibold text-[var(--text-primary)]'>Spending Overview</h2>
                   <span className='text-xs text-[var(--text-muted)]'>This month</span>
                 </div>
 
-                <div className='mb-3 rounded-2xl border border-[var(--bg-border)] bg-[var(--bg-elevated)] p-3'>
+                <div className='dashboard-well mb-3 rounded-xl p-3'>
                   <div className='mb-2 flex items-center justify-between text-xs'>
                     <span className='text-[var(--text-secondary)]'>Spent</span>
-                    <span className='font-semibold text-[var(--negative)]'>{formatPaiseAsInr(thisMonthSummary.expensesPaise)}</span>
+                    <span className='font-semibold text-[var(--dash-warning-text)]'>{formatPaiseAsInr(thisMonthSummary.expensesPaise)}</span>
                   </div>
-                  <div className='mb-3 h-2 rounded-full bg-[var(--bg-border)]'>
+                  <div className='dashboard-meter mb-3 h-2 rounded-full'>
                     <div
-                      className='h-2 rounded-full bg-[var(--brand-primary)] transition-all'
+                      className='h-2 rounded-full bg-[var(--accent)] transition-[width] duration-200 ease-[var(--ease-out)]'
                       style={{ width: `${thisMonthSummary.progress}%` }}
                     />
                   </div>
@@ -885,13 +894,13 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
             </section>
 
             <section className='h-full'>
-              <Card className='h-full p-4'>
+              <Card className='dashboard-surface h-full p-4'>
                 <div className='mb-3 flex items-center justify-between'>
-                  <h2 className='text-base font-semibold text-[var(--text-primary)]'>Recent Transactions</h2>
+                  <h2 className='whitespace-nowrap text-base font-semibold text-[var(--text-primary)]'>Recent Transactions</h2>
                   <Button
                     type='button'
                     variant='secondary'
-                    className='min-h-8 w-auto rounded-lg px-2 py-1 text-xs'
+                    className='dashboard-compact-action min-h-8 rounded-lg px-2 py-1 text-xs'
                     onClick={() => navigate('/transactions')}
                   >
                     See all →
@@ -901,12 +910,12 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
                 {recentTransactions.length === 0 ? (
                   <p className='text-sm text-[var(--text-muted)]'>No transactions yet.</p>
                 ) : (
-                  <ul className='m-0 flex list-none flex-col gap-2 p-0'>
+                  <ul className='dashboard-list-well m-0 flex list-none flex-col p-1'>
                     {recentTransactions.map((transaction) => {
                       const categoryName = transaction.category_id ? categoryNameById.get(transaction.category_id) : null;
 
                       return (
-                        <li key={transaction.id} className='rounded-xl border border-[var(--bg-border)] bg-[var(--bg-elevated)] p-3'>
+                        <li key={transaction.id} className='dashboard-list-row p-3'>
                           <div className='flex items-center justify-between gap-3'>
                             <div className='min-w-0'>
                               <p className='truncate text-sm font-semibold text-[var(--text-primary)]'>
@@ -917,7 +926,7 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
 
                             <div className='text-right'>
                               <p className='text-sm font-semibold text-[var(--text-primary)]'>{formatPaiseAsInr(transaction.amount_paise)}</p>
-                              <Badge tone={TYPE_BADGE_TONE[transaction.type]}>{transaction.type}</Badge>
+                              <Badge tone={TYPE_BADGE_TONE[transaction.type]} className={transaction.type === 'expense' ? 'dashboard-spend-badge' : undefined}>{transaction.type}</Badge>
                             </div>
                           </div>
                         </li>
@@ -930,13 +939,13 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
           </div>
 
           <section className='mt-4'>
-            <Card className='p-4'>
+            <Card className='dashboard-surface p-4'>
               <div className='mb-3 flex items-center justify-between'>
-                <h2 className='text-base font-semibold text-[var(--text-primary)]'>Split Tracker</h2>
+                  <h2 className='whitespace-nowrap text-base font-semibold text-[var(--text-primary)]'>Split Tracker</h2>
                 <Button
                   type='button'
                   variant='secondary'
-                  className='min-h-8 w-auto rounded-lg px-2 py-1 text-xs'
+                  className='dashboard-compact-action min-h-8 rounded-lg px-2 py-1 text-xs'
                   onClick={() => navigate('/splits')}
                 >
                   View all
@@ -947,15 +956,15 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
                 <p className='py-8 text-center text-sm text-[var(--text-muted)]'>Loading splits…</p>
               ) : pendingSplits.length === 0 ? (
                 <div className='py-8 text-center'>
-                  <p className='mb-2 text-3xl'>🤝</p>
+                  <Users className='mx-auto mb-3 h-7 w-7 text-[var(--dash-muted)]' aria-hidden='true' />
                   <p className='text-sm text-[var(--text-muted)]'>No pending splits</p>
                 </div>
               ) : (
-                <div className='space-y-2'>
+                <div className='dashboard-list-well space-y-0 p-1'>
                   {pendingSplits.map((contact) => (
-                    <div key={contact.id} className='flex items-center gap-3 rounded-xl border border-[var(--bg-border)] bg-[var(--bg-elevated)] px-3 py-2'>
+                    <div key={contact.id} className='dashboard-list-row flex items-center gap-3 px-3 py-2'>
                       <div
-                        className='flex h-10 w-10 items-center justify-center rounded-full text-sm font-bold'
+                        className='dashboard-split-avatar flex h-10 w-10 items-center justify-center rounded-full text-sm font-bold'
                         style={{
                           backgroundColor: `${contact.avatar_color}33`,
                           color: contact.avatar_color,
@@ -989,14 +998,17 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
         }}
       />
 
-      {showSaveDraftPrompt ? (
-        <div className='fixed inset-0 z-[70] flex items-center justify-center bg-black/60 px-4 py-6'>
-          <div className='w-full max-w-md rounded-2xl border border-[var(--bg-border)] bg-[var(--bg-card)] p-5 shadow-[0_20px_50px_rgba(0,0,0,0.45)]'>
+      <ModalDialog
+        isOpen={showSaveDraftPrompt}
+        onClose={() => setShowSaveDraftPrompt(false)}
+        label={DASHBOARD_CHAT_UI_TEXT.closeChatTitle}
+      >
             <div className='flex items-start justify-between gap-2'>
               <h3 className='text-lg font-semibold text-[var(--text-primary)]'>{DASHBOARD_CHAT_UI_TEXT.closeChatTitle}</h3>
               <button
                 type='button'
                 aria-label='Close'
+                data-modal-autofocus
                 className='inline-flex h-8 w-8 items-center justify-center rounded-full border border-[var(--bg-border)] bg-[var(--bg-elevated)] text-base leading-none text-[var(--text-secondary)] hover:bg-[var(--bg-card)]'
                 onClick={() => setShowSaveDraftPrompt(false)}
               >
@@ -1020,9 +1032,7 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
                 {DASHBOARD_CHAT_UI_TEXT.addToDraftsLabel}
               </Button>
             </div>
-          </div>
-        </div>
-      ) : null}
+      </ModalDialog>
 
       <VoiceCaptureModal
         cancelLabel={DASHBOARD_CHAT_UI_TEXT.voiceRecordingCancelButton}
@@ -1069,13 +1079,20 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
           onEditTransaction={transactionSuccess.transactionId ? editCompletedTransaction : undefined}
         />
       ) : null}
-      {isNotificationModalOpen ? (
-        <div className='fixed inset-0 z-[60] flex items-center justify-center overflow-y-auto bg-black/60 p-4' role='dialog' aria-modal='true' aria-label='Notifications'>
-          <div className='w-full max-w-lg space-y-3'>
+      <ModalDialog
+        isOpen={isNotificationModalOpen}
+        onClose={() => {
+          setIsNotificationCenterOpen(false);
+          setShowMemorySuggestions(false);
+        }}
+        label='Notifications'
+        className='max-w-lg'
+      >
+          <div className='space-y-3'>
             {memorySuggestions.length > 0 ? (
               <MemorySuggestionsPanel suggestions={memorySuggestions} />
             ) : (
-              <Card className='border-[color:rgba(168,85,247,0.35)] p-5'>
+              <Card className='border-[var(--accent)] p-5'>
                 <h3 className='font-semibold text-[var(--text-primary)]'>You’re all caught up</h3>
                 <p className='mt-1 text-sm text-[var(--text-muted)]'>No notifications right now.</p>
               </Card>
@@ -1087,8 +1104,7 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
               }}>Close</Button>
             </div>
           </div>
-        </div>
-      ) : null}
+      </ModalDialog>
 
       <BottomSheet
         isOpen={showAddSheet}

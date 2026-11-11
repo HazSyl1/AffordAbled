@@ -16,9 +16,9 @@ export function AssistantReplyIndicator({ label, className, ...rest }: Assistant
     <div className={classes} role='status' aria-live='polite' {...rest}>
       <span>{label}</span>
       <span className='inline-flex items-end gap-1' aria-hidden='true'>
-        <span className='h-1.5 w-1.5 rounded-full bg-[var(--brand-primary)] animate-bounce [animation-delay:-0.3s]' />
-        <span className='h-1.5 w-1.5 rounded-full bg-[var(--brand-primary)] animate-bounce [animation-delay:-0.15s]' />
-        <span className='h-1.5 w-1.5 rounded-full bg-[var(--brand-primary)] animate-bounce' />
+        <span className='h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--brand-primary)] [animation-delay:-0.4s]' />
+        <span className='h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--brand-primary)] [animation-delay:-0.2s]' />
+        <span className='h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--brand-primary)]' />
       </span>
     </div>
   );

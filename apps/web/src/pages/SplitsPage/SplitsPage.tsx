@@ -615,7 +615,7 @@ export function SplitsPage() {
 
   return <div className='mx-auto w-full max-w-[900px] space-y-5 px-4 py-4 md:px-6 md:py-6'>
     <header>
-      <h1 className='text-xl font-bold text-[var(--text-primary)]'>Splits</h1>
+      <h1 className='text-xl font-semibold tracking-[-0.02em] text-[var(--text-primary)]'>Shared</h1>
       <p className='text-sm text-[var(--text-muted)]'>Track expense shares, money others owe you, and money you owe.</p>
     </header>
     <div className='min-w-0 space-y-4 rounded-2xl border border-[var(--bg-border)] bg-[var(--bg-card)] p-4'>
@@ -959,7 +959,7 @@ export function SplitsPage() {
                             <button type='button' disabled={settlingPlanTransferId !== null ||
                               ((transfer.creditor === 'You' || transfer.debtor === 'You') &&
                                 !(settlementAccounts[transfer.id] ?? defaultAccountId))}
-                              className='rounded-lg bg-[var(--brand-primary)] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[var(--brand-hover)] disabled:opacity-50'
+                              className='rounded-lg bg-[var(--brand-primary)] px-3 py-1.5 text-xs font-semibold text-[var(--on-accent)] hover:bg-[var(--brand-hover)] disabled:opacity-50'
                               onClick={() => void markPlanTransferSettled(plan.id, transfer)}>
                               {settlingPlanTransferId === transfer.id ? 'Recording…' : 'Mark repaid'}
                             </button>
@@ -1013,7 +1013,7 @@ export function SplitsPage() {
                 <div className='flex flex-wrap gap-2 sm:justify-end'>
                   {split.transaction_id && <button type='button' className='rounded-lg border border-[var(--bg-border)] px-3 py-1.5 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:border-[var(--brand-primary)] hover:bg-[var(--brand-subtle)] hover:text-[var(--brand-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)] focus-visible:ring-offset-2'
                     onClick={() => navigate(`/transactions?transactionId=${split.transaction_id}`)}>View transaction</button>}
-                  {split.kind === 'expense_split' && <button type='button' className='rounded-lg border border-[var(--brand-primary)]/30 bg-[var(--brand-subtle)] px-3 py-1.5 text-xs font-semibold text-[var(--brand-primary)] transition-colors hover:border-[var(--brand-primary)] hover:bg-[var(--brand-primary)] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)] focus-visible:ring-offset-2'
+                  {split.kind === 'expense_split' && <button type='button' className='rounded-lg border border-[var(--brand-primary)]/30 bg-[var(--brand-subtle)] px-3 py-1.5 text-xs font-semibold text-[var(--brand-primary)] transition-colors hover:border-[var(--brand-primary)] hover:bg-[var(--brand-primary)] hover:text-[var(--on-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)] focus-visible:ring-offset-2'
                     onClick={() => setEditingSplitId(editingSplitId === split.id ? null : split.id)}>
                     {editingSplitId === split.id ? 'Close edit' : 'Edit split'}
                   </button>}
@@ -1099,7 +1099,7 @@ export function SplitsPage() {
                     </label>
                     <button type='button' disabled={repayingTransfer || repayingAllSplitId !== null ||
                       !(repaymentAccounts[`${split.id}:${transfer.debtor}`] ?? defaultAccountId)}
-                      className='rounded-lg bg-[var(--brand-primary)] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[var(--brand-hover)] disabled:opacity-50'
+                    className='rounded-lg bg-[var(--brand-primary)] px-3 py-1.5 text-xs font-semibold text-[var(--on-accent)] hover:bg-[var(--brand-hover)] disabled:opacity-50'
                       onClick={() => markSettlementTransferRepaid(split.id, transfer.debtor)}>Mark repaid</button>
                   </div>}
                 </div>) : <p className='border-t border-[var(--bg-border)] pt-2 text-xs text-[var(--text-muted)]'>No settlement amount is due to you.</p>) :
@@ -1155,7 +1155,7 @@ export function SplitsPage() {
                         <button type='button' disabled={recordingSplitPayment || repayingAllSplitId !== null ||
                           (partialPaymentOpen[person.id] && (!amountText || amountPaise === null || amountPaise <= 100 || amountPaise > remaining)) ||
                           !activeAccounts.some((account) => account.id === (repaymentAccounts[person.id] ?? defaultAccountId))}
-                          className='rounded-lg bg-[var(--brand-primary)] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[var(--brand-hover)] disabled:opacity-50'
+                          className='rounded-lg bg-[var(--brand-primary)] px-3 py-1.5 text-xs font-semibold text-[var(--on-accent)] hover:bg-[var(--brand-hover)] disabled:opacity-50'
                           onClick={() => void recordParticipantPayment(split, person, partialPaymentOpen[person.id] ? amountText : undefined)}>
                           {partialPaymentOpen[person.id] ? 'Mark Partial Payment' : ownerPays ? 'Mark paid' : 'Mark repaid'}
                         </button>

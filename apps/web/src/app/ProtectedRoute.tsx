@@ -35,9 +35,9 @@ export function ProtectedRoute() {
   if (!accounts?.length) {
     return (
       <main className='flex min-h-screen items-center justify-center bg-[var(--bg-app)] px-4 py-8'>
-        <section className='w-full max-w-lg rounded-3xl border border-[var(--bg-border)] bg-[var(--bg-card)] p-6 shadow-2xl sm:p-8'>
-          <p className='text-xs font-semibold uppercase tracking-[0.16em] text-[var(--brand-primary)]'>{APP_NAME} · Getting started</p>
-          <h1 className='mt-3 text-2xl font-bold text-[var(--text-primary)]'>Add your first account</h1>
+        <section className='w-full max-w-lg rounded-2xl bg-[var(--surface)] p-6 shadow-[var(--shadow-soft)] sm:p-8'>
+          <p className='text-sm font-semibold text-[var(--accent)]'>{APP_NAME}</p>
+          <h1 className='mt-4 text-3xl font-semibold tracking-[-0.03em] text-[var(--text-primary)]'>Add your first account</h1>
           <p className='mb-6 mt-2 text-sm leading-6 text-[var(--text-secondary)]'>Add a bank account, card, cash wallet, or another place you keep money. You can start with a zero balance and update it later.</p>
           <CreateAccountForm showHeading={false} />
         </section>

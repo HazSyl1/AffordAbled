@@ -1,10 +1,21 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-type="software" data-radius="soft" data-motion="restrained">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <title>AffordAbled</title>
+    <meta name="theme-color" content="#F0F4F8" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#182230" media="(prefers-color-scheme: dark)" />
+    <meta name="description" content="A personal AI wallet for clearer everyday and shared money." />
+    <meta name="page-type" content="software" />
+    <meta name="site-kind" content="software" />
+    <title>AffordAbled — Personal AI Wallet</title>
+    <script>
+      (() => {
+        const value = localStorage.getItem('affordabled-theme');
+        if (value === 'light' || value === 'dark') document.documentElement.dataset.theme = value;
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

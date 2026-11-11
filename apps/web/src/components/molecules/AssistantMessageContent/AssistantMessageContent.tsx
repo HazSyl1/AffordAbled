@@ -41,7 +41,7 @@ function ExportDownloadButton({ exportId }: { exportId: string }) {
   return (
     <div>
       <button type='button' disabled={isFetching} onClick={() => void handleDownload()}
-        className='rounded-lg bg-[var(--brand-primary)] px-3 py-2 text-sm font-semibold text-white disabled:opacity-60'>
+        className='rounded-lg bg-[var(--brand-primary)] px-3 py-2 text-sm font-semibold text-[var(--on-accent)] disabled:opacity-60'>
         {isFetching ? 'Preparing download…' : 'Download report'}
       </button>
       {error && <p role='alert' className='mt-1 text-sm text-[var(--negative)]'>{error}</p>}
@@ -116,7 +116,7 @@ function renderBlock(block: ContentBlock, index: number): ReactNode {
   }
   if (block.kind === 'settlement') {
     return <Link key={`settlement-${index}`} to={`/splits?draft=${block.draftId}`}
-      className='inline-block rounded-lg bg-[var(--brand-primary)] px-3 py-2 text-sm font-semibold text-white'>
+      className='inline-block rounded-lg bg-[var(--brand-primary)] px-3 py-2 text-sm font-semibold text-[var(--on-accent)]'>
       Review settlement
     </Link>;
   }
