@@ -657,6 +657,15 @@ function ChatWorkspace({ userId }: { userId: string }) {
 
   useEffect(() => {
     const params = new URLSearchParams(location.search);
+    if (params.get('receipt') !== '1') return;
+    imageFileInputRef.current?.click();
+    params.delete('receipt');
+    const nextSearch = params.toString();
+    navigate({ pathname: '/chat', search: nextSearch ? `?${nextSearch}` : '' }, { replace: true });
+  }, [location.search, navigate]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
     const transactionId = params.get('transaction_id')?.trim();
     if (!transactionId) {
       return;
@@ -776,7 +785,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
     <div className='flex h-[calc(100dvh-env(safe-area-inset-top)-4rem-env(safe-area-inset-bottom))] min-h-0 w-full flex-col overflow-hidden px-4 py-4 md:h-[calc(100vh-2rem)] md:px-4 md:pb-0 md:pt-0'>
       <header className='mb-4 md:hidden'>
         <div>
-          <h1 className='text-xl font-bold text-[var(--text-primary)]'>Finance Chat</h1>
+          <h1 className='text-xl font-semibold tracking-[-0.02em] text-[var(--text-primary)]'>Assistant</h1>
           <p className='text-sm text-[var(--text-muted)]'>Continue where you left off or start a fresh chat.</p>
         </div>
       </header>
@@ -817,7 +826,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
                   className={[
                     'inline-flex min-h-12 items-center rounded-full px-5 text-sm font-semibold outline-none transition-colors focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)]',
                     activeFilter === 'finance'
-                      ? 'bg-[var(--brand-primary)] text-white'
+                      ? 'bg-[var(--brand-primary)] text-[var(--on-accent)]'
                       : 'bg-[var(--bg-elevated)] text-[var(--text-secondary)] hover:bg-[var(--bg-card)]',
                   ].join(' ')}
                   onClick={() => setActiveFilter('finance')}
@@ -830,7 +839,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
                   className={[
                     'inline-flex min-h-12 items-center rounded-full px-5 text-sm font-semibold outline-none transition-colors focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)]',
                     activeFilter === 'drafts'
-                      ? 'bg-[var(--brand-primary)] text-white'
+                      ? 'bg-[var(--brand-primary)] text-[var(--on-accent)]'
                       : 'bg-[var(--bg-elevated)] text-[var(--text-secondary)] hover:bg-[var(--bg-card)]',
                   ].join(' ')}
                   onClick={() => setActiveFilter('drafts')}
@@ -905,7 +914,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
                 <div className='flex w-full items-center gap-3'>
                   <button
                     type='button'
-                    className='inline-flex h-10 min-h-10 min-w-0 flex-1 items-center justify-center rounded-full bg-[var(--brand-primary)] px-4 text-sm font-semibold text-white transition-colors hover:bg-[var(--brand-hover)] active:bg-[var(--brand-active)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)]'
+                    className='inline-flex h-10 min-h-10 min-w-0 flex-1 items-center justify-center rounded-full bg-[var(--brand-primary)] px-4 text-sm font-semibold text-[var(--on-accent)] transition-colors hover:bg-[var(--brand-hover)] active:bg-[var(--brand-active)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)]'
                     onClick={handleCreateNewChat}
                   >
                     {DASHBOARD_CHAT_UI_TEXT.newChatActionLabel}
@@ -978,7 +987,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
                   key={message.id}
                   className={`max-w-[92%] rounded-xl px-3 py-2 text-sm ${
                     message.role === 'user'
-                      ? 'ml-auto bg-[var(--brand-primary)] text-white'
+                      ? 'ml-auto bg-[var(--brand-primary)] text-[var(--on-accent)]'
                       : 'whitespace-pre-line bg-[var(--bg-card)] text-[var(--text-primary)]'
                   }`}
                 >
@@ -1044,7 +1053,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
             />
             <button
               type='button'
-              className='inline-flex h-12 min-w-16 items-center justify-center rounded-xl bg-[var(--brand-primary)] px-4 text-sm font-semibold text-white transition-colors hover:bg-[var(--brand-hover)] active:bg-[var(--brand-active)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)] disabled:cursor-not-allowed disabled:opacity-60'
+              className='inline-flex h-12 min-w-16 items-center justify-center rounded-xl bg-[var(--brand-primary)] px-4 text-sm font-semibold text-[var(--on-accent)] transition-colors hover:bg-[var(--brand-hover)] active:bg-[var(--brand-active)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)] disabled:cursor-not-allowed disabled:opacity-60'
               disabled={chatInput.trim().length === 0 || isProcessingTurn}
               onClick={() => {
                 void handleSendMessage();

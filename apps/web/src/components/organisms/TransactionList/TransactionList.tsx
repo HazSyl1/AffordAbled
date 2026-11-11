@@ -186,7 +186,7 @@ export function TransactionList({ onTransactionSelect, onTransactionDeleted }: T
                     className={[
                       'p-4 active:scale-[0.98]',
                       onTransactionSelect
-                        ? 'group cursor-pointer transition-colors hover:border-[color:rgba(168,85,247,0.5)] hover:bg-[color:rgba(168,85,247,0.08)]'
+                        ? 'group cursor-pointer transition-colors hover:border-[var(--accent)] hover:bg-[var(--accent-soft)]'
                         : '',
                     ].join(' ')}
                     role={onTransactionSelect ? 'button' : undefined}
@@ -239,20 +239,20 @@ export function TransactionList({ onTransactionSelect, onTransactionDeleted }: T
                         onClick={(event) => event.stopPropagation()}
                         onKeyDown={(event) => event.stopPropagation()}
                       >Recurring</Link> : null}
-                      {onTransactionSelect && <span className='inline-flex items-center rounded-full border border-[color:rgba(168,85,247,0.7)] bg-[color:rgba(168,85,247,0.2)] px-2.5 py-1 text-[11px] font-semibold text-[var(--brand-primary)] shadow-[0_3px_12px_rgba(168,85,247,0.2)] transition-colors group-hover:bg-[color:rgba(168,85,247,0.3)]'>
+                      {onTransactionSelect && <span className='inline-flex items-center rounded-full border border-[var(--accent)] bg-[var(--accent-soft)] px-2.5 py-1 text-[11px] font-semibold text-[var(--brand-primary)] transition-colors group-hover:bg-[var(--surface-subtle)]'>
                         {split ? 'Click to edit' : TRANSACTION_UI_TEXT.editHintLabel}
                       </span>}
                       {split && <Link to={`/splits?splitId=${split.id}`}
-                        className='inline-flex items-center rounded-full border border-[color:rgba(168,85,247,0.55)] bg-[color:rgba(168,85,247,0.16)] px-2.5 py-1 text-xs font-semibold text-[var(--brand-primary)] transition-colors hover:bg-[color:rgba(168,85,247,0.24)]'
+                        className='inline-flex items-center rounded-full border border-[var(--accent)] bg-[var(--accent-soft)] px-2.5 py-1 text-xs font-semibold text-[var(--brand-primary)] transition-colors hover:bg-[var(--surface-subtle)]'
                         onClick={(event) => event.stopPropagation()}
                         onKeyDown={(event) => event.stopPropagation()}>Go to split</Link>}
                       {settlementPlan && <Link to={`/splits?planId=${settlementPlan.id}`}
-                        className='inline-flex max-w-full items-center rounded-full border border-[color:rgba(168,85,247,0.55)] bg-[color:rgba(168,85,247,0.16)] px-2.5 py-1 text-xs font-semibold text-[var(--brand-primary)] transition-colors hover:bg-[color:rgba(168,85,247,0.24)]'
+                        className='inline-flex max-w-full items-center rounded-full border border-[var(--accent)] bg-[var(--accent-soft)] px-2.5 py-1 text-xs font-semibold text-[var(--brand-primary)] transition-colors hover:bg-[var(--surface-subtle)]'
                         onClick={(event) => event.stopPropagation()}
                         onKeyDown={(event) => event.stopPropagation()}>View group settlement</Link>}
                       <Link
                         to={`/chat?transaction_id=${transaction.id}`}
-                        className='inline-flex items-center gap-1 rounded-full border border-[color:rgba(168,85,247,0.55)] bg-[color:rgba(168,85,247,0.16)] px-2.5 py-1 text-xs font-semibold text-[var(--brand-primary)] shadow-[0_6px_14px_rgba(168,85,247,0.2)] transition-colors hover:bg-[color:rgba(168,85,247,0.24)]'
+                        className='inline-flex items-center gap-1 rounded-full border border-[var(--accent)] bg-[var(--accent-soft)] px-2.5 py-1 text-xs font-semibold text-[var(--brand-primary)] transition-colors hover:bg-[var(--surface-subtle)]'
                         onClick={(event) => event.stopPropagation()}
                         onKeyDown={(event) => event.stopPropagation()}
                       >

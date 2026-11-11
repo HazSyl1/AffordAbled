@@ -21,11 +21,11 @@ export function AccountsPage() {
 
   return (
     <div className='mx-auto w-full max-w-[1100px] px-4 py-4 md:px-6 md:py-6'>
-      <header className='-mx-4 mb-5 border-b border-[var(--bg-border)] bg-[color:rgba(9,9,11,0.9)] px-4 py-4 backdrop-blur-xl md:mx-0 md:border-none md:bg-transparent md:px-0 md:py-0'>
+      <header className='-mx-4 mb-5 border-b border-[var(--bg-border)] bg-[var(--canvas)] px-4 py-4 md:mx-0 md:border-none md:bg-transparent md:px-0 md:py-0'>
         <div className='flex items-start justify-between gap-3'>
           <div>
-            <h1 className='text-xl font-bold text-[var(--text-primary)]'>Accounts</h1>
-            <p className='text-xs text-[var(--text-secondary)]'>Track balances across all your wallets.</p>
+            <h1 className='text-2xl font-semibold tracking-[-0.025em] text-[var(--text-primary)]'>Wallet</h1>
+            <p className='mt-1 text-sm text-[var(--text-secondary)]'>Track the places where you keep money.</p>
           </div>
 
           <div className='flex gap-2'>
@@ -41,9 +41,9 @@ export function AccountsPage() {
 
       <section className='mb-6'>
         <Card variant='hero' className='p-5'>
-          <p className='text-xs uppercase tracking-wide text-[var(--text-secondary)]'>Total Balance</p>
-          <p className='mt-2 text-4xl font-bold text-[var(--text-primary)]'>{formatPaiseAsInr(totalBalancePaise)}</p>
-          <p className='mt-1 text-sm text-[var(--text-secondary)]'>
+          <p className='text-sm text-[var(--brand-panel-ink)]/60'>Combined balance</p>
+          <p className='money mt-2 text-4xl font-semibold tracking-[-0.03em] text-[var(--brand-panel-ink)]'>{formatPaiseAsInr(totalBalancePaise)}</p>
+          <p className='mt-1 text-sm text-[var(--brand-panel-ink)]/65'>
             {isLoadingAccounts
               ? 'Loading accounts...'
               : `Across ${(accounts ?? []).length} ${(accounts ?? []).length === 1 ? 'account' : 'accounts'}`}

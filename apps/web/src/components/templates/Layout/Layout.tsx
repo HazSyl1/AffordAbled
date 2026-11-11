@@ -1,249 +1,159 @@
-import { MessageCircle, Mic } from 'lucide-react';
+import { Plus, UserRound } from 'lucide-react';
 import { useEffect, useState, type ReactNode } from 'react';
-import { NavLink, useLocation, useNavigate } from 'react-router-dom';
+import { Link, NavLink, useLocation } from 'react-router-dom';
 
-import { CollapseToggle } from '../../atoms/CollapseToggle';
 import { useAppDispatch, useAppSelector } from '../../../app/hooks';
 import { useLazyGetMeQuery } from '../../../features/auth/authApi';
 import { setUser } from '../../../features/auth/authSlice';
 import { discardLegacyUnscopedChatDrafts } from '../../../features/chat/chatDrafts';
-import {
-  ACCOUNTS_NAV_ITEM,
-  APP_NAME,
-  APP_TAGLINE,
-  LAYOUT_UI_TEXT,
-  NAV_ITEMS,
-  VOICE_CAPTURE_EVENT_NAME,
-} from '../../../constants';
+import { ACCOUNTS_NAV_ITEM, APP_NAME, APP_TAGLINE, LAYOUT_UI_TEXT, NAV_ITEMS } from '../../../constants';
+import { BrandMark } from '../../atoms/BrandMark';
+import { CollapseToggle } from '../../atoms/CollapseToggle';
+import { ThemeControl } from '../../molecules/ThemeControl';
+import { CreateLauncher } from '../../organisms/CreateLauncher';
 
-interface LayoutProps {
-  children: ReactNode;
-}
+interface LayoutProps { children: ReactNode }
+
+const MOBILE_ITEMS = [NAV_ITEMS[0], NAV_ITEMS[1], NAV_ITEMS[3], NAV_ITEMS[2]];
+const MOBILE_COLUMNS = [1, 2, 4, 5] as const;
 
 export function Layout({ children }: LayoutProps) {
-  const navigate = useNavigate();
-  const location = useLocation();
   const dispatch = useAppDispatch();
   const accessToken = useAppSelector((state) => state.auth.accessToken);
   const currentUser = useAppSelector((state) => state.auth.user);
   const [loadMe] = useLazyGetMeQuery();
-  const [isDesktopSidebarCollapsed, setIsDesktopSidebarCollapsed] = useState(false);
-
-  const desktopSidebarWidthClass = isDesktopSidebarCollapsed ? 'md:w-16' : 'md:w-56';
-  const desktopMainOffsetClass = isDesktopSidebarCollapsed ? 'md:ml-24' : 'md:ml-64';
-  const desktopMotionClass = 'md:transition-[width,margin] md:duration-500 md:ease-[cubic-bezier(0.22,1,0.36,1)]';
-  const isChatPage = location.pathname === '/chat';
-  const desktopNavItemClass = 'justify-start gap-2 px-3';
-  const accountIconClass = 'h-[18px] w-[18px] shrink-0';
-  const AccountIcon = ACCOUNTS_NAV_ITEM.icon;
-  const userDisplayName = currentUser?.name?.trim() || LAYOUT_UI_TEXT.accountLabel;
+  const [isCollapsed, setIsCollapsed] = useState(false);
+  const [isCreateOpen, setIsCreateOpen] = useState(false);
+  const location = useLocation();
+  const isDashboard = location.pathname === '/dashboard';
 
   useEffect(() => {
-    if (!accessToken || currentUser) {
-      return;
-    }
+    if (!isDashboard) return;
+    document.body.dataset.routeSurface = 'dashboard';
+    return () => { delete document.body.dataset.routeSurface; };
+  }, [isDashboard]);
 
+  useEffect(() => {
+    if (!accessToken || currentUser) return;
     let isMounted = true;
-
-    loadMe()
-      .unwrap()
-      .then((user) => {
-        if (isMounted) {
-          discardLegacyUnscopedChatDrafts();
-          dispatch(setUser(user));
-        }
-      })
-      .catch(() => {
-        // Keep existing fallback label if profile fetch fails.
-      });
-
-    return () => {
-      isMounted = false;
-    };
+    loadMe().unwrap().then((user) => {
+      if (!isMounted) return;
+      discardLegacyUnscopedChatDrafts();
+      dispatch(setUser(user));
+    }).catch(() => undefined);
+    return () => { isMounted = false; };
   }, [accessToken, currentUser, dispatch, loadMe]);
 
-  return (
-    <div className='min-h-[100dvh] bg-[var(--bg-app)]'>
-      <aside
-        className={[
-          'fixed bottom-4 left-4 top-4 z-30 hidden rounded-3xl border border-[var(--bg-border)] bg-[color:rgba(15,15,17,0.86)] shadow-[0_18px_60px_rgba(0,0,0,0.35)] backdrop-blur-xl md:flex md:flex-col',
-          desktopMotionClass,
-          desktopSidebarWidthClass,
-        ].join(' ')}
-      >
-        <div
-          className={[
-            'flex h-[6.5rem] flex-col justify-start pb-5 pt-7 transition-[padding] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]',
-            isDesktopSidebarCollapsed ? 'px-3' : 'px-5',
-          ].join(' ')}
-        >
-          <div className='relative h-[1.9rem]' title={APP_NAME}>
-            <p
-              className={[
-                'absolute inset-0 font-extrabold uppercase leading-tight tracking-[0.04em] text-[var(--text-primary)] transition-opacity duration-150 ease-out',
-                isDesktopSidebarCollapsed ? 'invisible opacity-0' : 'visible opacity-100 text-[1.32rem]',
-              ].join(' ')}
-            >
-              {APP_NAME}
-            </p>
-            <p
-              className={[
-                'absolute inset-0 text-center text-lg font-extrabold uppercase leading-tight tracking-[0.04em] text-[var(--text-primary)] transition-opacity duration-150 ease-out',
-                isDesktopSidebarCollapsed ? 'visible opacity-100' : 'invisible opacity-0',
-              ].join(' ')}
-            >
-              AF
-            </p>
-          </div>
-          <p
-            className={[
-              'mt-1 text-sm font-medium text-[var(--text-muted)] transition-opacity duration-150 ease-out',
-              isDesktopSidebarCollapsed ? 'invisible opacity-0' : 'visible opacity-100',
-            ].join(' ')}
-          >
-            {APP_TAGLINE}
-          </p>
-        </div>
+  const asideWidth = isCollapsed ? 'md:w-[72px]' : 'md:w-60';
+  const mainOffset = isCollapsed ? 'md:pl-[88px]' : 'md:pl-64';
+  const userDisplayName = currentUser?.name?.trim() || LAYOUT_UI_TEXT.accountLabel;
+  const initials = userDisplayName.split(/\s+/).slice(0, 2).map((part) => part[0]?.toUpperCase()).join('');
 
-        <nav className={['flex-1 space-y-2 transition-[padding] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]', isDesktopSidebarCollapsed ? 'px-2' : 'px-3'].join(' ')}>
+  return (
+    <div className='min-h-[100dvh] bg-[var(--canvas)]'>
+      <a href='#main-content' className='fixed left-3 top-3 z-[100] -translate-y-20 rounded-lg bg-[var(--ink)] px-4 py-2 text-sm font-semibold text-[var(--canvas)] transition-transform focus:translate-y-0'>Skip to content</a>
+
+      <aside className={[
+        'fixed inset-y-3 left-3 z-40 hidden flex-col overflow-hidden rounded-2xl bg-[var(--brand-panel)] text-[var(--brand-panel-ink)] shadow-[var(--shadow-soft)] md:flex',
+        'transition-[width] duration-200 ease-[var(--ease-out)]',
+        asideWidth,
+      ].join(' ')}>
+        <Link
+          to='/'
+          aria-label='Go to AffordAbled home'
+          className={['flex h-20 items-center gap-3 px-4 no-underline', isCollapsed ? 'justify-center' : ''].join(' ')}
+        >
+          <span className='flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[var(--accent)] text-[var(--on-accent)]'>
+            <BrandMark className='h-7 w-7' />
+          </span>
+          {!isCollapsed ? <div className='min-w-0'>
+            <p className='truncate text-sm font-bold tracking-[-0.02em]'>{APP_NAME}</p>
+            <p className='truncate text-xs opacity-60'>{APP_TAGLINE}</p>
+          </div> : null}
+        </Link>
+
+        <button
+          type='button'
+          className={[
+            'mx-3 mb-4 inline-flex min-h-11 items-center rounded-xl bg-[var(--accent)] font-semibold text-[var(--on-accent)] transition-[background-color,transform] duration-150 hover:bg-[var(--accent-hover)] active:scale-[0.98]',
+            isCollapsed ? 'justify-center px-0' : 'gap-2 px-3',
+          ].join(' ')}
+          aria-label='Add to your wallet'
+          onClick={() => setIsCreateOpen(true)}
+        >
+          <Plus className='h-5 w-5' aria-hidden='true' /> {!isCollapsed ? 'Create' : null}
+        </button>
+
+        <nav className='flex-1 space-y-1 px-3' aria-label='Primary navigation'>
           {NAV_ITEMS.map((item) => {
             const Icon = item.icon;
-
-            return (
-              <NavLink
-                key={item.path}
-                to={item.path}
-                aria-label={item.label}
-                className={({ isActive }) =>
-                  [
-                    'flex min-h-11 items-center rounded-xl text-sm font-semibold transition-colors',
-                    desktopNavItemClass,
-                    isActive
-                      ? 'bg-[var(--brand-subtle)] text-[var(--brand-primary)]'
-                      : 'text-[var(--text-secondary)] hover:bg-[var(--bg-elevated)]',
-                  ].join(' ')
-                }
-              >
-                <Icon className={accountIconClass} strokeWidth={2.1} aria-hidden='true' />
-                {!isDesktopSidebarCollapsed ? item.label : null}
-              </NavLink>
-            );
+            return <NavLink key={item.path} to={item.path} title={isCollapsed ? item.label : undefined}
+              className={({ isActive }) => [
+                'flex min-h-11 items-center rounded-xl text-sm font-medium transition-[background-color,color] duration-150',
+                isCollapsed ? 'justify-center px-0' : 'gap-3 px-3',
+                isActive ? 'bg-[var(--brand-panel-active)] text-[var(--brand-panel-ink)]' : 'text-[var(--brand-panel-ink-muted)] hover:bg-[var(--brand-panel-hover)] hover:text-[var(--brand-panel-ink)]',
+              ].join(' ')}>
+              <Icon className='h-[19px] w-[19px] shrink-0' strokeWidth={2} aria-hidden='true' />
+              {!isCollapsed ? item.label : null}
+            </NavLink>;
           })}
-
-          <NavLink
-            to={ACCOUNTS_NAV_ITEM.path}
-            aria-label={ACCOUNTS_NAV_ITEM.label}
-            className={({ isActive }) =>
-              [
-                'flex min-h-11 items-center rounded-xl text-sm font-semibold transition-colors',
-                desktopNavItemClass,
-                isActive
-                  ? 'bg-[var(--brand-subtle)] text-[var(--brand-primary)]'
-                  : 'text-[var(--text-secondary)] hover:bg-[var(--bg-elevated)]',
-              ].join(' ')
-            }
-          >
-            <AccountIcon className={accountIconClass} strokeWidth={2.1} aria-hidden='true' />
-            {!isDesktopSidebarCollapsed ? ACCOUNTS_NAV_ITEM.label : null}
+          <NavLink to={ACCOUNTS_NAV_ITEM.path} title={isCollapsed ? 'Wallet' : undefined}
+            className={({ isActive }) => [
+              'flex min-h-11 items-center rounded-xl text-sm font-medium transition-[background-color,color] duration-150',
+              isCollapsed ? 'justify-center px-0' : 'gap-3 px-3',
+              isActive ? 'bg-[var(--brand-panel-active)] text-[var(--brand-panel-ink)]' : 'text-[var(--brand-panel-ink-muted)] hover:bg-[var(--brand-panel-hover)] hover:text-[var(--brand-panel-ink)]',
+            ].join(' ')}>
+            <ACCOUNTS_NAV_ITEM.icon className='h-[19px] w-[19px] shrink-0' strokeWidth={2} aria-hidden='true' />
+            {!isCollapsed ? 'Wallet' : null}
           </NavLink>
         </nav>
 
-        <div
-          className={[
-            'h-16 border-t border-[var(--bg-border)] py-3 transition-[padding] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]',
-            isDesktopSidebarCollapsed ? 'px-2' : 'px-4',
-          ].join(' ')}
-        >
-          <div className={['flex h-full items-center gap-2', isDesktopSidebarCollapsed ? 'justify-center' : 'justify-between'].join(' ')}>
-            {!isDesktopSidebarCollapsed ? (
-              <div className='min-w-0'>
-                <p className='truncate text-xs text-[var(--text-muted)]'>{LAYOUT_UI_TEXT.signedInLabel}</p>
-                <p className='truncate text-sm font-semibold text-[var(--text-secondary)]'>{userDisplayName}</p>
-              </div>
-            ) : null}
-
-            <CollapseToggle
-              className='shrink-0'
-              ariaLabel={
-                isDesktopSidebarCollapsed
-                  ? LAYOUT_UI_TEXT.expandSidebarAriaLabel
-                  : LAYOUT_UI_TEXT.collapseSidebarAriaLabel
-              }
-              direction={isDesktopSidebarCollapsed ? 'right' : 'left'}
-              onClick={() => setIsDesktopSidebarCollapsed((previousValue) => !previousValue)}
-            />
+        <div className='border-t border-[var(--brand-panel-border)] p-3'>
+          <div className={['flex items-center gap-2', isCollapsed ? 'flex-col' : ''].join(' ')}>
+            <NavLink to='/profile' aria-label='Open settings' className={[
+              'flex min-h-11 min-w-0 flex-1 items-center rounded-xl text-[var(--brand-panel-ink-muted)] transition-[background-color,color] duration-150 hover:bg-[var(--brand-panel-hover)] hover:text-[var(--brand-panel-ink)]',
+              isCollapsed ? 'w-11 justify-center' : 'gap-3 px-2',
+            ].join(' ')}>
+              <span className='flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--brand-panel-active)] text-xs font-semibold'>{initials || <UserRound className='h-4 w-4' />}</span>
+              {!isCollapsed ? <span className='min-w-0'>
+                <span className='block truncate text-sm font-medium'>{userDisplayName}</span>
+                <span className='block text-xs opacity-60'>Settings</span>
+              </span> : null}
+            </NavLink>
+            <ThemeControl compact tone='panel' />
+            <CollapseToggle className='shrink-0 text-[var(--brand-panel-ink-muted)]' ariaLabel={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'} direction={isCollapsed ? 'right' : 'left'} onClick={() => setIsCollapsed((value) => !value)} />
           </div>
         </div>
       </aside>
 
-      <main
-        className={[
-          isChatPage ? 'pb-0' : 'pb-[calc(5rem+env(safe-area-inset-bottom))]',
-          'md:mr-4 md:pb-0 md:pt-4',
-          desktopMotionClass,
-          desktopMainOffsetClass,
-        ].join(' ')}
-      >
-        {children}
-      </main>
+      <main id='main-content' className={[
+        'min-h-[100dvh] pb-[calc(5.5rem+env(safe-area-inset-bottom))] md:pb-4 md:pr-4 md:pt-4',
+        'transition-[padding] duration-200 ease-[var(--ease-out)]',
+        mainOffset,
+      ].join(' ')}>{children}</main>
 
-      <nav className='fixed bottom-0 left-0 right-0 z-50 border-t border-[var(--bg-border)] bg-[color:rgba(15,15,17,0.9)] pb-[env(safe-area-inset-bottom)] backdrop-blur-xl md:hidden'>
-        <ul
-          className='m-0 grid h-16 list-none p-0'
-          style={{ gridTemplateColumns: `repeat(${NAV_ITEMS.length}, minmax(0, 1fr))` }}
-        >
-          {NAV_ITEMS.map((item) => {
+      <nav className='fixed inset-x-0 bottom-0 z-50 border-t border-[var(--border)] bg-[var(--surface)]/95 pb-[env(safe-area-inset-bottom)] md:hidden' aria-label='Primary navigation'>
+        <ul className='m-0 grid h-[4.5rem] list-none grid-cols-5 p-0'>
+          {MOBILE_ITEMS.map((item, index) => {
             const Icon = item.icon;
-
-            return (
-              <li key={item.path} className='flex'>
-                <NavLink
-                  to={item.path}
-                  className={({ isActive }) =>
-                    [
-                      'flex w-full flex-col items-center justify-center text-xs font-semibold transition-colors',
-                      isActive ? 'text-[var(--brand-primary)]' : 'text-[var(--text-muted)]',
-                    ].join(' ')
-                  }
-                >
-                  {({ isActive }) => (
-                    <>
-                      <Icon className='h-5 w-5' strokeWidth={2.1} aria-hidden='true' />
-                      {isActive ? <span className='mt-1 text-[11px]'>{item.label}</span> : null}
-                    </>
-                  )}
-                </NavLink>
-              </li>
-            );
+            return <li key={item.path} className='flex' style={{ gridColumn: MOBILE_COLUMNS[index] }}>
+              <NavLink to={item.path} className={({ isActive }) => [
+                'flex w-full flex-col items-center justify-center gap-1 text-[11px] font-medium transition-colors duration-150',
+                isActive ? 'text-[var(--accent)]' : 'text-[var(--ink-muted)]',
+              ].join(' ')}>
+                <Icon className='h-5 w-5' strokeWidth={2} aria-hidden='true' /> {item.label}
+              </NavLink>
+            </li>;
           })}
+          <li className='col-start-3 row-start-1 flex items-center justify-center'>
+            <button type='button' aria-label='Add to your wallet' className='flex h-[52px] w-[52px] -translate-y-3 items-center justify-center rounded-2xl bg-[var(--accent)] text-[var(--on-accent)] shadow-[var(--shadow-raised)] transition-transform duration-200 active:scale-[0.97] active:shadow-[var(--shadow-inset)]' onClick={() => setIsCreateOpen(true)}>
+              <Plus className='h-6 w-6' strokeWidth={2.3} aria-hidden='true' />
+            </button>
+          </li>
         </ul>
       </nav>
 
-      {!isChatPage ? <div className='md:hidden'>
-        <button
-          type='button'
-          className='fixed bottom-[calc(4rem+env(safe-area-inset-bottom)+1rem)] right-4 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-[var(--brand-primary)] text-white shadow-[0_4px_20px_rgba(168,85,247,0.4)] active:scale-[0.98]'
-          aria-label={LAYOUT_UI_TEXT.openChatAriaLabel}
-          onClick={() => navigate('/chat')}
-        >
-          <MessageCircle className='h-6 w-6' strokeWidth={2.2} aria-hidden='true' />
-        </button>
-        <button
-          type='button'
-          className='fixed bottom-[calc(8.5rem+env(safe-area-inset-bottom))] right-4 z-40 flex h-11 w-11 items-center justify-center rounded-full border border-[var(--bg-border)] bg-[var(--bg-elevated)] text-[var(--text-secondary)] active:scale-[0.98]'
-          aria-label={LAYOUT_UI_TEXT.startVoiceAriaLabel}
-          onClick={() => {
-            const detail = { handled: false };
-            window.dispatchEvent(new CustomEvent(VOICE_CAPTURE_EVENT_NAME, { detail }));
-
-            if (!detail.handled) {
-              navigate('/chat?voice=1');
-            }
-          }}
-        >
-          <Mic className='h-5 w-5' strokeWidth={2.2} aria-hidden='true' />
-        </button>
-      </div> : null}
+      <CreateLauncher isOpen={isCreateOpen} onClose={() => setIsCreateOpen(false)} />
     </div>
   );
 }

@@ -8,7 +8,6 @@ import {
   MessageCircle,
   Mic,
   Plus,
-  User,
 } from 'lucide-react';
 
 export const APP_NAME = 'AFFORDABLED';
@@ -32,10 +31,9 @@ interface NavItem {
 
 export const NAV_ITEMS: readonly NavItem[] = [
   { path: '/dashboard', label: 'Home', icon: House },
-  { path: '/chat', label: 'Chat', icon: MessageCircle },
-  { path: '/transactions', label: 'Trans', icon: Landmark },
-  { path: '/splits', label: 'Splits', icon: GitBranch },
-  { path: '/profile', label: 'Profile', icon: User },
+  { path: '/transactions', label: 'Activity', icon: Landmark },
+  { path: '/chat', label: 'Assistant', icon: MessageCircle },
+  { path: '/splits', label: 'Shared', icon: GitBranch },
 ] as const;
 
 export const ACCOUNTS_NAV_ITEM: NavItem = { path: '/accounts', label: 'Accounts', icon: ArrowLeftRight };

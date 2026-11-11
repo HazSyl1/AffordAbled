@@ -73,7 +73,7 @@ export function RecurringTransactionsPanel() {
       {recurringSuggestions.map((suggestion) => {
         const value = suggestion.value;
         return (
-          <Card key={suggestion.id} className='border-[color:rgba(168,85,247,0.35)] p-4'>
+          <Card key={suggestion.id} className='border-[var(--accent)] p-4'>
             <p className='text-sm font-semibold text-[var(--text-primary)]'>Recurring pattern detected</p>
             <p className='mt-1 text-sm text-[var(--text-secondary)]'>
               {String(value.merchant ?? suggestion.subject_key)} · {formatPaiseAsInr(Number(value.amount_paise ?? 0))}

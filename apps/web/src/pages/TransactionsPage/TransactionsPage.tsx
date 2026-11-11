@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Download, Plus, Upload } from 'lucide-react';
+import { Download, Upload } from 'lucide-react';
 
 import { Button } from '../../components/atoms/Button';
 import { Card } from '../../components/atoms/Card';
@@ -50,7 +50,7 @@ export function TransactionsPage() {
   const requestedTransactionId = searchParams.get('transactionId');
   const activeTab = searchParams.get('tab') === 'recurring' ? 'recurring' : 'transactions';
   const { data: transactions } = useListTransactionsQuery();
-  const [isAddTransactionSheetOpen, setIsAddTransactionSheetOpen] = useState(false);
+  const isAddTransactionSheetOpen = searchParams.get('create') === 'manual';
   const [selectedTransaction, setSelectedTransaction] = useState<Transaction | null>(null);
   const [isExportOpen, setIsExportOpen] = useState(false);
   const [isImportOpen, setIsImportOpen] = useState(false);
@@ -65,6 +65,15 @@ export function TransactionsPage() {
   const [createExport, { isLoading: exporting }] = useCreateTransactionExportMutation();
   const [previewImport, { isLoading: previewing }] = usePreviewTransactionImportMutation();
   const [confirmImport, { isLoading: importing }] = useConfirmTransactionImportMutation();
+
+  const closeAddTransactionSheet = () => {
+    if (!searchParams.has('create')) return;
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      next.delete('create');
+      return next;
+    }, { replace: true });
+  };
   const transactionBeingEdited = requestedTransactionId
     ? transactions?.find((item) => item.id === requestedTransactionId) ?? null
     : selectedTransaction;
@@ -176,11 +185,11 @@ export function TransactionsPage() {
 
   return (
     <div className='mx-auto w-full max-w-[1200px] px-4 py-4 md:px-6 md:py-6'>
-      <header className='-mx-4 mb-4 border-b border-[var(--bg-border)] bg-[color:rgba(9,9,11,0.9)] px-4 py-4 backdrop-blur-xl md:mx-0 md:border-none md:bg-transparent md:px-0 md:py-0'>
+      <header className='mb-5 py-2'>
         <div className='flex items-start justify-between gap-3'>
           <div className='min-w-0'>
-            <h1 className='text-xl font-bold text-[var(--text-primary)]'>Transactions</h1>
-            <p className='text-xs text-[var(--text-secondary)]'>Review spending, income, and transfers in one place. Click a transaction to edit it or add a split.</p>
+            <h1 className='text-2xl font-semibold tracking-[-0.025em] text-[var(--text-primary)]'>Activity</h1>
+            <p className='mt-1 max-w-2xl text-sm text-[var(--text-secondary)]'>Review spending, income, refunds, and transfers. Select an entry to edit it or manage a split.</p>
           </div>
 
           <div className='flex shrink-0 items-start gap-1.5'>
@@ -199,23 +208,23 @@ export function TransactionsPage() {
       </header>
 
       <section className='mb-5'>
-        <div className='grid grid-cols-2 gap-3 pb-1 lg:grid-cols-4'>
-          <Card className='min-w-0 p-3'>
+        <div className='grid grid-cols-2 overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)] lg:grid-cols-4'>
+          <div className='min-w-0 border-b border-r border-[var(--border)] p-4 lg:border-b-0'>
             <p className='text-lg font-bold text-[var(--negative)]'>-{formatPaiseAsInr(summary.expensePaise)}</p>
             <p className='mt-0.5 text-xs text-[var(--text-muted)]'>Expenses</p>
-          </Card>
-          <Card className='min-w-0 p-3'>
+          </div>
+          <div className='min-w-0 border-b border-[var(--border)] p-4 lg:border-b-0 lg:border-r'>
             <p className='text-lg font-bold text-[var(--positive)]'>+{formatPaiseAsInr(summary.incomePaise)}</p>
             <p className='mt-0.5 text-xs text-[var(--text-muted)]'>Income</p>
-          </Card>
-          <Card className='min-w-0 p-3'>
+          </div>
+          <div className='min-w-0 border-r border-[var(--border)] p-4'>
             <p className='text-lg font-bold text-[var(--text-primary)]'>{formatPaiseAsInr(summary.netPaise)}</p>
             <p className='mt-0.5 text-xs text-[var(--text-muted)]'>Net</p>
-          </Card>
-          <Card className='min-w-0 p-3'>
+          </div>
+          <div className='min-w-0 p-4'>
             <p className='text-lg font-bold text-[var(--info)]'>{formatPaiseAsInr(summary.transferPaise)}</p>
             <p className='mt-0.5 text-xs text-[var(--text-muted)]'>Transfers</p>
-          </Card>
+          </div>
         </div>
       </section>
 
@@ -317,25 +326,15 @@ export function TransactionsPage() {
 
       <BottomSheet
         isOpen={isAddTransactionSheetOpen}
-        onClose={() => setIsAddTransactionSheetOpen(false)}
+        onClose={closeAddTransactionSheet}
         title={SHEET_TITLES.addTransaction}
       >
         <CreateTransactionForm
           mode='sheet'
           showHeading={false}
-          onSuccess={() => setIsAddTransactionSheetOpen(false)}
+          onSuccess={closeAddTransactionSheet}
         />
       </BottomSheet>
-
-      <button
-        type='button'
-        aria-label='Add transaction'
-        title='Add transaction'
-        className='fixed bottom-[calc(5rem+env(safe-area-inset-bottom)+1rem)] left-4 z-40 inline-flex h-14 w-14 items-center justify-center rounded-full bg-[var(--brand-primary)] text-white shadow-[0_4px_20px_rgba(168,85,247,0.4)] transition-transform hover:scale-105 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg-app)] md:bottom-4 lg:hidden'
-        onClick={() => setIsAddTransactionSheetOpen(true)}
-      >
-        <Plus className='h-6 w-6' strokeWidth={2.5} aria-hidden='true' />
-      </button>
 
       <BottomSheet
         isOpen={Boolean(transactionBeingEdited)}

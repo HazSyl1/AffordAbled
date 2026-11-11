@@ -20,6 +20,7 @@ import { useListAccountsQuery } from '../../features/accounts/accountsApi';
 import { useListCategoriesQuery } from '../../features/categories/categoriesApi';
 import { useForgetMemoryMutation, useListMemoriesQuery, useListMemorySuggestionsQuery } from '../../features/memory/memoryApi';
 import { describeMemory } from '../../features/memory/memoryText';
+import { ThemeControl } from '../../components/molecules/ThemeControl';
 
 function initials(name: string): string {
   return name.trim().split(/\s+/).slice(0, 2).map((part) => part[0]?.toUpperCase() ?? '').join('') || 'U';
@@ -109,15 +110,14 @@ export function ProfilePage() {
   return (
     <div className='mx-auto w-full min-w-0 max-w-[900px] space-y-5 overflow-x-clip px-4 py-5 md:px-6 md:py-8'>
       <header>
-        <p className='text-xs font-semibold uppercase tracking-[0.18em] text-[var(--brand-primary)]'>Your space</p>
-        <h1 className='mt-1 text-2xl font-bold text-[var(--text-primary)]'>Profile</h1>
-        <p className='mt-1 text-sm text-[var(--text-muted)]'>A home for the details behind your wallet.</p>
+        <h1 className='text-2xl font-semibold tracking-[-0.025em] text-[var(--text-primary)]'>Settings</h1>
+        <p className='mt-1 text-sm text-[var(--text-muted)]'>Manage your profile, preferences, and wallet controls.</p>
       </header>
 
       <Card className='overflow-hidden p-0'>
-        <div className='bg-[color:rgba(168,85,247,0.10)] px-5 py-6 md:px-7'>
+        <div className='bg-[var(--accent-soft)] px-5 py-6 md:px-7'>
           <div className='flex items-center gap-4'>
-            <div className='flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-[var(--brand-primary)] text-xl font-bold text-white' aria-hidden='true'>
+            <div className='flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-[var(--brand-primary)] text-xl font-bold text-[var(--on-accent)]' aria-hidden='true'>
               {initials(displayName)}
             </div>
             <div className='min-w-0'>
@@ -237,7 +237,7 @@ export function ProfilePage() {
           <p className='mt-1 text-sm text-[var(--text-muted)]'>You can always pick up where you left off.</p>
         </div>
         <Button type='button' variant='ghost'
-          className='w-full border border-red-400/50 bg-red-500/15 text-red-200 hover:bg-red-500 hover:text-white md:w-auto'
+          className='w-full border border-[var(--negative)]/45 !bg-[var(--negative-soft)] font-bold !text-[var(--negative)] hover:!bg-[var(--negative)] hover:!text-white md:w-auto'
           isLoading={isLoggingOut} onClick={() => { void handleLogout(); }}>
           <LogOut className='h-4 w-4' aria-hidden='true' /> Log out
         </Button>
@@ -287,6 +287,14 @@ export function ProfilePage() {
             }}>Forget this preference</Button>
           </>}
         </div> : null}
+      </Card>
+
+      <Card className='flex w-full max-w-sm items-center justify-between gap-4 self-end p-3'>
+        <div>
+          <h2 className='text-sm font-semibold text-[var(--text-primary)]'>Appearance</h2>
+          <p className='mt-0.5 text-xs text-[var(--text-muted)]'>Light or dark mode</p>
+        </div>
+        <ThemeControl compact />
       </Card>
     </div>
   );

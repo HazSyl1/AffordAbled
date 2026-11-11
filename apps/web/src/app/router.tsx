@@ -1,36 +1,31 @@
 import { createBrowserRouter } from 'react-router-dom';
 
-import { AccountsPage } from '../pages/AccountsPage';
-import { ChatPage } from '../pages/ChatPage';
-import { DashboardPage } from '../pages/DashboardPage';
-import { LoginPage } from '../pages/LoginPage';
-import { LandingPage } from '../pages/LandingPage/LandingPage';
-import { ProfilePage } from '../pages/ProfilePage';
-import { RegisterPage } from '../pages/RegisterPage';
-import { SplitsPage } from '../pages/SplitsPage';
-import { TransactionsPage } from '../pages/TransactionsPage';
 import { PublicOnlyRoute } from './PublicOnlyRoute';
 import { ProtectedRoute } from './ProtectedRoute';
+import {
+  LazyAccountsPage, LazyChatPage, LazyDashboardPage, LazyLandingPage, LazyLoginPage,
+  LazyProfilePage, LazyRegisterPage, LazySplitsPage, LazyTransactionsPage,
+} from './LazyPages';
 
 export const router = createBrowserRouter([
   {
     element: <PublicOnlyRoute />,
     children: [
-      { path: '/', element: <LandingPage /> },
-      { path: '/login', element: <LoginPage /> },
-      { path: '/register', element: <RegisterPage /> },
+      { path: '/', element: <LazyLandingPage /> },
+      { path: '/login', element: <LazyLoginPage /> },
+      { path: '/register', element: <LazyRegisterPage /> },
     ],
   },
   {
     element: <ProtectedRoute />,
     children: [
-      { path: '/dashboard', element: <DashboardPage /> },
-      { path: '/chat', element: <ChatPage /> },
-      { path: '/accounts', element: <AccountsPage /> },
-      { path: '/transactions', element: <TransactionsPage /> },
-      { path: '/splits', element: <SplitsPage /> },
-      { path: '/splits/new', element: <SplitsPage /> },
-      { path: '/profile', element: <ProfilePage /> },
+      { path: '/dashboard', element: <LazyDashboardPage /> },
+      { path: '/chat', element: <LazyChatPage /> },
+      { path: '/accounts', element: <LazyAccountsPage /> },
+      { path: '/transactions', element: <LazyTransactionsPage /> },
+      { path: '/splits', element: <LazySplitsPage /> },
+      { path: '/splits/new', element: <LazySplitsPage /> },
+      { path: '/profile', element: <LazyProfilePage /> },
     ],
   },
 ]);

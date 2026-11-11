@@ -1,6 +1,6 @@
 import { zodResolver } from '@hookform/resolvers/zod';
 import type { FetchBaseQueryError } from '@reduxjs/toolkit/query';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { Link, useNavigate } from 'react-router-dom';
 
@@ -43,12 +43,7 @@ export function LoginPage() {
   const navigate = useNavigate();
   const [login] = useLoginMutation();
   const [formError, setFormError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!authNotice) return;
-    setFormError(authNotice);
-    dispatch(setAuthNotice(null));
-  }, [authNotice, dispatch]);
+  const visibleFormError = formError ?? authNotice;
 
   const {
     register,
@@ -58,6 +53,7 @@ export function LoginPage() {
 
   const onSubmit = handleSubmit(async (values) => {
     setFormError(null);
+    dispatch(setAuthNotice(null));
     try {
       const result = await login(values).unwrap();
       dispatch(apiClient.util.resetApiState());
@@ -87,9 +83,9 @@ export function LoginPage() {
           <Input id="password" type="password" autoComplete="current-password" {...register('password')} />
         </FormField>
 
-        {formError ? (
+        {visibleFormError ? (
           <p className="mb-4 text-sm text-[var(--negative)]" role="alert">
-            {formError}
+            {visibleFormError}
           </p>
         ) : null}
 

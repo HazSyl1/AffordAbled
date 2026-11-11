@@ -6,7 +6,7 @@ export function BalanceEmailButton({ contactId, name, onFeedback }: {
 }) {
   const { data: status, refetch, isError } = useGetBalanceEmailStatusQuery(contactId);
   const [send, { isLoading }] = useQueueBalanceStatementMutation();
-  const [clock, setClock] = useState(Date.now());
+  const [clock, setClock] = useState(() => Date.now());
   useEffect(() => {
     if (!status?.next_available_at && !status?.request_in_progress) return;
     const timer = window.setInterval(() => {

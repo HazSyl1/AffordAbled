@@ -1,6 +1,9 @@
+import { X } from 'lucide-react';
+import { createPortal } from 'react-dom';
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useBodyScrollLock } from '../../../lib/useBodyScrollLock';
+import { useModalFocus } from '../../../lib/useModalFocus';
 
 export interface BottomSheetProps {
   isOpen: boolean;
@@ -20,21 +23,23 @@ export function BottomSheet({ isOpen, onClose, title, children }: BottomSheetPro
   const dragFrame = useRef<number | null>(null);
   const pendingHeight = useRef<number | null>(null);
   const suppressHandleClick = useRef(false);
+  const { containerRef: focusContainerRef, overlayRef } = useModalFocus(isOpen, onClose);
 
   useEffect(() => {
     if (!isOpen) {
-      setIsExpanded(false);
-      setDraggedHeight(null);
-      setIsDragging(false);
-      setIsDismissing(false);
-      dragStartY.current = null;
-      dragStartHeight.current = null;
-      if (dragFrame.current !== null) cancelAnimationFrame(dragFrame.current);
-      dragFrame.current = null;
-      pendingHeight.current = null;
-      return;
+      const resetTimer = window.setTimeout(() => {
+        setIsExpanded(false);
+        setDraggedHeight(null);
+        setIsDragging(false);
+        setIsDismissing(false);
+        dragStartY.current = null;
+        dragStartHeight.current = null;
+        if (dragFrame.current !== null) cancelAnimationFrame(dragFrame.current);
+        dragFrame.current = null;
+        pendingHeight.current = null;
+      }, 0);
+      return () => window.clearTimeout(resetTimer);
     }
-
   }, [isOpen]);
 
   useBodyScrollLock(isOpen);
@@ -43,22 +48,29 @@ export function BottomSheet({ isOpen, onClose, title, children }: BottomSheetPro
     return null;
   }
 
-  return (
-    <div className='fixed inset-0 z-[60] flex items-end justify-center lg:z-50 lg:items-center' role='dialog' aria-modal='true' aria-label={title ?? 'Bottom sheet'}>
+  return createPortal(
+    <div ref={overlayRef} className='fixed inset-0 z-[60] flex items-end justify-center lg:z-50 lg:items-center'>
       <button
         type='button'
         aria-label='Close'
-        className={`absolute inset-0 bg-black/60 transition-opacity duration-200 ${isDismissing ? 'opacity-0' : 'opacity-100'}`}
+        className={`absolute inset-0 bg-[var(--overlay)] transition-opacity duration-200 ${isDismissing ? 'opacity-0' : 'opacity-100'}`}
         onClick={onClose}
       />
 
       <div className={[
-        'relative flex w-full flex-col overflow-hidden rounded-t-3xl border-x border-t border-[var(--bg-border)] bg-[var(--bg-card)] pb-[env(safe-area-inset-bottom)] transition-[height,max-height,border-radius,transform] duration-[350ms] ease-[cubic-bezier(0.22,1,0.36,1)]',
+        'relative flex w-full flex-col overflow-hidden rounded-t-3xl border-x border-t border-[var(--border)] bg-[var(--surface)] pb-[env(safe-area-inset-bottom)] transition-[border-radius,transform] duration-200 ease-[var(--ease-out)]',
         isExpanded ? 'h-[calc(100dvh-env(safe-area-inset-top))] max-h-none' : 'max-h-[85dvh]',
         isDismissing ? 'translate-y-full' : 'translate-y-0',
-        'lg:h-auto lg:max-h-[70vh] lg:max-w-2xl lg:rounded-3xl lg:border lg:pb-0 lg:shadow-[0_24px_60px_rgba(0,0,0,0.55)]',
+        'lg:h-auto lg:max-h-[70vh] lg:max-w-2xl lg:rounded-2xl lg:border lg:pb-0 lg:shadow-[var(--shadow-raised)]',
       ].join(' ')}
-        ref={sheetRef}
+        ref={(node) => {
+          sheetRef.current = node;
+          focusContainerRef.current = node;
+        }}
+        role='dialog'
+        aria-modal='true'
+        aria-label={title ?? 'Bottom sheet'}
+        tabIndex={-1}
         style={{
           height: draggedHeight ?? undefined,
           transition: isDragging ? 'none' : undefined,
@@ -143,10 +155,11 @@ export function BottomSheet({ isOpen, onClose, title, children }: BottomSheetPro
               <button
                 type='button'
                 aria-label='Close'
+                data-modal-autofocus
                 className='flex h-9 w-9 items-center justify-center rounded-full border border-[var(--bg-border)] bg-[var(--bg-elevated)] text-lg text-[var(--text-secondary)] hover:bg-[var(--bg-card)]'
                 onClick={onClose}
               >
-                ×
+                <X className='h-4 w-4' aria-hidden='true' />
               </button>
             </div>
           ) : null}
@@ -154,6 +167,7 @@ export function BottomSheet({ isOpen, onClose, title, children }: BottomSheetPro
           {children}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
