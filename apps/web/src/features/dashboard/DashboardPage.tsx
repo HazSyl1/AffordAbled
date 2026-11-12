@@ -844,7 +844,7 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
                     disabled={isDisabled}
                     onClick={() => handleQuickActionClick(action.key)}
                   >
-                    <Icon className='h-[18px] w-[18px]' strokeWidth={2} aria-hidden='true' />
+                    <Icon className='h-4 w-4' strokeWidth={2.2} aria-hidden='true' />
                     {action.label}
                   </Button>
                 );

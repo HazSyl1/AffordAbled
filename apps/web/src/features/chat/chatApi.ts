@@ -55,6 +55,7 @@ export interface ChatResponse {
   transaction_logged?: boolean;
   created_transaction_id?: string | null;
   created_split_ids?: string[];
+  reminder_requests?: { split_id: string; participant_ids: string[] }[];
   manual_transaction_input_required?: boolean;
   insights?: ChatInsight[] | null;
 }

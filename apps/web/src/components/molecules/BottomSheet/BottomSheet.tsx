@@ -87,7 +87,7 @@ export function BottomSheet({ isOpen, onClose, title, children }: BottomSheetPro
             aria-label={isExpanded ? 'Collapse sheet' : 'Expand sheet'}
             aria-expanded={isExpanded}
             aria-controls='bottom-sheet-content'
-            className='group flex h-12 w-full touch-none select-none items-center justify-center rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)]'
+            className='bottom-sheet-drag-handle group flex h-12 w-full touch-none select-none items-center justify-center rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)]'
             onPointerDown={(event) => {
               dragStartY.current = event.clientY;
               dragStartHeight.current = sheetRef.current?.getBoundingClientRect().height ?? null;

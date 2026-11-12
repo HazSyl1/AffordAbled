@@ -124,7 +124,7 @@
 @media (prefers-reduced-motion: reduce) { .wallet-desktop-preview { position: static; } .story-state, .landing-faq[open] > div { animation: none; } }
 .premium-mobile-menu { position: relative; font-size: 13px; }
 .premium-mobile-menu summary { cursor: pointer; padding: 12px; min-height: 44px; }
-.premium-mobile-menu > div { position: absolute; right: 0; top: 48px; display: grid; min-width: 180px; padding: 8px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
+.premium-mobile-menu > div { position: fixed; right: max(12px, env(safe-area-inset-right)); top: calc(76px + env(safe-area-inset-top)); z-index: 30; display: grid; width: min(220px, calc(100vw - 24px - env(safe-area-inset-left) - env(safe-area-inset-right))); padding: 8px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow-raised); }
 .premium-mobile-menu > div > a { padding: 12px; min-height: 44px; }
 .landing-restored > header { position: sticky; top: 0; z-index: 20; max-width: none; padding-inline: max(24px, calc((100% - 1200px) / 2)); background: color-mix(in srgb, var(--canvas) 92%, transparent); backdrop-filter: blur(12px); border-bottom: 1px solid var(--border); }
 .landing-restored section { scroll-margin-top: 110px; }
