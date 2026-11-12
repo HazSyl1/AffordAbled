@@ -633,26 +633,38 @@ export function SplitsPage() {
       <div className='grid min-w-0 grid-cols-1 gap-2 min-[480px]:grid-cols-2 md:grid-cols-3'>
         <Button type='button' aria-pressed={open} variant={open ? 'primary' : 'secondary'}
           className='min-w-0 border whitespace-normal text-center text-sm' onClick={() => {
-          setOpen((value) => !value); setOwedOpen(false); setComplexOpen(false); setReview(null);
+          setOpen((value) => !value); setOwedOpen(false); setComplexOpen(false);
+          setManagePeopleOpen(false); setBalancesOpen(false); setSettlementsOpen(false); setReview(null);
         }}>Split an expense</Button>
         <Button type='button' aria-pressed={owedOpen} variant={owedOpen ? 'primary' : 'secondary'}
           className='min-w-0 border whitespace-normal text-center text-sm' onClick={() => {
-          setOwedOpen((value) => !value); setOpen(false); setComplexOpen(false); setReview(null);
+          setOwedOpen((value) => !value); setOpen(false); setComplexOpen(false);
+          setManagePeopleOpen(false); setBalancesOpen(false); setSettlementsOpen(false); setReview(null);
         }}>Record money owed</Button>
         <Button type='button' aria-pressed={complexOpen} variant={complexOpen ? 'primary' : 'secondary'}
           className='min-w-0 border whitespace-normal text-center text-sm'
           onClick={() => {
-            setComplexOpen((value) => !value); setOpen(false); setOwedOpen(false); setReview(null);
+            setComplexOpen((value) => !value); setOpen(false); setOwedOpen(false);
+            setManagePeopleOpen(false); setBalancesOpen(false); setSettlementsOpen(false); setReview(null);
           }}>Plan group settlement</Button>
         <Button type='button' aria-pressed={managePeopleOpen} variant={managePeopleOpen ? 'primary' : 'secondary'}
           className='min-w-0 border whitespace-normal text-center text-sm'
-          onClick={() => setManagePeopleOpen((value) => !value)}>Manage people</Button>
+          onClick={() => {
+            setManagePeopleOpen((value) => !value); setOpen(false); setOwedOpen(false);
+            setComplexOpen(false); setBalancesOpen(false); setSettlementsOpen(false);
+          }}>Manage people</Button>
         <Button type='button' aria-pressed={balancesOpen} variant={balancesOpen ? 'primary' : 'secondary'}
           className='min-w-0 border whitespace-normal text-center text-sm'
-          onClick={() => setBalancesOpen((value) => !value)}>Balances by person</Button>
+          onClick={() => {
+            setBalancesOpen((value) => !value); setOpen(false); setOwedOpen(false);
+            setComplexOpen(false); setManagePeopleOpen(false); setSettlementsOpen(false);
+          }}>Balances by person</Button>
         <Button type='button' aria-pressed={settlementsOpen} variant={settlementsOpen ? 'primary' : 'secondary'}
           className='min-w-0 border whitespace-normal text-center text-sm'
-          onClick={() => setSettlementsOpen((value) => !value)}>Group settlements</Button>
+          onClick={() => {
+            setSettlementsOpen((value) => !value); setOpen(false); setOwedOpen(false);
+            setComplexOpen(false); setManagePeopleOpen(false); setBalancesOpen(false);
+          }}>Group settlements</Button>
       </div>
     </div>
     {managePeopleOpen && <Card className='space-y-4 p-5'>
