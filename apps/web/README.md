@@ -11,7 +11,7 @@ npm install
 npm run dev
 ```
 
-The app uses `http://localhost:8000` as its API by default. Set `VITE_API_BASE_URL` in a local `.env` file to use another API URL.
+Development uses `http://localhost:8000` as its API by default. Production builds use the hosted API by default. Set `VITE_API_BASE_URL` in a local `.env` file to override either default; a trailing slash is optional.
 
 ## Validation and production build
 
@@ -31,6 +31,6 @@ The Capacitor wrapper lives in this directory. Build and sync the web bundle wit
 npm run cap:build
 ```
 
-Open the native projects with `npm run cap:android` or `npm run cap:ios`. Release mobile builds must set `VITE_API_BASE_URL` to the hosted HTTPS API; the default `http://localhost:8000` is only suitable for browser development. The API deployment must allow credentialed requests from the Capacitor origins (`https://localhost` for Android and `capacitor://localhost` for iOS) in addition to the hosted web origin.
+Open the native projects with `npm run cap:android` or `npm run cap:ios`. The API deployment must allow credentialed requests from the Capacitor origins (`https://localhost` for Android and `capacitor://localhost` for iOS) in addition to the hosted web origin.
 
 The Android project can be built with Android Studio/SDK. The iOS project requires macOS and Xcode.

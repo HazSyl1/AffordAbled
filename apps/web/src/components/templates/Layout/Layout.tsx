@@ -59,8 +59,8 @@ export function Layout({ children }: LayoutProps) {
         asideWidth,
       ].join(' ')}>
         <Link
-          to='/'
-          aria-label='Go to AffordAbled home'
+          to='/dashboard'
+          aria-label='Go to Dashboard'
           className={['flex h-20 items-center gap-3 px-4 no-underline', isCollapsed ? 'justify-center' : ''].join(' ')}
         >
           {!isCollapsed ? <AffordableWordmark size={40} className='min-w-0' /> : <AffordableLogo size={40} />}
