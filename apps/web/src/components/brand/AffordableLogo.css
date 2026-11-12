@@ -1,0 +1,6 @@
+.affordable-wordmark { display: inline-flex; align-items: center; gap: 12px; min-width: 0; color: inherit; text-decoration: none; }
+.affordable-wordmark-copy { display: grid; gap: 3px; min-width: 0; }
+.affordable-wordmark-name { overflow: hidden; color: inherit; font-size: 14px; line-height: 1.2; font-weight: 750; letter-spacing: .13em; text-overflow: ellipsis; white-space: nowrap; }
+.affordable-wordmark-tagline { color: var(--brand-panel-ink-muted, var(--ink-muted, var(--text-muted))); font-size: 9px; line-height: 1.2; font-weight: 600; letter-spacing: .18em; white-space: nowrap; }
+.affordable-wordmark svg { display: block; }
+@media (max-width: 639px) { .affordable-wordmark-tagline { display: none; } }

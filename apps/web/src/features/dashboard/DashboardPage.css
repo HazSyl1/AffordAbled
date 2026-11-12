@@ -12,6 +12,15 @@
   color: var(--dash-text);
 }
 
+/* Dashboard presentation: keep emphasis on the balance and real actions. */
+.dashboard-soft { max-width: 1280px; }
+.dashboard-soft > header { padding-block: 16px 24px; margin-bottom: 8px; }
+.dashboard-soft > header h1 { font-size: clamp(24px, 2.4vw, 32px); line-height: 1.2; }
+.dashboard-soft > header > div { gap: 20px; align-items: flex-start; }
+.dashboard-wallet-action { display: inline-flex; align-items: center; justify-content: center; gap: 10px; min-height: 44px; padding: 10px 16px; white-space: nowrap; border: 1px solid var(--dash-border); border-radius: 12px; background: var(--dash-surface); color: var(--dash-text); font-size: 13px; font-weight: 600; }
+.dashboard-header-actions { flex-shrink: 0; }
+@media (max-width: 639px) { .dashboard-wallet-action { display: none; } .dashboard-soft > header h1 { font-size: 24px; } .dashboard-soft > header p { max-width: 26ch; line-height: 1.6; } }
+
 .dashboard-soft .dashboard-surface,
 .dashboard-soft .dashboard-balance-surface,
 .dashboard-soft .dashboard-loading-surface {
@@ -298,6 +307,30 @@
 html[data-theme='dark']:has(body[data-route-surface='dashboard']) {
   background: #000000;
 }
+
+.dashboard-soft .dashboard-surface { border: 1px solid var(--dash-border); background-image: none; box-shadow: none; animation: none; padding: 24px; border-radius: 20px; }
+:root[data-theme='dark'] .dashboard-soft .dashboard-surface { background-image: none; }
+.dashboard-soft .dashboard-surface::before, .dashboard-soft .dashboard-surface::after { display: none; }
+.dashboard-soft .dashboard-balance-surface { padding: 32px; border-radius: 24px; box-shadow: none; border: 1px solid var(--dash-border); animation: none; }
+.dashboard-soft .dashboard-balance-surface .text-4xl { font-size: clamp(32px, 4vw, 48px); line-height: 1.15; overflow-wrap: anywhere; }
+.dashboard-soft .dashboard-balance-metrics { box-shadow: none; background: color-mix(in srgb, var(--dash-bg) 60%, transparent); border: 1px solid var(--dash-border); padding: 20px; }
+.dashboard-soft .dashboard-surface .dashboard-well { box-shadow: none; border: 1px solid var(--dash-border); background: transparent; padding: 16px; }
+.dashboard-soft .dashboard-list-well, :root[data-theme='dark'] .dashboard-soft .dashboard-list-well { background: transparent; padding: 0; }
+.dashboard-soft .dashboard-list-row { border-radius: 0; padding-block: 16px; transform: none; }
+.dashboard-soft .dashboard-list-row:hover { transform: none; background: transparent; }
+.dashboard-soft .dashboard-compact-action { min-height: 36px; border: 1px solid var(--dash-border); background: var(--dash-bg); border-radius: 10px; padding: 6px 12px; }
+.dashboard-soft .dashboard-quick-actions { background: transparent; box-shadow: none; padding: 4px 0 12px; }
+.dashboard-soft .dashboard-quick-actions > button { background: var(--dash-surface); border: 1px solid var(--dash-border); min-height: 52px; border-radius: 12px; color: var(--dash-text); }
+.dashboard-soft .dashboard-quick-actions > button:first-child { background: var(--dash-blue); border-color: var(--dash-blue); color: var(--on-accent); }
+.dashboard-soft .dashboard-icon-button { box-shadow: none; background: var(--dash-surface); border-color: var(--dash-border); }
+.dashboard-soft .dashboard-icon-button:hover, .dashboard-soft .dashboard-icon-button:active { box-shadow: none; transform: none; }
+@media (hover: hover) and (pointer: fine) {
+  .dashboard-soft .dashboard-wallet-action:hover, .dashboard-soft .dashboard-compact-action:hover, .dashboard-soft .dashboard-quick-actions > button:not(:disabled):hover { background: var(--accent-soft); color: var(--dash-blue); border-color: var(--dash-blue); box-shadow: 0 4px 12px rgb(0 0 0 / 8%); }
+  .dashboard-soft .dashboard-quick-actions > button:first-child:not(:disabled):hover { background: var(--accent-hover); color: var(--on-accent); }
+}
+body[data-route-surface='dashboard'] aside { box-shadow: none; border: 1px solid var(--border); }
+body[data-route-surface='dashboard'] aside nav a[aria-current='page'] { background: var(--accent-soft); color: var(--accent); }
+@media (max-width: 639px) { .dashboard-soft .dashboard-surface { padding: 16px; border-radius: 16px; } .dashboard-soft .dashboard-balance-surface { padding: 24px 20px; } .dashboard-soft .dashboard-compact-action { padding: 6px 10px; } }
 
 :root[data-theme='dark'] body[data-route-surface='dashboard'] {
   background: var(--canvas);

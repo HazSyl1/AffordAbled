@@ -2,7 +2,7 @@ import { ArrowLeft, Check } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 
-import { BrandMark } from '../../atoms/BrandMark';
+import { AffordableWordmark } from '../../brand/AffordableLogo';
 import { ThemeControl } from '../ThemeControl';
 
 interface AuthPageShellProps {
@@ -23,8 +23,7 @@ export function AuthPageShell({ children, catchphrase, description }: AuthPageSh
       <div className='mx-auto grid min-h-[calc(100dvh-2rem)] w-full max-w-6xl overflow-hidden rounded-2xl bg-[var(--surface)] shadow-[var(--shadow-soft)] sm:min-h-[calc(100dvh-3rem)] lg:grid-cols-[0.95fr_1.05fr]'>
         <section className='hidden flex-col justify-between bg-[var(--brand-panel)] p-10 text-[var(--brand-panel-ink)] lg:flex xl:p-14'>
           <Link to='/' className='inline-flex w-fit items-center gap-3 rounded-lg'>
-            <span className='flex h-11 w-11 items-center justify-center rounded-xl bg-[var(--accent)] text-[var(--on-accent)]'><BrandMark className='h-7 w-7' /></span>
-            <span className='font-bold tracking-[-0.02em]'>AffordAbled</span>
+            <AffordableWordmark size={40} />
           </Link>
           <div className='max-w-lg py-14'>
             <h1 className='text-5xl font-semibold leading-[1.05] tracking-[-0.04em]'>{catchphrase}</h1>

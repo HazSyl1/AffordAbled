@@ -1,6 +1,9 @@
-import type { ImgHTMLAttributes } from 'react';
+import type { SVGProps } from 'react';
+import { AffordableLogo } from '../../brand/AffordableLogo';
 
-export function BrandMark({ className, ...props }: ImgHTMLAttributes<HTMLImageElement>) {
-  return <img src='/app-icon.png' alt='' aria-hidden='true' className={className} {...props} />;
+export function BrandMark({ className, ...props }: SVGProps<SVGSVGElement>) {
+  const { width = 40, height = width, style, ...logoProps } = props;
+  const size = typeof width === 'number' ? width : Number.parseFloat(width) || 40;
+  return <AffordableLogo className={className} size={size} style={{ width, height, ...style }} {...logoProps} />;
 }
 

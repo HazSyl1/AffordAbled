@@ -1,14 +1,16 @@
 import {
-  ArrowDown, ArrowRight, BarChart3, Bot, Camera, Check, CircleHelp, FileDown, Mail, Mic,
+  ArrowRight, Bot, Camera, Check, CircleHelp, FileDown, Mail,
   Plus, ReceiptText, ShieldCheck, Split, Wallet, Users, BadgePercent, Scale, ListChecks, Repeat2, QrCode, Gauge,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 import { APP_NAME } from '../../constants';
 import { useAppSelector } from '../../app/hooks';
-import { BrandMark } from '../../components/atoms/BrandMark';
+import { AffordableWordmark } from '../../components/brand/AffordableLogo';
 import { ThemeControl } from '../../components/molecules/ThemeControl';
 import './LandingPage.css';
+import { AccountStory, CaptureStory, RecurringStory, GroupStory, FinanceChatStory, FeatureBento, Reveal } from './LandingStories';
+import { LandingHero } from './LandingHero';
 import { FeatureCarousel } from './FeatureCarousel';
 
 const features = [
@@ -126,113 +128,45 @@ const steps = [
   ['See the bigger picture', 'Use Dashboard for a monthly summary, or open Splits to track shared expenses and repayments.'],
 ];
 
-const examples = [
-  { label: 'Record a purchase', prompt: 'Spent ₹450 on lunch from my bank account', help: 'The assistant can use your accounts and categories to help record it.' },
-  { label: 'Understand spending', prompt: 'How much did I spend on food this month?', help: 'Ask questions about transactions you have already recorded.' },
-  { label: 'Share an expense', prompt: 'Split this ₹900 dinner equally with Isha and Piyush', help: 'Review the people and amounts before saving the split.' },
-  { label: 'Settle a group trip', prompt: 'I paid ₹17,000 for dinner with a 2.7% card fee and a 10% coupon. Split it with Isha, Piyush and Dev', help: 'Chat prepares a draft; use Review settlement to check fees, coupons, and transfers.' },
-  { label: 'Do several things at once', prompt: 'Create categories Food and Misc as expenses', help: 'Each task is completed in turn, then you get a short summary.' },
-];
-
 export function LandingPage() {
   const isAuthenticated = Boolean(useAppSelector((state) => state.auth.accessToken));
   const destination = isAuthenticated ? '/dashboard' : '/register';
   return (
-    <main className='landing-restored min-h-screen overflow-hidden text-[var(--text-primary)]'>
+    <main className='landing-restored min-h-screen text-[var(--text-primary)]'>
       <header className='mx-auto flex w-full max-w-7xl items-center justify-between px-5 py-5 sm:px-8 lg:px-10'>
         <Link to='/' className='inline-flex items-center gap-3 rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)]'>
-          <span className='flex h-10 w-10 items-center justify-center rounded-2xl bg-[var(--brand-primary)] text-white shadow-lg shadow-purple-950/40'>
-            <BrandMark className='h-10 w-10 rounded-xl' />
-          </span>
-          <span>
-            <span className='block text-sm font-bold tracking-[0.12em]'>{APP_NAME}</span>
-            <span className='block text-xs text-[var(--text-muted)]'>Your personal AI wallet</span>
-          </span>
+          <AffordableWordmark size={44} />
         </Link>
         <nav aria-label='Main navigation' className='flex items-center gap-2 sm:gap-3'>
           <a href='#whats-new' className='hidden rounded-lg px-3 py-2 text-sm text-[var(--text-secondary)] transition-colors hover:text-white md:inline-flex'>What’s new</a>
           <a href='#features' className='hidden rounded-lg px-3 py-2 text-sm text-[var(--text-secondary)] transition-colors hover:text-white md:inline-flex'>Features</a>
           <a href='#how-it-works' className='hidden rounded-lg px-3 py-2 text-sm text-[var(--text-secondary)] transition-colors hover:text-white md:inline-flex'>How to use it</a>
+          <a href='#help' className='hidden rounded-lg px-3 py-2 text-sm text-[var(--text-secondary)] md:inline-flex'>FAQs</a>
           <ThemeControl compact />
+          <details className='premium-mobile-menu md:hidden'>
+            <summary>Menu</summary>
+            <div><a href='#features'>Features</a><a href='#how-it-works'>How to use it</a><a href='#help'>FAQs</a></div>
+          </details>
           {!isAuthenticated && <Link to='/login' className='rounded-xl px-3 py-2 text-sm font-semibold text-[var(--text-secondary)] transition-colors hover:bg-white/5 hover:text-white'>Log in</Link>}
           <Link to={destination} className='inline-flex items-center gap-2 rounded-xl bg-[var(--brand-primary)] px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-[var(--brand-hover)]'>{isAuthenticated ? 'Open app' : 'Get started'} <ArrowRight className='h-4 w-4' aria-hidden='true' /></Link>
         </nav>
       </header>
 
-      <section className='relative mx-auto grid w-full max-w-7xl items-center gap-12 px-5 pb-20 pt-12 sm:px-8 sm:pt-16 lg:grid-cols-[1fr_0.9fr] lg:px-10 lg:pb-28 lg:pt-20'>
-        <div className='absolute -left-40 top-0 -z-10 h-[28rem] w-[28rem] rounded-full bg-purple-500/10 blur-3xl' aria-hidden='true' />
-        <div className='max-w-2xl'>
-          <div className='mb-6 inline-flex items-center gap-2 rounded-full border border-[var(--brand-primary)]/30 bg-[var(--brand-primary)]/10 px-3 py-1.5 text-xs font-semibold text-purple-200'>
-            <span className='h-2 w-2 rounded-full bg-[var(--brand-primary)]' aria-hidden='true' /> Everyday money, easier to follow
-          </div>
-          <h1 className='text-4xl font-bold leading-[1.08] tracking-tight sm:text-5xl lg:text-6xl'>Track your money. <span className='text-purple-300'>Understand the story behind it.</span></h1>
-          <p className='mt-6 max-w-xl text-base leading-7 text-[var(--text-secondary)] sm:text-lg'>AffordAbled puts accounts, transactions, spending summaries, and shared expenses in one place. Record things yourself or describe them to the assistant by chat, voice, or receipt.</p>
-          <div className='mt-8 flex flex-col gap-3 sm:flex-row'>
-            <Link to={destination} className='inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-[var(--brand-primary)] px-5 text-sm font-semibold text-white shadow-lg shadow-purple-950/30 transition-all hover:-translate-y-0.5 hover:bg-[var(--brand-hover)]'>{isAuthenticated ? 'Open app' : 'Create your account'} <ArrowRight className='h-4 w-4' aria-hidden='true' /></Link>
-            <a href='#features' className='inline-flex min-h-12 items-center justify-center gap-2 rounded-xl border border-[var(--bg-border)] bg-white/[0.03] px-5 text-sm font-semibold text-[var(--text-secondary)] transition-colors hover:bg-white/[0.07] hover:text-white'>Explore what it does <ArrowDown className='h-4 w-4' aria-hidden='true' /></a>
-          </div>
-          <p className='mt-4 text-xs text-[var(--text-muted)]'>Start with one account. Add more detail as you go.</p>
-        </div>
-
-        <div className='relative mx-auto w-full max-w-lg'>
-          <div className='absolute -inset-5 rounded-[2rem] bg-gradient-to-br from-purple-500/20 via-transparent to-blue-500/10 blur-xl' aria-hidden='true' />
-          <div className='relative rounded-[1.75rem] border border-white/10 bg-[#111114]/95 p-5 shadow-2xl shadow-black/40 sm:p-7'>
-            <div className='flex items-center justify-between border-b border-white/10 pb-5'>
-              <div>
-                <p className='text-xs font-medium text-[var(--text-muted)]'>AN EXAMPLE WORKFLOW</p>
-                <p className='mt-1 text-lg font-semibold'>From a quick note to a clearer picture</p>
-              </div>
-              <span className='flex h-10 w-10 items-center justify-center rounded-xl bg-purple-400/10 text-purple-300'><Wallet className='h-5 w-5' aria-hidden='true' /></span>
-            </div>
-            <div className='grid grid-cols-2 gap-3 py-5'>
-              <div className='rounded-2xl border border-white/10 bg-white/[0.03] p-4'><Wallet className='h-4 w-4 text-purple-300' aria-hidden='true' /><p className='mt-3 text-sm font-semibold'>Accounts</p><p className='mt-1 text-xs leading-5 text-[var(--text-muted)]'>See balances in one place</p></div>
-              <div className='rounded-2xl border border-white/10 bg-white/[0.03] p-4'><BarChart3 className='h-4 w-4 text-blue-300' aria-hidden='true' /><p className='mt-3 text-sm font-semibold'>Dashboard</p><p className='mt-1 text-xs leading-5 text-[var(--text-muted)]'>Follow the month’s activity</p></div>
-            </div>
-            <div className='rounded-2xl border border-purple-400/20 bg-purple-400/[0.07] p-4'>
-              <div className='flex items-start gap-3'>
-                <span className='flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-purple-400/15 text-purple-200'><Bot className='h-5 w-5' aria-hidden='true' /></span>
-                <div><p className='text-xs font-semibold uppercase tracking-wide text-purple-200'>Tell your assistant</p><p className='mt-1 text-sm leading-6 text-[var(--text-secondary)]'>“Spent ₹450 on lunch.” Then check the transaction details and category.</p></div>
-              </div>
-            </div>
-            <div className='mt-3 flex items-center gap-3 rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3'>
-              <Split className='h-4 w-4 shrink-0 text-emerald-300' aria-hidden='true' />
-              <p className='text-xs leading-5 text-[var(--text-secondary)]'>Shared it with someone? Track their share in <span className='font-semibold text-white'>Splits</span>.</p>
-            </div>
-            <div className='mt-4 flex flex-wrap gap-2'>
-              {[['Chat', Bot], ['Voice', Mic], ['Receipt', Camera]].map(([label, Icon]) => {
-                const ItemIcon = Icon as typeof Bot;
-                return <span key={label as string} className='inline-flex items-center gap-1.5 rounded-full border border-white/10 px-3 py-1.5 text-xs text-[var(--text-muted)]'><ItemIcon className='h-3.5 w-3.5' aria-hidden='true' />{label as string}</span>;
-              })}
-            </div>
-            <p className='mt-4 text-[11px] text-[var(--text-muted)]'>Illustrative preview · no sample account data</p>
-          </div>
-        </div>
-      </section>
+      <LandingHero signedIn={isAuthenticated} />
 
       <FeatureCarousel />
 
-      <section id='features' className='border-y border-white/[0.06] bg-white/[0.015]'>
-        <div className='mx-auto max-w-7xl px-5 py-16 sm:px-8 lg:px-10 lg:py-20'>
-          <p className='text-xs font-semibold uppercase tracking-[0.18em] text-[var(--brand-primary)]'>What you can do today</p>
-          <div className='mt-3 flex flex-col justify-between gap-4 md:flex-row md:items-end'>
-            <h2 className='max-w-2xl text-3xl font-bold tracking-tight sm:text-4xl'>The everyday money tools, together.</h2>
-            <p className='max-w-md text-sm leading-6 text-[var(--text-secondary)]'>Each feature has a place in the app and a clear way to start using it.</p>
-          </div>
-          <div className='mt-9 grid gap-4 sm:grid-cols-2 lg:grid-cols-4'>
-            {features.map(({ icon: Icon, title, description, how, location }, index) => (
-              <article key={title} className='flex h-full min-w-0 flex-col rounded-2xl border border-[var(--bg-border)] bg-[var(--bg-card)] p-5 transition-transform hover:-translate-y-1'>
-                <span className='flex h-11 w-11 items-center justify-center rounded-2xl bg-[var(--brand-primary)]/10 text-purple-300'><Icon className='h-5 w-5' aria-hidden='true' /></span>
-                <p className='mt-5 text-xs font-semibold text-[var(--brand-primary)]'>0{index + 1}</p>
-                <h3 className='mt-1 text-base font-semibold'>{title}</h3>
-                <p className='mt-2 text-sm leading-6 text-[var(--text-secondary)]'>{description}</p>
-                <div className='mt-5 border-t border-white/10 pt-4'>
-                  <p className='text-[11px] font-semibold uppercase tracking-[0.12em] text-purple-300'>{location}</p>
-                  <p className='mt-1 text-xs leading-5 text-[var(--text-secondary)]'>{how}</p>
-                </div>
-              </article>
-            ))}
-          </div>
-        </div>
+      <AccountStory />
+      <CaptureStory />
+      <RecurringStory />
+      <GroupStory />
+      <FinanceChatStory />
+      <FeatureBento />
+
+      <section className='story-container capability-guide'>
+        <details><summary>Explore the full feature guide</summary><div className='capability-guide-content'>
+          {features.map(({ title, description, how, location }) => <article key={title}><h3>{title}</h3><p>{description}</p><p><strong>{location}:</strong> {how}</p></article>)}
+        </div></details>
       </section>
 
       <section id='how-it-works' className='mx-auto max-w-7xl px-5 py-16 sm:px-8 lg:px-10 lg:py-20'>
@@ -243,9 +177,9 @@ export function LandingPage() {
             <p className='mt-4 text-sm leading-6 text-[var(--text-secondary)]'>Starter categories are ready for you. Add an account, record a purchase, and check the result before exploring your dashboard or splitting a bill.</p>
             <Link to={destination} className='mt-6 inline-flex items-center gap-2 text-sm font-semibold text-purple-200 hover:text-white'>{isAuthenticated ? 'Open app' : 'Create your wallet'} <ArrowRight className='h-4 w-4' aria-hidden='true' /></Link>
           </div>
-          <ol className='space-y-3'>
+          <ol className='landing-journey'>
             {steps.map(([title, description], index) => (
-              <li key={title} className='flex gap-4 rounded-2xl border border-[var(--bg-border)] bg-[var(--bg-card)] p-5'>
+              <li key={title} className='flex gap-4 p-5'>
                 <span className='flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--brand-primary)]/15 text-sm font-bold text-purple-200'>{index + 1}</span>
                 <div><h3 className='font-semibold'>{title}</h3><p className='mt-1 text-sm leading-6 text-[var(--text-secondary)]'>{description}</p></div>
               </li>
@@ -254,23 +188,7 @@ export function LandingPage() {
         </div>
       </section>
 
-      <section id='examples' className='border-t border-white/[0.06] bg-white/[0.015]'>
-        <div className='mx-auto max-w-7xl px-5 py-16 sm:px-8 lg:px-10 lg:py-20'>
-          <p className='text-xs font-semibold uppercase tracking-[0.18em] text-[var(--brand-primary)]'>Try it in Finance Chat</p>
-          <h2 className='mt-3 max-w-2xl text-3xl font-bold tracking-tight sm:text-4xl'>Start with a simple message.</h2>
-          <p className='mt-3 max-w-2xl text-sm leading-6 text-[var(--text-secondary)]'>Use everyday language. The assistant can ask for missing details, and you can review a split before saving it.</p>
-          <div className='mt-8 grid gap-4 md:grid-cols-2 lg:grid-cols-3'>
-            {examples.map(({ label, prompt, help }) => (
-              <article key={label} className='flex min-w-0 flex-col rounded-2xl border border-[var(--bg-border)] bg-[var(--bg-card)] p-5'>
-                <p className='text-xs font-semibold uppercase tracking-[0.12em] text-purple-300'>{label}</p>
-                <p className='mt-4 rounded-xl border border-purple-400/15 bg-purple-400/[0.06] p-4 text-sm font-medium leading-6 text-[var(--text-primary)]'>“{prompt}”</p>
-                <p className='mt-4 text-xs leading-5 text-[var(--text-secondary)]'>{help}</p>
-              </article>
-            ))}
-          </div>
-          <Link to={destination} className='mt-7 inline-flex items-center gap-2 text-sm font-semibold text-purple-200 hover:text-white'>Get started and open Finance Chat <ArrowRight className='h-4 w-4' aria-hidden='true' /></Link>
-        </div>
-      </section>
+      <section className='story-container product-principles'><Reveal><h2>The assistant helps.<br />You keep the final say.</h2><div><p><strong>Review the consequence.</strong> Check the amount, account, and people before confirming.</p><p><strong>Choose what’s remembered.</strong> Accept or dismiss suggested preferences.</p><p><strong>Keep the details visible.</strong> See how transfers and settlements affect your records.</p></div></Reveal></section>
 
       <section id='help' className='border-t border-white/[0.06] bg-white/[0.015]'>
         <div className='mx-auto grid max-w-7xl gap-8 px-5 py-16 sm:px-8 md:grid-cols-[0.7fr_1.3fr] lg:px-10 lg:py-20'>
@@ -280,12 +198,12 @@ export function LandingPage() {
             <h2 className='mt-2 text-3xl font-bold tracking-tight'>Good to know</h2>
           </div>
           <div className='divide-y divide-white/10'>
-            <article className='py-4 first:pt-0'><h3 className='font-semibold'>Do I need to use the assistant?</h3><p className='mt-2 text-sm leading-6 text-[var(--text-secondary)]'>No. You can add transactions manually and manage accounts, categories, and splits through the app.</p></article>
-            <article className='py-4'><h3 className='font-semibold'>What if a receipt needs more detail?</h3><p className='mt-2 text-sm leading-6 text-[var(--text-secondary)]'>Upload it in Finance Chat. The assistant can ask about anything unclear; check the transaction and its category when it appears.</p></article>
-            <article className='py-4'><h3 className='font-semibold'>Can I record money owed without logging a purchase?</h3><p className='mt-2 text-sm leading-6 text-[var(--text-secondary)]'>Yes. Open Splits and choose Record money owed. When someone pays you back, choose the receiving account and mark it repaid.</p></article>
-            <article className='py-4'><h3 className='font-semibold'>How do I split a bill with coupons, fees, or several payers?</h3><p className='mt-2 text-sm leading-6 text-[var(--text-secondary)]'>Open Splits and choose Plan group settlement. Add each bill, who shared each item, who paid, and any coupon, fee, or tip. Previewing never touches your wallet; confirming records only your own payments.</p></article>
-            <article className='py-4'><h3 className='font-semibold'>Can I review assistant preferences?</h3><p className='mt-2 text-sm leading-6 text-[var(--text-secondary)]'>Yes. Suggested preferences can be accepted or dismissed, and saved memories can be reviewed from your profile.</p></article>
-            <article className='py-4'><h3 className='font-semibold'>Where do I start?</h3><p className='mt-2 text-sm leading-6 text-[var(--text-secondary)]'>Register and add your first money account. Starter categories are already there, so you can record a purchase in Transactions or Finance Chat.</p></article>
+            <details className='landing-faq'><summary>Do I need to use the assistant?<span aria-hidden='true'>+</span></summary><div><p>No. You can add transactions manually and manage accounts, categories, and splits through the app.</p></div></details>
+            <details className='landing-faq'><summary>What if a receipt needs more detail?<span aria-hidden='true'>+</span></summary><div><p>Upload it in Finance Chat. The assistant can ask about anything unclear; check the transaction and its category when it appears.</p></div></details>
+            <details className='landing-faq'><summary>Can I record money owed without logging a purchase?<span aria-hidden='true'>+</span></summary><div><p>Yes. Open Splits and choose Record money owed. When someone pays you back, choose the receiving account and mark it repaid.</p></div></details>
+            <details className='landing-faq'><summary>How do I split a bill with coupons, fees, or several payers?<span aria-hidden='true'>+</span></summary><div><p>Open Splits and choose Plan group settlement. Add each bill, who shared each item, who paid, and any coupon, fee, or tip. Previewing never touches your wallet; confirming records only your own payments.</p></div></details>
+            <details className='landing-faq'><summary>Can I review assistant preferences?<span aria-hidden='true'>+</span></summary><div><p>Yes. Suggested preferences can be accepted or dismissed, and saved memories can be reviewed from your profile.</p></div></details>
+            <details className='landing-faq'><summary>Where do I start?<span aria-hidden='true'>+</span></summary><div><p>Register and add your first money account. Starter categories are already there, so you can record a purchase in Transactions or Finance Chat.</p></div></details>
           </div>
         </div>
       </section>

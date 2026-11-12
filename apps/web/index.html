@@ -2,7 +2,7 @@
 <html lang="en" data-type="software" data-radius="soft" data-motion="restrained">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/png" href="/app-icon.png" />
+    <link id="app-favicon" rel="icon" type="image/svg+xml" href="/brand/affordable-icon-light.svg" />
     <link rel="apple-touch-icon" href="/app-icon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
     <meta id="app-theme-color" name="theme-color" content="#F0F4F8" />
@@ -21,6 +21,7 @@
           : matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
         document.documentElement.dataset.theme = mode;
         document.querySelector('#app-theme-color')?.setAttribute('content', mode === 'dark' ? '#000000' : '#F0F4F8');
+        document.querySelector('#app-favicon')?.setAttribute('href', `/brand/affordable-icon-${mode}.svg`);
       })();
     </script>
   </head>

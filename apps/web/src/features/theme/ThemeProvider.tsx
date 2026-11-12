@@ -18,6 +18,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     document.documentElement.dataset.theme = mode;
     const backgroundColor = mode === 'dark' ? '#000000' : '#F0F4F8';
     document.querySelector<HTMLMetaElement>('#app-theme-color')?.setAttribute('content', backgroundColor);
+    document.querySelector<HTMLLinkElement>('#app-favicon')?.setAttribute(
+      'href',
+      `/brand/affordable-icon-${mode}.svg`,
+    );
 
     if (Capacitor.isNativePlatform()) {
       void Promise.allSettled([

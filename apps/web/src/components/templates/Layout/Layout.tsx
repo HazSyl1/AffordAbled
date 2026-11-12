@@ -6,8 +6,8 @@ import { useAppDispatch, useAppSelector } from '../../../app/hooks';
 import { useLazyGetMeQuery } from '../../../features/auth/authApi';
 import { setUser } from '../../../features/auth/authSlice';
 import { discardLegacyUnscopedChatDrafts } from '../../../features/chat/chatDrafts';
-import { ACCOUNTS_NAV_ITEM, APP_NAME, APP_TAGLINE, LAYOUT_UI_TEXT, NAV_ITEMS } from '../../../constants';
-import { BrandMark } from '../../atoms/BrandMark';
+import { ACCOUNTS_NAV_ITEM, LAYOUT_UI_TEXT, NAV_ITEMS } from '../../../constants';
+import { AffordableLogo, AffordableWordmark } from '../../brand/AffordableLogo';
 import { CollapseToggle } from '../../atoms/CollapseToggle';
 import { ThemeControl } from '../../molecules/ThemeControl';
 import { CreateLauncher } from '../../organisms/CreateLauncher';
@@ -63,13 +63,7 @@ export function Layout({ children }: LayoutProps) {
           aria-label='Go to AffordAbled home'
           className={['flex h-20 items-center gap-3 px-4 no-underline', isCollapsed ? 'justify-center' : ''].join(' ')}
         >
-          <span className='flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[var(--accent)] text-[var(--on-accent)]'>
-            <BrandMark className='h-7 w-7' />
-          </span>
-          {!isCollapsed ? <div className='min-w-0'>
-            <p className='truncate text-sm font-bold tracking-[-0.02em]'>{APP_NAME}</p>
-            <p className='truncate text-xs opacity-60'>{APP_TAGLINE}</p>
-          </div> : null}
+          {!isCollapsed ? <AffordableWordmark size={40} className='min-w-0' /> : <AffordableLogo size={40} />}
         </Link>
 
         <button
