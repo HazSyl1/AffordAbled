@@ -2,6 +2,7 @@ import { ArrowRight, Camera, Check, ChevronRight, Keyboard, MessageCircle, Mic, 
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 
+import { useAppSelector } from '../../app/hooks';
 import { BrandMark } from '../../components/atoms/BrandMark';
 import { ThemeControl } from '../../components/molecules/ThemeControl';
 
@@ -13,8 +14,11 @@ const captureModes = [
 ] as const;
 
 export function LandingPage() {
+  const isAuthenticated = Boolean(useAppSelector((state) => state.auth.accessToken));
   const [captureMode, setCaptureMode] = useState<(typeof captureModes)[number]['id']>('chat');
   const activeMode = captureModes.find((mode) => mode.id === captureMode) ?? captureModes[0];
+  const primaryDestination = isAuthenticated ? '/dashboard' : '/register';
+  const primaryLabel = isAuthenticated ? 'Open app' : 'Create your wallet';
 
   return (
     <div className='min-h-screen bg-[var(--canvas)] text-[var(--ink)]'>
@@ -28,8 +32,14 @@ export function LandingPage() {
           </Link>
           <nav className='flex items-center gap-1' aria-label='Public navigation'>
             <span className='hidden sm:block'><ThemeControl compact /></span>
-            <Link to='/login' className='hidden min-h-11 items-center rounded-lg px-3 text-sm font-medium text-[var(--ink-secondary)] hover:text-[var(--ink)] sm:inline-flex'>Log in</Link>
-            <Link to='/register' className='inline-flex min-h-11 items-center rounded-[var(--btn-radius)] bg-[var(--accent)] px-4 text-sm font-semibold text-[var(--on-accent)] transition-colors hover:bg-[var(--accent-hover)]'><span className='sm:hidden'>Get started</span><span className='hidden sm:inline'>Create your wallet</span></Link>
+            {isAuthenticated ? (
+              <Link to='/dashboard' className='inline-flex min-h-11 items-center rounded-[var(--btn-radius)] bg-[var(--accent)] px-4 text-sm font-semibold text-[var(--on-accent)] transition-colors hover:bg-[var(--accent-hover)]'>Open app</Link>
+            ) : (
+              <>
+                <Link to='/login' className='hidden min-h-11 items-center rounded-lg px-3 text-sm font-medium text-[var(--ink-secondary)] hover:text-[var(--ink)] sm:inline-flex'>Log in</Link>
+                <Link to='/register' className='inline-flex min-h-11 items-center rounded-[var(--btn-radius)] bg-[var(--accent)] px-4 text-sm font-semibold text-[var(--on-accent)] transition-colors hover:bg-[var(--accent-hover)]'><span className='sm:hidden'>Get started</span><span className='hidden sm:inline'>Create your wallet</span></Link>
+              </>
+            )}
           </nav>
         </div>
       </header>
@@ -41,7 +51,7 @@ export function LandingPage() {
               <h1 className='text-balance text-[clamp(2.8rem,6vw,5.6rem)] font-semibold leading-[0.96] tracking-[-0.04em]'>Know where your money stands before you act.</h1>
               <p className='mt-7 max-w-xl text-lg leading-8 text-[var(--ink-secondary)]'>AffordAbled brings accounts, transactions, shared expenses, and AI-assisted capture into one wallet you stay in control of.</p>
               <div className='mt-8 flex flex-col gap-3 sm:flex-row'>
-                <Link to='/register' className='inline-flex min-h-12 items-center justify-center gap-2 rounded-[var(--btn-radius)] bg-[var(--accent)] px-5 text-sm font-semibold text-[var(--on-accent)] transition-[background-color,transform] hover:bg-[var(--accent-hover)] active:scale-[0.98]'>Create your wallet <ArrowRight className='h-4 w-4' aria-hidden='true' /></Link>
+                <Link to={primaryDestination} className='inline-flex min-h-12 items-center justify-center gap-2 rounded-[var(--btn-radius)] bg-[var(--accent)] px-5 text-sm font-semibold text-[var(--on-accent)] transition-[background-color,transform] hover:bg-[var(--accent-hover)] active:scale-[0.98]'>{primaryLabel} <ArrowRight className='h-4 w-4' aria-hidden='true' /></Link>
                 <a href='#capture' className='inline-flex min-h-12 items-center justify-center gap-2 rounded-[var(--btn-radius)] border border-[var(--border)] bg-[var(--surface)] px-5 text-sm font-semibold text-[var(--ink)] transition-colors hover:bg-[var(--surface-subtle)]'>See how review works</a>
               </div>
               <p className='mt-5 text-sm text-[var(--ink-muted)]'>Nothing is saved until you review the details.</p>
@@ -112,7 +122,7 @@ export function LandingPage() {
             <div className='order-1 max-w-xl lg:order-2'>
               <h2 className='text-4xl font-semibold leading-tight tracking-[-0.035em] sm:text-5xl'>Shared money without the awkward arithmetic.</h2>
               <p className='mt-5 text-lg leading-8 text-[var(--ink-secondary)]'>Split individual items, combine several bills, account for coupons and fees, and see the smallest set of transfers before anything touches your wallet.</p>
-              <Link to='/register' className='mt-7 inline-flex min-h-11 items-center gap-2 text-sm font-semibold text-[var(--accent)]'>Start a clear settlement <ChevronRight className='h-4 w-4' aria-hidden='true' /></Link>
+              <Link to={isAuthenticated ? '/splits' : '/register'} className='mt-7 inline-flex min-h-11 items-center gap-2 text-sm font-semibold text-[var(--accent)]'>{isAuthenticated ? 'Open shared expenses' : 'Start a clear settlement'} <ChevronRight className='h-4 w-4' aria-hidden='true' /></Link>
             </div>
           </div>
         </section>
@@ -137,7 +147,7 @@ export function LandingPage() {
           <div className='mx-auto w-full max-w-4xl px-4 py-24 text-center sm:px-6'>
             <h2 className='text-balance text-4xl font-semibold tracking-[-0.035em] sm:text-6xl'>Make everyday money easier to understand.</h2>
             <p className='mx-auto mt-5 max-w-2xl text-lg leading-8 text-[var(--ink-secondary)]'>Start with one account. Add money your way. Review every important change.</p>
-            <Link to='/register' className='mt-8 inline-flex min-h-12 items-center justify-center gap-2 rounded-[var(--btn-radius)] bg-[var(--accent)] px-6 text-sm font-semibold text-[var(--on-accent)] transition-colors hover:bg-[var(--accent-hover)]'>Create your wallet <ArrowRight className='h-4 w-4' aria-hidden='true' /></Link>
+            <Link to={primaryDestination} className='mt-8 inline-flex min-h-12 items-center justify-center gap-2 rounded-[var(--btn-radius)] bg-[var(--accent)] px-6 text-sm font-semibold text-[var(--on-accent)] transition-colors hover:bg-[var(--accent-hover)]'>{primaryLabel} <ArrowRight className='h-4 w-4' aria-hidden='true' /></Link>
           </div>
         </section>
       </main>
@@ -145,7 +155,7 @@ export function LandingPage() {
       <footer className='border-t border-[var(--border)]'>
         <div className='mx-auto flex max-w-7xl flex-col gap-3 px-4 py-8 text-sm text-[var(--ink-muted)] sm:flex-row sm:items-center sm:justify-between sm:px-6 lg:px-8'>
           <p>© {new Date().getFullYear()} AffordAbled</p>
-          <div className='flex gap-5'><Link to='/login'>Log in</Link><Link to='/register'>Create account</Link></div>
+          {isAuthenticated ? <Link to='/dashboard'>Open app</Link> : <div className='flex gap-5'><Link to='/login'>Log in</Link><Link to='/register'>Create account</Link></div>}
         </div>
       </footer>
     </div>
