@@ -22,7 +22,7 @@ export function AuthPageShell({ children, catchphrase, description }: AuthPageSh
     <main className='min-h-[100dvh] bg-[var(--canvas)] p-4 sm:p-6'>
       <div className='mx-auto grid min-h-[calc(100dvh-2rem)] w-full max-w-6xl overflow-hidden rounded-2xl bg-[var(--surface)] shadow-[var(--shadow-soft)] sm:min-h-[calc(100dvh-3rem)] lg:grid-cols-[0.95fr_1.05fr]'>
         <section className='hidden flex-col justify-between bg-[var(--brand-panel)] p-10 text-[var(--brand-panel-ink)] lg:flex xl:p-14'>
-          <Link to='/' className='inline-flex w-fit items-center gap-3 rounded-lg'>
+          <Link to='/landing' className='inline-flex w-fit items-center gap-3 rounded-lg'>
             <AffordableWordmark size={40} />
           </Link>
           <div className='max-w-lg py-14'>
@@ -37,7 +37,7 @@ export function AuthPageShell({ children, catchphrase, description }: AuthPageSh
 
         <section className='flex min-w-0 flex-col p-5 sm:p-8 lg:p-12 xl:p-16'>
           <div className='flex items-center justify-between'>
-            <Link to='/' className='inline-flex min-h-11 items-center gap-2 rounded-lg text-sm font-medium text-[var(--ink-secondary)] hover:text-[var(--ink)] lg:hidden'><ArrowLeft className='h-4 w-4' aria-hidden='true' /> Home</Link>
+            <Link to='/landing' className='inline-flex min-h-11 items-center gap-2 rounded-lg text-sm font-medium text-[var(--ink-secondary)] hover:text-[var(--ink)] lg:hidden'><ArrowLeft className='h-4 w-4' aria-hidden='true' /> Home</Link>
             <div className='ml-auto'><ThemeControl compact /></div>
           </div>
           <div className='mx-auto flex w-full max-w-md flex-1 flex-col justify-center py-10'>

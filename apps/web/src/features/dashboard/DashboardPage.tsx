@@ -707,7 +707,7 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
             void startCapture();
           }}
         >
-          <Mic className='h-4 w-4' strokeWidth={2.2} aria-hidden='true' />
+          <Mic className='h-5 w-5' strokeWidth={2.2} aria-hidden='true' />
         </button>
         <button
           type='button'
@@ -717,9 +717,9 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
           onClick={() => imageFileInputRef.current?.click()}
         >
           {isAnalyzingImage ? (
-            <LoaderCircle className='h-4 w-4 animate-spin' strokeWidth={2.2} aria-hidden='true' />
+            <LoaderCircle className='h-[21px] w-[21px] animate-spin' strokeWidth={2.2} aria-hidden='true' />
           ) : (
-            <ImagePlus className='h-4 w-4' strokeWidth={2.2} aria-hidden='true' />
+            <ImagePlus className='h-[21px] w-[21px]' strokeWidth={2.2} aria-hidden='true' />
           )}
         </button>
         <Input
@@ -840,11 +840,23 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
                     key={action.key}
                     type='button'
                     variant='ghost'
-                    className='min-w-20 flex-1 gap-2 whitespace-nowrap px-3 text-sm'
+                    className='min-w-[84px] flex-1 gap-1.5 whitespace-nowrap px-2 text-sm'
                     disabled={isDisabled}
                     onClick={() => handleQuickActionClick(action.key)}
                   >
-                    <Icon className='h-4 w-4' strokeWidth={2.2} aria-hidden='true' />
+                    <Icon
+                      className={
+                        action.key === 'image'
+                          ? 'h-[21px] w-[21px] shrink-0'
+                          : action.key === 'voice'
+                            ? 'h-5 w-5 shrink-0'
+                            : action.key === 'chat'
+                              ? 'h-[18px] w-[18px] shrink-0'
+                              : 'h-4 w-4 shrink-0'
+                      }
+                      strokeWidth={2.2}
+                      aria-hidden='true'
+                    />
                     {action.label}
                   </Button>
                 );

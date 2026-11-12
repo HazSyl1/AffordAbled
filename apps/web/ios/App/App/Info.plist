@@ -24,6 +24,10 @@
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>AffordAbled uses the microphone to transcribe voice notes into your finance chat.</string>
+	<key>WKAppBoundDomains</key>
+	<array>
+		<string>affordabled-api-c8ewaeajgjf0ehhf.centralindia-01.azurewebsites.net</string>
+	</array>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>

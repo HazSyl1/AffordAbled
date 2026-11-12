@@ -1024,7 +1024,7 @@ function ChatWorkspace({ userId }: { userId: string }) {
                 void startCapture();
               }}
             >
-              <Mic className='h-4 w-4' strokeWidth={2.2} aria-hidden='true' />
+              <Mic className='h-5 w-5' strokeWidth={2.2} aria-hidden='true' />
             </button>
             <button
               type='button'
@@ -1034,9 +1034,9 @@ function ChatWorkspace({ userId }: { userId: string }) {
               onClick={() => imageFileInputRef.current?.click()}
             >
               {isAnalyzingImage ? (
-                <LoaderCircle className='h-4 w-4 animate-spin' strokeWidth={2.2} aria-hidden='true' />
+                <LoaderCircle className='h-[21px] w-[21px] animate-spin' strokeWidth={2.2} aria-hidden='true' />
               ) : (
-                <ImagePlus className='h-4 w-4' strokeWidth={2.2} aria-hidden='true' />
+                <ImagePlus className='h-[21px] w-[21px]' strokeWidth={2.2} aria-hidden='true' />
               )}
             </button>
             <Input

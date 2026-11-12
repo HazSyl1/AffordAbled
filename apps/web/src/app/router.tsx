@@ -4,12 +4,13 @@ import { HomeRoute } from './HomeRoute';
 import { PublicOnlyRoute } from './PublicOnlyRoute';
 import { ProtectedRoute } from './ProtectedRoute';
 import {
-  LazyAccountsPage, LazyChatPage, LazyDashboardPage, LazyLoginPage,
+  LazyAccountsPage, LazyChatPage, LazyDashboardPage, LazyLandingPage, LazyLoginPage,
   LazyProfilePage, LazyRegisterPage, LazySplitsPage, LazyTransactionsPage,
 } from './LazyPages';
 
 export const router = createBrowserRouter([
   { path: '/', element: <HomeRoute /> },
+  { path: '/landing', element: <LazyLandingPage /> },
   {
     element: <PublicOnlyRoute />,
     children: [

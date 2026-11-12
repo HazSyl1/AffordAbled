@@ -19,6 +19,8 @@ const rawBaseQuery = fetchBaseQuery({
   },
 });
 
+let refreshInFlight: Promise<string | null> | null = null;
+
 // On a 401, try exactly one silent refresh (using the httpOnly cookie), then
 // retry the original request once. If the refresh itself fails, log out.
 const baseQueryWithReauth: BaseQueryFn<string | FetchArgs, unknown, FetchBaseQueryError> = async (
@@ -34,16 +36,25 @@ const baseQueryWithReauth: BaseQueryFn<string | FetchArgs, unknown, FetchBaseQue
     .some((path) => requestUrl.endsWith(path));
 
   if (result.error?.status === 401 && !isAuthEntryRequest) {
-    const refreshResult = await rawBaseQuery(
-      { url: '/auth/refresh', method: 'POST' },
-      api,
-      extraOptions,
-    );
+    if (!refreshInFlight) {
+      refreshInFlight = (async () => {
+        const refreshResult = await rawBaseQuery(
+          { url: '/auth/refresh', method: 'POST' },
+          api,
+          extraOptions,
+        );
+        if (!refreshResult.data) return null;
+        const { access_token: accessToken } = refreshResult.data as { access_token: string };
+        await persistAccessToken(accessToken);
+        api.dispatch(setCredentials({ accessToken }));
+        return accessToken;
+      })().finally(() => {
+        refreshInFlight = null;
+      });
+    }
 
-    if (refreshResult.data) {
-      const { access_token: accessToken } = refreshResult.data as { access_token: string };
-      await persistAccessToken(accessToken);
-      api.dispatch(setCredentials({ accessToken }));
+    const refreshedAccessToken = await refreshInFlight;
+    if (refreshedAccessToken) {
       result = await rawBaseQuery(args, api, extraOptions);
       if (result.error?.status === 401) {
         await clearStoredAccessToken();

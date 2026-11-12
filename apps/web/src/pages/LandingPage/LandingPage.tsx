@@ -134,7 +134,7 @@ export function LandingPage() {
   return (
     <main className='landing-restored min-h-screen text-[var(--text-primary)]'>
       <header className='mx-auto flex w-full max-w-7xl items-center justify-between px-5 py-5 sm:px-8 lg:px-10'>
-        <Link to='/' className='inline-flex items-center gap-3 rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)]'>
+        <Link to='/landing' className='inline-flex items-center gap-3 rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)]'>
           <AffordableWordmark size={44} />
         </Link>
         <nav aria-label='Main navigation' className='flex items-center gap-2 sm:gap-3'>
