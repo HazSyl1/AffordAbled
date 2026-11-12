@@ -129,7 +129,13 @@
   }
 }
 
-html { min-height: 100%; overflow-x: hidden; background: var(--canvas); }
+html {
+  min-height: 100%;
+  overflow-x: hidden;
+  overscroll-behavior: none;
+  background: var(--canvas);
+  -webkit-text-size-adjust: 100%;
+}
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 body {
   margin: 0;
@@ -138,12 +144,20 @@ body {
   padding-bottom: env(safe-area-inset-bottom);
   background: var(--canvas);
   color: var(--ink);
+  overscroll-behavior: none;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
 body, button, input, select, textarea { font-family: inherit; }
 button, a, input, select, textarea { outline-color: var(--focus); }
 button:not(:disabled) { cursor: pointer; }
+button, a, [role='button'], [role='switch'] {
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+.bottom-sheet-drag-handle { touch-action: none !important; }
 ::selection { background: var(--accent); color: var(--on-accent); }
 * { scrollbar-color: var(--border-strong) transparent; scrollbar-width: thin; }
 *:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
@@ -155,6 +169,10 @@ input[type='date']::-webkit-date-and-time-value { min-width: 0; width: 100%; tex
 .scrollbar-none::-webkit-scrollbar { display: none; }
 .touch-scroll { -webkit-overflow-scrolling: touch; }
 #root { min-height: 100dvh; }
+
+@media (pointer: coarse) {
+  input, textarea, select { font-size: 16px; }
+}
 
 .surface-card {
   position: relative;

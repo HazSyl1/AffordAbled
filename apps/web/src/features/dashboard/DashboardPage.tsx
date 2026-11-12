@@ -760,7 +760,8 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
             </h1>
             <p className='mt-1 text-sm text-[var(--ink-muted)]'>Your money, shared costs, and next actions in one place.</p>
           </div>
-          <div className='flex items-center gap-1'>
+          <div className='dashboard-header-actions flex items-center gap-2'>
+            <button type='button' className='dashboard-wallet-action' onClick={() => navigate('/accounts')}>Manage accounts <span aria-hidden='true'>↗</span></button>
             <button type='button' className='dashboard-icon-button flex h-11 w-11 items-center justify-center rounded-xl md:hidden' aria-label='Open settings' onClick={() => navigate('/profile')}>
               <UserRound className='h-5 w-5' aria-hidden='true' />
             </button>
@@ -826,8 +827,8 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
             </div>
           </section>
 
-          <section className='mb-4 space-y-2'>
-            <div className='dashboard-well flex gap-1 overflow-x-auto rounded-xl p-1.5'>
+          <section className='mb-4 space-y-2' aria-label='Quick actions'>
+            <div className='dashboard-quick-actions dashboard-well flex gap-2 overflow-x-auto rounded-xl p-1.5'>
               {DASHBOARD_QUICK_ACTIONS.map((action) => {
                 const isDisabled =
                   (action.key === 'voice' && (isVoiceCaptureOpen || isTranscribingVoice)) ||
@@ -843,7 +844,7 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
                     disabled={isDisabled}
                     onClick={() => handleQuickActionClick(action.key)}
                   >
-                    <Icon className='h-[18px] w-[18px]' strokeWidth={2} aria-hidden='true' />
+                    <Icon className='h-4 w-4' strokeWidth={2.2} aria-hidden='true' />
                     {action.label}
                   </Button>
                 );

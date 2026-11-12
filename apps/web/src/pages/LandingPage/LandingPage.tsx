@@ -1,153 +1,236 @@
-import { ArrowRight, Camera, Check, ChevronRight, Keyboard, MessageCircle, Mic, ShieldCheck, Users } from 'lucide-react';
-import { useState } from 'react';
+import {
+  ArrowRight, Bot, Camera, Check, CircleHelp, FileDown, Mail,
+  Plus, ReceiptText, ShieldCheck, Split, Wallet, Users, BadgePercent, Scale, ListChecks, Repeat2, QrCode, Gauge,
+} from 'lucide-react';
 import { Link } from 'react-router-dom';
 
-import { BrandMark } from '../../components/atoms/BrandMark';
+import { APP_NAME } from '../../constants';
+import { useAppSelector } from '../../app/hooks';
+import { AffordableWordmark } from '../../components/brand/AffordableLogo';
 import { ThemeControl } from '../../components/molecules/ThemeControl';
+import './LandingPage.css';
+import { AccountStory, CaptureStory, RecurringStory, GroupStory, FinanceChatStory, FeatureBento, Reveal } from './LandingStories';
+import { LandingHero } from './LandingHero';
+import { FeatureCarousel } from './FeatureCarousel';
 
-const captureModes = [
-  { id: 'manual', label: 'Manual', icon: Keyboard, input: 'Dinner with the team', amount: '₹2,480.00', note: 'Food & dining · HDFC card' },
-  { id: 'chat', label: 'Chat', icon: MessageCircle, input: 'Spent 2480 on dinner with the team', amount: '₹2,480.00', note: 'Assistant found: expense · tonight' },
-  { id: 'voice', label: 'Voice', icon: Mic, input: 'Dinner was two thousand four hundred and eighty', amount: '₹2,480.00', note: 'Voice transcript ready to review' },
-  { id: 'receipt', label: 'Receipt', icon: Camera, input: 'Receipt from Bombay Canteen', amount: '₹2,480.00', note: 'Merchant and total extracted' },
-] as const;
+const features = [
+  {
+    icon: Wallet,
+    title: 'Keep your accounts together',
+    description: 'Track balances across bank, card, cash, and wallet accounts. Starter categories are ready when you sign up.',
+    how: 'Add your first account after sign-up. Add more from Accounts.',
+    location: 'Accounts',
+  },
+  {
+    icon: ReceiptText,
+    title: 'Record everyday money',
+    description: 'Add expenses, income, refunds, and transfers. Find, edit, or review past entries in one place.',
+    how: 'Open Transactions and tap the + button to enter a transaction yourself.',
+    location: 'Transactions',
+  },
+  {
+    icon: Repeat2,
+    title: 'Stay ahead of recurring money',
+    description: 'Schedule regular expenses and income such as rent, subscriptions, and salary. Transactions are posted at the right time.',
+    how: 'Enable Repeat while adding a transaction, manage schedules in the Recurring tab, or ask Finance Chat.',
+    location: 'Transactions',
+  },
+  {
+    icon: Bot,
+    title: 'Ask your wallet',
+    description: 'Describe a purchase in your own words or ask about your recorded spending and transactions.',
+    how: 'Open Finance Chat and try “Spent ₹450 on lunch” or “What did I spend on food this month?”',
+    location: 'Finance Chat',
+  },
+  {
+    icon: Camera,
+    title: 'Use a receipt or your voice',
+    description: 'Send a receipt image or dictate a request, then check the extracted details and any follow-up questions.',
+    how: 'Use the image or microphone button beside the Finance Chat message box.',
+    location: 'Finance Chat',
+  },
+  {
+    icon: Split,
+    title: 'Split a bill fairly',
+    description: 'Share an expense equally, set custom shares, or allocate priced items to the people who had them.',
+    how: 'Open Splits, choose Split an expense, select the transaction, and review everyone’s share.',
+    location: 'Splits',
+  },
+  {
+    icon: Plus,
+    title: 'Track IOUs and repayments',
+    description: 'Record money someone owes you even without an expense, and mark received payments in your account.',
+    how: 'Use Record money owed in Splits. Choose Received in before tapping Mark repaid.',
+    location: 'Splits',
+  },
+  {
+    icon: Users,
+    title: 'Plan a group settlement',
+    description: 'Combine several bills, payers, and shared items into one plan. See who owes whom before anything is saved.',
+    how: 'Open Splits, choose Plan group settlement, then review the preview. Finance Chat can prepare a draft too.',
+    location: 'Splits',
+  },
+  {
+    icon: BadgePercent,
+    title: 'Coupons, fees, and tips',
+    description: 'Apply a coupon before or after fees, add card fees or tips by percentage, and let different people cover them.',
+    how: 'Add them to a bill in the planner. “Paid by” is who paid the merchant; “Shared by” is who bears the cost.',
+    location: 'Splits',
+  },
+  {
+    icon: Scale,
+    title: 'Settle with exact math',
+    description: 'Amounts are checked to the paisa, so payments must match each bill’s total. Settled transfers are tracked as you go.',
+    how: 'Mark transfers settled in Splits. Only payments involving you create wallet transactions; edit a plan to recalculate the rest.',
+    location: 'Splits',
+  },
+  {
+    icon: ListChecks,
+    title: 'Several requests, one message',
+    description: 'Ask for more than one thing at once, such as creating categories. The assistant finishes each task, then shows a summary.',
+    how: 'Try “Create categories Food and Misc” in Finance Chat. Money is only saved after you confirm it.',
+    location: 'Finance Chat',
+  },
+  {
+    icon: FileDown,
+    title: 'Bring your history along',
+    description: 'Preview CSV or Excel imports before saving, then export transactions as CSV, Excel, or PDF.',
+    how: 'Use Import or Export at the top of Transactions; a CSV template is available there.',
+    location: 'Transactions',
+  },
+  {
+    icon: QrCode,
+    title: 'Send UPI payment reminders',
+    description: 'Email everyone who still owes you a branded request with the amount, a Pay with UPI button, and a QR code.',
+    how: 'Save your UPI ID in Profile, then open a split and choose Send reminders. Missing emails are collected first.',
+    location: 'Splits',
+  },
+  {
+    icon: Gauge,
+    title: 'Plans and daily usage',
+    description: 'See your plan and how much of today’s AI chat and AI-created transaction allowance is left.',
+    how: 'Open Profile to view usage. Allowances reset every day at midnight UTC.',
+    location: 'Profile',
+  },
+  {
+    icon: ShieldCheck,
+    title: 'Choose what gets remembered',
+    description: 'Review suggested preferences before they guide future assistance. Remove saved preferences when they change.',
+    how: 'Review suggestions when they appear, and manage confirmed preferences in Profile.',
+    location: 'Profile',
+  },
+];
+
+const steps = [
+  ['Create your wallet', 'Register and add your first bank, card, cash, or wallet account. You can start with a zero balance.'],
+  ['Record something', 'Tap + in Transactions, or tell Finance Chat what you spent. You can also use a receipt image or voice.'],
+  ['Check the result', 'Review the details and category, answer any follow-up question, and find the entry in Transactions.'],
+  ['See the bigger picture', 'Use Dashboard for a monthly summary, or open Splits to track shared expenses and repayments.'],
+];
 
 export function LandingPage() {
-  const [captureMode, setCaptureMode] = useState<(typeof captureModes)[number]['id']>('chat');
-  const activeMode = captureModes.find((mode) => mode.id === captureMode) ?? captureModes[0];
-
+  const isAuthenticated = Boolean(useAppSelector((state) => state.auth.accessToken));
+  const destination = isAuthenticated ? '/dashboard' : '/register';
   return (
-    <div className='min-h-screen bg-[var(--canvas)] text-[var(--ink)]'>
-      <header className='fixed inset-x-0 top-0 z-50 border-b border-[var(--border)] bg-[var(--canvas)]/95'>
-        <div className='mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8'>
-          <Link to='/' className='inline-flex items-center gap-2.5 rounded-lg'>
-            <span className='flex h-9 w-9 items-center justify-center rounded-xl bg-[var(--brand-panel)] text-[var(--brand-panel-ink)]'>
-              <BrandMark className='h-6 w-6' />
-            </span>
-            <span className='hidden text-sm font-bold tracking-[-0.02em] sm:inline'>AffordAbled</span>
-          </Link>
-          <nav className='flex items-center gap-1' aria-label='Public navigation'>
-            <span className='hidden sm:block'><ThemeControl compact /></span>
-            <Link to='/login' className='hidden min-h-11 items-center rounded-lg px-3 text-sm font-medium text-[var(--ink-secondary)] hover:text-[var(--ink)] sm:inline-flex'>Log in</Link>
-            <Link to='/register' className='inline-flex min-h-11 items-center rounded-[var(--btn-radius)] bg-[var(--accent)] px-4 text-sm font-semibold text-[var(--on-accent)] transition-colors hover:bg-[var(--accent-hover)]'><span className='sm:hidden'>Get started</span><span className='hidden sm:inline'>Create your wallet</span></Link>
-          </nav>
-        </div>
+    <main className='landing-restored min-h-screen text-[var(--text-primary)]'>
+      <header className='mx-auto flex w-full max-w-7xl items-center justify-between px-5 py-5 sm:px-8 lg:px-10'>
+        <Link to='/' className='inline-flex items-center gap-3 rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)]'>
+          <AffordableWordmark size={44} />
+        </Link>
+        <nav aria-label='Main navigation' className='flex items-center gap-2 sm:gap-3'>
+          <a href='#whats-new' className='hidden rounded-lg px-3 py-2 text-sm text-[var(--text-secondary)] transition-colors hover:text-white md:inline-flex'>What’s new</a>
+          <a href='#features' className='hidden rounded-lg px-3 py-2 text-sm text-[var(--text-secondary)] transition-colors hover:text-white md:inline-flex'>Features</a>
+          <a href='#how-it-works' className='hidden rounded-lg px-3 py-2 text-sm text-[var(--text-secondary)] transition-colors hover:text-white md:inline-flex'>How to use it</a>
+          <a href='#help' className='hidden rounded-lg px-3 py-2 text-sm text-[var(--text-secondary)] md:inline-flex'>FAQs</a>
+          <ThemeControl compact />
+          <details className='premium-mobile-menu md:hidden'>
+            <summary>Menu</summary>
+            <div><a href='#features'>Features</a><a href='#how-it-works'>How to use it</a><a href='#help'>FAQs</a></div>
+          </details>
+          {!isAuthenticated && <Link to='/login' className='rounded-xl px-3 py-2 text-sm font-semibold text-[var(--text-secondary)] transition-colors hover:bg-white/5 hover:text-white'>Log in</Link>}
+          <Link to={destination} className='inline-flex items-center gap-2 rounded-xl bg-[var(--brand-primary)] px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-[var(--brand-hover)]'>{isAuthenticated ? 'Open app' : 'Get started'} <ArrowRight className='h-4 w-4' aria-hidden='true' /></Link>
+        </nav>
       </header>
 
-      <main>
-        <section className='flex min-h-[100svh] items-center pt-24'>
-          <div className='mx-auto grid w-full min-w-0 max-w-7xl gap-12 px-4 py-16 sm:px-6 lg:grid-cols-[0.85fr_1.15fr] lg:items-center lg:px-8'>
-            <div className='min-w-0 max-w-2xl' style={{ animation: 'enter-soft 500ms var(--ease-out) both' }}>
-              <h1 className='text-balance text-[clamp(2.8rem,6vw,5.6rem)] font-semibold leading-[0.96] tracking-[-0.04em]'>Know where your money stands before you act.</h1>
-              <p className='mt-7 max-w-xl text-lg leading-8 text-[var(--ink-secondary)]'>AffordAbled brings accounts, transactions, shared expenses, and AI-assisted capture into one wallet you stay in control of.</p>
-              <div className='mt-8 flex flex-col gap-3 sm:flex-row'>
-                <Link to='/register' className='inline-flex min-h-12 items-center justify-center gap-2 rounded-[var(--btn-radius)] bg-[var(--accent)] px-5 text-sm font-semibold text-[var(--on-accent)] transition-[background-color,transform] hover:bg-[var(--accent-hover)] active:scale-[0.98]'>Create your wallet <ArrowRight className='h-4 w-4' aria-hidden='true' /></Link>
-                <a href='#capture' className='inline-flex min-h-12 items-center justify-center gap-2 rounded-[var(--btn-radius)] border border-[var(--border)] bg-[var(--surface)] px-5 text-sm font-semibold text-[var(--ink)] transition-colors hover:bg-[var(--surface-subtle)]'>See how review works</a>
-              </div>
-              <p className='mt-5 text-sm text-[var(--ink-muted)]'>Nothing is saved until you review the details.</p>
-            </div>
+      <LandingHero signedIn={isAuthenticated} />
 
-            <div className='relative mx-auto w-full min-w-0 max-w-3xl overflow-hidden' aria-label='Illustrative AffordAbled workspace'>
-              <div className='min-w-0 overflow-hidden rounded-2xl bg-[var(--brand-panel)] p-3 shadow-[var(--shadow-raised)] sm:p-4'>
-                <div className='flex items-center justify-between border-b border-[var(--brand-panel-border)] px-2 pb-3 text-[var(--brand-panel-ink)]'>
-                  <span className='text-sm font-semibold'>Good evening, Aanya</span>
-                  <span className='rounded-full bg-[var(--brand-panel-active)] px-2.5 py-1 text-xs'>Illustrative workspace</span>
-                </div>
-                <div className='grid gap-3 pt-3 md:grid-cols-[1.05fr_0.95fr]'>
-                  <div className='rounded-xl bg-white p-5 text-[#1f2937] shadow-[0_8px_18px_rgb(15_23_42_/_14%)]'>
-                    <p className='text-sm text-[#4b5563]'>Across your wallet</p>
-                    <p className='money mt-2 text-4xl font-semibold tracking-[-0.03em]'>₹1,24,680</p>
-                    <div className='mt-7 grid grid-cols-2 gap-4 border-t border-[#d1d9e6] pt-4'>
-                      <div><p className='text-xs text-[#4b5563]'>Income this month</p><p className='money mt-1 font-semibold'>₹72,000</p></div>
-                      <div><p className='text-xs text-[#4b5563]'>Spent this month</p><p className='money mt-1 font-semibold'>₹31,420</p></div>
-                    </div>
-                  </div>
-                  <div className='rounded-xl bg-[#e8eef6] p-4 text-[#1f2937] shadow-[inset_-3px_-3px_7px_#ffffff,inset_3px_3px_7px_#d1d9e6]'>
-                    <div className='flex items-center justify-between'><p className='text-sm font-semibold'>Recent activity</p><span className='text-xs text-[#4b5563]'>Today</span></div>
-                    {[['Bombay Canteen', '−₹2,480'], ['Metro recharge', '−₹500'], ['Project payment', '+₹18,000']].map(([name, amount]) => (
-                      <div key={name} className='mt-3 flex items-center justify-between border-b border-[#d1d9e6] pb-3 last:border-0 last:pb-0'>
-                        <span className='text-sm'>{name}</span><span className='money text-sm font-semibold'>{amount}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </div>
+      <FeatureCarousel />
+
+      <AccountStory />
+      <CaptureStory />
+      <RecurringStory />
+      <GroupStory />
+      <FinanceChatStory />
+      <FeatureBento />
+
+      <section className='story-container capability-guide'>
+        <details><summary>Explore the full feature guide</summary><div className='capability-guide-content'>
+          {features.map(({ title, description, how, location }) => <article key={title}><h3>{title}</h3><p>{description}</p><p><strong>{location}:</strong> {how}</p></article>)}
+        </div></details>
+      </section>
+
+      <section id='how-it-works' className='mx-auto max-w-7xl px-5 py-16 sm:px-8 lg:px-10 lg:py-20'>
+        <div className='grid gap-10 lg:grid-cols-[0.8fr_1.2fr]'>
+          <div>
+            <p className='text-xs font-semibold uppercase tracking-[0.18em] text-[var(--brand-primary)]'>Your first few minutes</p>
+            <h2 className='mt-3 text-3xl font-bold tracking-tight sm:text-4xl'>From sign-up to your first useful insight.</h2>
+            <p className='mt-4 text-sm leading-6 text-[var(--text-secondary)]'>Starter categories are ready for you. Add an account, record a purchase, and check the result before exploring your dashboard or splitting a bill.</p>
+            <Link to={destination} className='mt-6 inline-flex items-center gap-2 text-sm font-semibold text-purple-200 hover:text-white'>{isAuthenticated ? 'Open app' : 'Create your wallet'} <ArrowRight className='h-4 w-4' aria-hidden='true' /></Link>
           </div>
-        </section>
-
-        <section id='capture' className='flex min-h-[100svh] items-center border-t border-[var(--border)] bg-[var(--surface)]'>
-          <div className='mx-auto grid w-full max-w-7xl gap-12 px-4 py-20 sm:px-6 lg:grid-cols-[0.8fr_1.2fr] lg:items-center lg:px-8'>
-            <div className='max-w-xl'>
-              <h2 className='text-4xl font-semibold leading-tight tracking-[-0.035em] sm:text-5xl'>Four ways in. One review before anything changes.</h2>
-              <p className='mt-5 text-lg leading-8 text-[var(--ink-secondary)]'>Type the details yourself, describe them in chat, speak naturally, or use a receipt. Every path ends at the same clear checkpoint.</p>
-              <ul className='mt-7 space-y-3 text-sm text-[var(--ink-secondary)]'>
-                {['See the amount and account', 'Correct the category or date', 'Confirm the exact action'].map((item) => <li key={item} className='flex items-center gap-3'><Check className='h-5 w-5 text-[var(--accent)]' aria-hidden='true' />{item}</li>)}
-              </ul>
-            </div>
-            <div className='rounded-2xl border border-[var(--border)] bg-[var(--canvas)] p-3 sm:p-5'>
-              <div className='grid grid-cols-4 gap-1 rounded-xl bg-[var(--surface-subtle)] p-1' role='tablist' aria-label='Capture methods'>
-                {captureModes.map(({ id, label, icon: Icon }) => <button key={id} type='button' role='tab' aria-selected={captureMode === id} className={['inline-flex min-h-12 items-center justify-center gap-2 rounded-lg px-2 text-xs font-medium transition-[background-color,color,box-shadow] sm:text-sm', captureMode === id ? 'bg-[var(--surface)] text-[var(--ink)] shadow-[var(--shadow-soft)]' : 'text-[var(--ink-muted)]'].join(' ')} onClick={() => setCaptureMode(id)}><Icon className='h-4 w-4' aria-hidden='true' /><span className='hidden sm:inline'>{label}</span></button>)}
-              </div>
-              <div className='mt-4 rounded-xl bg-[var(--surface)] p-5'>
-                <p className='text-sm text-[var(--ink-muted)]'>{activeMode.input}</p>
-                <div className='my-5 h-px bg-[var(--border)]' />
-                <div className='flex items-end justify-between gap-4'>
-                  <div><p className='text-sm font-medium text-[var(--ink-secondary)]'>Review transaction</p><p className='mt-1 text-xs text-[var(--ink-muted)]'>{activeMode.note}</p></div>
-                  <p className='money shrink-0 text-2xl font-semibold tracking-[-0.025em]'>{activeMode.amount}</p>
-                </div>
-                <button type='button' className='mt-6 inline-flex min-h-11 w-full items-center justify-center rounded-[var(--btn-radius)] bg-[var(--accent)] px-4 text-sm font-semibold text-[var(--on-accent)]'>Confirm and add</button>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <section className='flex min-h-[100svh] items-center border-t border-[var(--border)]'>
-          <div className='mx-auto grid w-full max-w-7xl gap-12 px-4 py-20 sm:px-6 lg:grid-cols-2 lg:items-center lg:px-8'>
-            <div className='order-2 overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)] lg:order-1'>
-              <div className='flex items-center justify-between border-b border-[var(--border)] p-5'><div><p className='font-semibold'>Goa weekend</p><p className='mt-1 text-sm text-[var(--ink-muted)]'>4 people · 6 expenses</p></div><Users className='h-5 w-5 text-[var(--accent)]' aria-hidden='true' /></div>
-              {[['Isha pays Aanya', '₹1,840'], ['Piyush pays Dev', '₹960'], ['Dev pays Aanya', '₹425']].map(([transfer, amount], index) => <div key={transfer} className='flex items-center justify-between border-b border-[var(--border)] p-5 last:border-0'><div className='flex items-center gap-3'><span className='flex h-8 w-8 items-center justify-center rounded-full bg-[var(--accent-soft)] text-xs font-semibold text-[var(--accent)]'>{index + 1}</span><span className='text-sm'>{transfer}</span></div><span className='money font-semibold'>{amount}</span></div>)}
-              <div className='bg-[var(--surface-subtle)] p-4 text-sm text-[var(--ink-secondary)]'>Coupons, fees, tips, and multiple payers are already included in this preview.</div>
-            </div>
-            <div className='order-1 max-w-xl lg:order-2'>
-              <h2 className='text-4xl font-semibold leading-tight tracking-[-0.035em] sm:text-5xl'>Shared money without the awkward arithmetic.</h2>
-              <p className='mt-5 text-lg leading-8 text-[var(--ink-secondary)]'>Split individual items, combine several bills, account for coupons and fees, and see the smallest set of transfers before anything touches your wallet.</p>
-              <Link to='/register' className='mt-7 inline-flex min-h-11 items-center gap-2 text-sm font-semibold text-[var(--accent)]'>Start a clear settlement <ChevronRight className='h-4 w-4' aria-hidden='true' /></Link>
-            </div>
-          </div>
-        </section>
-
-        <section className='flex min-h-[80svh] items-center border-t border-[var(--border)] bg-[var(--brand-panel)] text-[var(--brand-panel-ink)]'>
-          <div className='mx-auto grid w-full max-w-7xl gap-10 px-4 py-20 sm:px-6 lg:grid-cols-[0.8fr_1.2fr] lg:items-center lg:px-8'>
-            <div>
-              <ShieldCheck className='h-8 w-8 text-[var(--accent)]' aria-hidden='true' />
-              <h2 className='mt-6 text-4xl font-semibold leading-tight tracking-[-0.035em] sm:text-5xl'>The assistant can help. You keep the final say.</h2>
-            </div>
-            <div className='divide-y divide-[var(--brand-panel-border)] border-y border-[var(--brand-panel-border)]'>
-              {[
-                ['Review before save', 'AI-created transactions stop at a confirmation step.'],
-                ['Memories by consent', 'Suggested preferences guide future assistance only after you approve them.'],
-                ['Visible consequences', 'Transfers, repayments, and settlements explain what changes in your wallet.'],
-              ].map(([title, body]) => <div key={title} className='grid gap-2 py-6 sm:grid-cols-[0.7fr_1.3fr]'><p className='font-semibold'>{title}</p><p className='text-[var(--brand-panel-ink)]/65'>{body}</p></div>)}
-            </div>
-          </div>
-        </section>
-
-        <section className='flex min-h-[70svh] items-center border-t border-[var(--border)]'>
-          <div className='mx-auto w-full max-w-4xl px-4 py-24 text-center sm:px-6'>
-            <h2 className='text-balance text-4xl font-semibold tracking-[-0.035em] sm:text-6xl'>Make everyday money easier to understand.</h2>
-            <p className='mx-auto mt-5 max-w-2xl text-lg leading-8 text-[var(--ink-secondary)]'>Start with one account. Add money your way. Review every important change.</p>
-            <Link to='/register' className='mt-8 inline-flex min-h-12 items-center justify-center gap-2 rounded-[var(--btn-radius)] bg-[var(--accent)] px-6 text-sm font-semibold text-[var(--on-accent)] transition-colors hover:bg-[var(--accent-hover)]'>Create your wallet <ArrowRight className='h-4 w-4' aria-hidden='true' /></Link>
-          </div>
-        </section>
-      </main>
-
-      <footer className='border-t border-[var(--border)]'>
-        <div className='mx-auto flex max-w-7xl flex-col gap-3 px-4 py-8 text-sm text-[var(--ink-muted)] sm:flex-row sm:items-center sm:justify-between sm:px-6 lg:px-8'>
-          <p>© {new Date().getFullYear()} AffordAbled</p>
-          <div className='flex gap-5'><Link to='/login'>Log in</Link><Link to='/register'>Create account</Link></div>
+          <ol className='landing-journey'>
+            {steps.map(([title, description], index) => (
+              <li key={title} className='flex gap-4 p-5'>
+                <span className='flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--brand-primary)]/15 text-sm font-bold text-purple-200'>{index + 1}</span>
+                <div><h3 className='font-semibold'>{title}</h3><p className='mt-1 text-sm leading-6 text-[var(--text-secondary)]'>{description}</p></div>
+              </li>
+            ))}
+          </ol>
         </div>
+      </section>
+
+      <section className='story-container product-principles'><Reveal><h2>The assistant helps.<br />You keep the final say.</h2><div><p><strong>Review the consequence.</strong> Check the amount, account, and people before confirming.</p><p><strong>Choose what’s remembered.</strong> Accept or dismiss suggested preferences.</p><p><strong>Keep the details visible.</strong> See how transfers and settlements affect your records.</p></div></Reveal></section>
+
+      <section id='help' className='border-t border-white/[0.06] bg-white/[0.015]'>
+        <div className='mx-auto grid max-w-7xl gap-8 px-5 py-16 sm:px-8 md:grid-cols-[0.7fr_1.3fr] lg:px-10 lg:py-20'>
+          <div>
+            <span className='flex h-11 w-11 items-center justify-center rounded-2xl bg-blue-400/10 text-blue-300'><CircleHelp className='h-5 w-5' aria-hidden='true' /></span>
+            <p className='mt-4 text-xs font-semibold uppercase tracking-[0.18em] text-[var(--brand-primary)]'>A few useful details</p>
+            <h2 className='mt-2 text-3xl font-bold tracking-tight'>Good to know</h2>
+          </div>
+          <div className='divide-y divide-white/10'>
+            <details className='landing-faq'><summary>Do I need to use the assistant?<span aria-hidden='true'>+</span></summary><div><p>No. You can add transactions manually and manage accounts, categories, and splits through the app.</p></div></details>
+            <details className='landing-faq'><summary>What if a receipt needs more detail?<span aria-hidden='true'>+</span></summary><div><p>Upload it in Finance Chat. The assistant can ask about anything unclear; check the transaction and its category when it appears.</p></div></details>
+            <details className='landing-faq'><summary>Can I record money owed without logging a purchase?<span aria-hidden='true'>+</span></summary><div><p>Yes. Open Splits and choose Record money owed. When someone pays you back, choose the receiving account and mark it repaid.</p></div></details>
+            <details className='landing-faq'><summary>How do I split a bill with coupons, fees, or several payers?<span aria-hidden='true'>+</span></summary><div><p>Open Splits and choose Plan group settlement. Add each bill, who shared each item, who paid, and any coupon, fee, or tip. Previewing never touches your wallet; confirming records only your own payments.</p></div></details>
+            <details className='landing-faq'><summary>Can I review assistant preferences?<span aria-hidden='true'>+</span></summary><div><p>Yes. Suggested preferences can be accepted or dismissed, and saved memories can be reviewed from your profile.</p></div></details>
+            <details className='landing-faq'><summary>Where do I start?<span aria-hidden='true'>+</span></summary><div><p>Register and add your first money account. Starter categories are already there, so you can record a purchase in Transactions or Finance Chat.</p></div></details>
+          </div>
+        </div>
+      </section>
+
+      <section className='mx-auto max-w-7xl px-5 py-14 sm:px-8 lg:px-10'>
+        <div className='flex flex-col items-start justify-between gap-5 rounded-[1.75rem] border border-purple-400/20 bg-gradient-to-r from-purple-500/10 via-purple-500/[0.04] to-blue-500/[0.06] p-6 sm:p-9 md:flex-row md:items-center'>
+          <div><p className='text-sm font-semibold text-purple-200'>Ready when you are</p><h2 className='mt-1 text-2xl font-bold'>Make the next money moment a little easier.</h2></div>
+          <Link to={destination} className='inline-flex min-h-11 shrink-0 items-center gap-2 rounded-xl bg-[var(--brand-primary)] px-5 text-sm font-semibold text-white transition-colors hover:bg-[var(--brand-hover)]'>{isAuthenticated ? 'Open app' : 'Get started'} <ArrowRight className='h-4 w-4' aria-hidden='true' /></Link>
+        </div>
+      </section>
+
+      <footer className='mx-auto flex max-w-7xl flex-col gap-2 border-t border-white/[0.06] px-5 py-6 text-xs text-[var(--text-muted)] sm:flex-row sm:items-center sm:justify-between sm:px-8 lg:px-10'>
+        <div className='inline-flex w-fit flex-wrap items-center gap-2 rounded-2xl border border-purple-400/15 bg-purple-400/[0.04] px-3 py-2'>
+          <span className='text-[var(--text-secondary)]'><strong className='font-bold tracking-[0.08em] text-[var(--text-primary)]'>{APP_NAME}</strong><span className='mx-1.5 text-purple-300/70'>·</span>Personal AI Wallet</span>
+          <a href='https://github.com/HazSyl1' target='_blank' rel='noreferrer' className='inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[var(--text-secondary)] transition-colors hover:border-purple-300/30 hover:bg-purple-400/10 hover:text-purple-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)]'>
+            Made by Sarthak C <span aria-hidden='true'>↗</span>
+          </a>
+          <a href='mailto:sarchaure911@gmail.com' className='inline-flex items-center gap-1.5 rounded-full border border-purple-400/25 bg-purple-400/[0.07] px-3 py-1.5 font-medium text-purple-200 transition-colors hover:border-purple-300/50 hover:bg-purple-400/[0.14] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)]'>
+            <Mail className='h-3.5 w-3.5' aria-hidden='true' />
+            Contact developer
+          </a>
+        </div>
+        <span className='inline-flex items-center gap-1.5'><Check className='h-3.5 w-3.5 text-emerald-300' aria-hidden='true' /> You stay in control of what gets recorded.</span>
       </footer>
-    </div>
+      <p className='mx-auto max-w-7xl px-5 pb-6 text-center text-[11px] text-[var(--text-muted)] sm:px-8 lg:px-10'>
+        {APP_NAME} uses AI and may make mistakes. Please double-check its responses.
+      </p>
+    </main>
   );
 }

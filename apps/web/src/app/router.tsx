@@ -1,17 +1,18 @@
 import { createBrowserRouter } from 'react-router-dom';
 
+import { HomeRoute } from './HomeRoute';
 import { PublicOnlyRoute } from './PublicOnlyRoute';
 import { ProtectedRoute } from './ProtectedRoute';
 import {
-  LazyAccountsPage, LazyChatPage, LazyDashboardPage, LazyLandingPage, LazyLoginPage,
+  LazyAccountsPage, LazyChatPage, LazyDashboardPage, LazyLoginPage,
   LazyProfilePage, LazyRegisterPage, LazySplitsPage, LazyTransactionsPage,
 } from './LazyPages';
 
 export const router = createBrowserRouter([
+  { path: '/', element: <HomeRoute /> },
   {
     element: <PublicOnlyRoute />,
     children: [
-      { path: '/', element: <LazyLandingPage /> },
       { path: '/login', element: <LazyLoginPage /> },
       { path: '/register', element: <LazyRegisterPage /> },
     ],
