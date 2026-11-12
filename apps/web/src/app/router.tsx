@@ -8,10 +8,10 @@ import {
 } from './LazyPages';
 
 export const router = createBrowserRouter([
+  { path: '/', element: <LazyLandingPage /> },
   {
     element: <PublicOnlyRoute />,
     children: [
-      { path: '/', element: <LazyLandingPage /> },
       { path: '/login', element: <LazyLoginPage /> },
       { path: '/register', element: <LazyRegisterPage /> },
     ],
