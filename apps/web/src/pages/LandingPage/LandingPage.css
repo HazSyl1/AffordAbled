@@ -1,0 +1,25 @@
+.landing-restored { background: var(--canvas); color: var(--ink); isolation: isolate; }
+.landing-restored section { scroll-margin-top: 24px; }
+.landing-restored [class*='text-purple-'], .landing-restored [class*='text-blue-'] { color: var(--accent); }
+.landing-restored [class*='text-emerald-'] { color: var(--positive); }
+.landing-restored [class*='text-amber-'] { color: var(--warning); }
+.landing-restored [class*='border-white/'], .landing-restored [class*='divide-white/'] > :not(:last-child) { border-color: var(--border); }
+.landing-restored [class*='bg-[#111114]'], .landing-restored [class*='bg-[#0e0e12]'] { background: var(--surface); }
+.landing-restored [class*='bg-white/['] { background-color: color-mix(in srgb, var(--surface) 70%, transparent); }
+.landing-restored [class*='bg-gradient-'] { background-image: radial-gradient(ellipse at 10% 10%, rgb(139 92 246 / 10%), transparent 75%); }
+.landing-restored .shadow-2xl, .landing-restored .shadow-xl, .landing-restored .shadow-lg { box-shadow: none; }
+.landing-restored header > a > span:first-child { background: transparent; }
+.landing-restored header { gap: 16px; }
+.landing-restored a, .landing-restored button { transition: transform 160ms var(--ease-out), background-color 200ms ease, color 200ms ease; }
+.landing-restored [class*='bg-[var(--brand-primary)]'][class*='text-white'] { color: var(--on-accent); }
+.landing-restored span.font-semibold.text-white { color: var(--ink); }
+.landing-restored > header + section > .max-w-2xl { animation: restored-enter 600ms var(--ease-out) both; }
+.landing-restored > header + section > .max-w-lg { animation: restored-enter 800ms var(--ease-out) both; }
+.landing-restored [aria-roledescription='slide'] { animation: restored-enter 250ms var(--ease-out); }
+.landing-restored [aria-roledescription='carousel'] button { min-width: 44px; min-height: 44px; }
+.landing-restored [role='tab'] { border: 15px solid transparent; background-clip: padding-box; }
+@media (hover: hover) and (pointer: fine) { .landing-restored a:hover { color: var(--ink); } .landing-restored a[class*='bg-[var(--brand-primary)]']:hover { color: var(--on-accent); } }
+@keyframes restored-enter { from { opacity: .5; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+@media (hover: none) { .landing-restored a:hover, .landing-restored article:hover { transform: none; } }
+@media (max-width: 639px) { .landing-restored header { flex-wrap: wrap; } .landing-restored header nav { width: 100%; justify-content: flex-end; } }
+@media (prefers-reduced-motion: reduce) { .landing-restored *, .landing-restored *::before { animation: none !important; transition: none !important; transform: none !important; } }

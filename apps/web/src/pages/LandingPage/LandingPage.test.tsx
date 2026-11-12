@@ -28,16 +28,15 @@ describe('LandingPage', () => {
 
   it('leads with clarity, review, and shared money', () => {
     renderPage();
-    expect(screen.getByRole('heading', { name: 'Know where your money stands before you act.' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Four ways in. One review before anything changes.' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Shared money without the awkward arithmetic.' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Track your money. Understand the story behind it.' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'The everyday money tools, together.' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Good to know' })).toBeInTheDocument();
   });
 
-  it('switches the product demonstration between capture methods', () => {
+  it('switches between restored feature highlights', () => {
     renderPage();
-    fireEvent.click(screen.getByRole('tab', { name: 'Receipt' }));
-    expect(screen.getByText('Receipt from Bombay Canteen')).toBeInTheDocument();
-    expect(screen.getByText('Merchant and total extracted')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Next feature' }));
+    expect(screen.getByRole('heading', { name: 'Remind a whole split at once' })).toBeInTheDocument();
   });
 
   it('offers working account creation and login routes', () => {
