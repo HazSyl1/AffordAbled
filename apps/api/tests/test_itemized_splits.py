@@ -341,6 +341,27 @@ def test_split_allows_clear_typo_resolution_to_a_saved_contact() -> None:
     SplitToolset._validate_requested_people([ParticipantShare('Piyush', 0)], context)
 
 
+def test_split_canonicalizes_voice_spelling_to_saved_person() -> None:
+    context = HandoffContext(
+        user_id=uuid.uuid4(),
+        request='Split dinner with Sudhanshu',
+        constraints={'available_split_contacts': ['Sudhansu', 'Isha']},
+    )
+
+    assert SplitToolset._resolve_saved_contact_name('SUDHANSHU', context) == 'Sudhansu'
+
+
+def test_split_does_not_guess_between_ambiguous_saved_people() -> None:
+    context = HandoffContext(
+        user_id=uuid.uuid4(),
+        request='Split dinner with Sudhanshu',
+        constraints={'available_split_contacts': ['Sudhansu', 'Sudhanshi']},
+    )
+
+    with pytest.raises(ValueError, match='more than one saved person'):
+        SplitToolset._resolve_saved_contact_name('Sudhanshu', context)
+
+
 def test_split_uses_preserved_history_when_specialist_request_is_shortened() -> None:
     context = HandoffContext(
         user_id=uuid.uuid4(),

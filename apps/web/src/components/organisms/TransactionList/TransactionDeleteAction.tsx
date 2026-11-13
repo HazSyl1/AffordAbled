@@ -18,7 +18,7 @@ export function TransactionDeleteAction({ transactionId, onDeleted }: {
       className='rounded-full border border-red-400/50 bg-red-500/10 px-3 py-1 text-xs font-semibold text-red-500 hover:bg-red-500 hover:text-white'
       onKeyDown={(event) => event.stopPropagation()}
       onClick={(event) => { event.stopPropagation(); setOpen(true); }}>Delete</button>}
-    {open && createPortal(<div className='fixed inset-0 z-[150] flex items-center justify-center bg-black/70 p-4'
+    {open && createPortal(<div data-modal-layer className='fixed inset-0 z-[150] isolate flex items-center justify-center bg-black/70 p-4'
       onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
       <section role='dialog' aria-modal='true' aria-labelledby={`delete-${transactionId}`}
         className='w-full max-w-md space-y-4 rounded-2xl border border-[var(--bg-border)] bg-[var(--bg-card)] p-5'>
@@ -27,7 +27,7 @@ export function TransactionDeleteAction({ transactionId, onDeleted }: {
           {eligibility?.kind === 'split_expense' ? ' Its linked split will also be hidden.' : ''}</p>
         {error && <p role='alert' className='text-sm text-red-500'>{error}</p>}
         <div className='flex justify-end gap-3'>
-          <button type='button' disabled={isLoading} onClick={() => setOpen(false)}>Cancel</button>
+          {!isLoading ? <button type='button' onClick={() => setOpen(false)}>Cancel</button> : null}
           <button type='button' disabled={isLoading} className='rounded-lg bg-red-600 px-4 py-2 font-semibold text-white'
             onClick={() => { void remove(transactionId).unwrap().then(() => {
               setOpen(false); setDeleted(true); onDeleted?.();

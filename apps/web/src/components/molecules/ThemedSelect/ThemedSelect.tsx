@@ -14,19 +14,26 @@ export interface ThemedSelectProps {
   options: ThemedSelectOption[];
   onChange: (nextValue: string) => void;
   invalid?: boolean;
+  searchable?: boolean;
+  searchPlaceholder?: string;
 }
 
 const SELECT_TRIGGER_CLASS =
   'flex w-full min-h-12 items-center justify-between rounded-xl border border-[var(--bg-border)] bg-[var(--bg-surface)] px-3 py-3 text-left text-base text-[var(--text-primary)] shadow-sm outline-none transition-colors focus-visible:border-[var(--brand-primary)] focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)]';
 
-export function ThemedSelect({ id, value, placeholder, options, onChange, invalid = false }: ThemedSelectProps) {
+export function ThemedSelect({
+  id, value, placeholder, options, onChange, invalid = false,
+  searchable = false, searchPlaceholder = 'Search options',
+}: ThemedSelectProps) {
   const [isOpen, setIsOpen] = useState(false);
+  const [query, setQuery] = useState('');
   const rootRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     const handlePointerDown = (event: MouseEvent) => {
       if (rootRef.current && !rootRef.current.contains(event.target as Node)) {
         setIsOpen(false);
+        setQuery('');
       }
     };
     document.addEventListener('mousedown', handlePointerDown);
@@ -34,6 +41,10 @@ export function ThemedSelect({ id, value, placeholder, options, onChange, invali
   }, []);
 
   const selectedOption = options.find((option) => option.value === value);
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const filteredOptions = normalizedQuery
+    ? options.filter((option) => option.label.toLocaleLowerCase().includes(normalizedQuery))
+    : options;
 
   return <div className='relative' ref={rootRef}>
     <button
@@ -61,8 +72,15 @@ export function ThemedSelect({ id, value, placeholder, options, onChange, invali
       ].join(' ')} />
     </button>
     {isOpen && <div className='absolute left-0 right-0 top-[calc(100%+0.5rem)] z-30 overflow-hidden rounded-xl border border-[var(--bg-border)] bg-[var(--bg-card)] shadow-[0_20px_48px_rgba(0,0,0,0.34)]'>
+      {searchable && <div className='border-b border-[var(--bg-border)] p-2'>
+        <input type='search' autoFocus value={query} placeholder={searchPlaceholder}
+          aria-label={searchPlaceholder}
+          className='w-full rounded-lg border border-[var(--bg-border)] bg-[var(--bg-elevated)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--brand-primary)] focus:ring-2 focus:ring-[var(--brand-primary)]'
+          onChange={(event) => setQuery(event.target.value)}
+          onKeyDown={(event) => { if (event.key === 'Escape') { setIsOpen(false); setQuery(''); } }} />
+      </div>}
       <ul role='listbox' aria-labelledby={id} className='max-h-64 overflow-auto p-1'>
-        {options.map((option) => <li key={option.value}>
+        {filteredOptions.map((option) => <li key={option.value}>
           <button
             type='button'
             role='option'
@@ -80,9 +98,11 @@ export function ThemedSelect({ id, value, placeholder, options, onChange, invali
               if (option.disabled) return;
               onChange(option.value);
               setIsOpen(false);
+              setQuery('');
             }}
           >{option.label}</button>
         </li>)}
+        {filteredOptions.length === 0 && <li className='px-3 py-3 text-sm text-[var(--text-muted)]'>No matching people</li>}
       </ul>
     </div>}
   </div>;

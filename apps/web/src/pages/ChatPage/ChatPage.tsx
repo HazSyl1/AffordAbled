@@ -1,5 +1,6 @@
 import { ChevronDown, ChevronUp, ImagePlus, LoaderCircle, Mic } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useLocation, useNavigate } from 'react-router-dom';
 
 import { useAppSelector } from '../../app/hooks';
@@ -41,6 +42,7 @@ import {
   useLazyListSplitsQuery, useListSplitContactDetailsQuery, type Split,
 } from '../../features/splits/splitsApi';
 import { useBodyScrollLock } from '../../lib/useBodyScrollLock';
+import { apiErrorMessage } from '../../lib/apiErrorMessage';
 import { NotificationConfirmDialog } from '../SplitsPage/NotificationConfirmDialog';
 
 type ChatListFilter = 'finance' | 'drafts';
@@ -573,9 +575,10 @@ function ChatWorkspace({ userId }: { userId: string }) {
       // Let the capture modal close as soon as transcription finishes. The
       // assistant request continues independently in the chat view.
       void handleSendMessage(transcript);
-    } catch {
-      setChatError(DASHBOARD_CHAT_UI_TEXT.voiceError);
-      openManualTransactionFallback('Voice processing failed. Enter the transaction details manually.');
+    } catch (error) {
+      const message = apiErrorMessage(error, DASHBOARD_CHAT_UI_TEXT.voiceError);
+      setChatError(message);
+      openManualTransactionFallback(`${message} Enter the transaction details manually.`);
     }
   };
 
@@ -775,9 +778,10 @@ function ChatWorkspace({ userId }: { userId: string }) {
       if (instructions) setChatInput('');
       receiptUploadRef.current = true;
       await handleSendMessage(combinedPrompt);
-    } catch {
-      setChatError(DASHBOARD_CHAT_UI_TEXT.imageError);
-      openManualTransactionFallback('Receipt processing failed. Enter the transaction details manually.');
+    } catch (error) {
+      const message = apiErrorMessage(error, DASHBOARD_CHAT_UI_TEXT.imageError);
+      setChatError(message);
+      openManualTransactionFallback(`${message} Enter the transaction details manually.`);
     }
   };
 
@@ -1097,15 +1101,16 @@ function ChatWorkspace({ userId }: { userId: string }) {
           onEditTransaction={taskSuccess.transactionId ? editCompletedTransaction : undefined}
         />
       ) : null}
-      {isMemorySuggestionsModalOpen ? (
-        <div className='fixed inset-0 z-[60] flex items-center justify-center overflow-y-auto bg-black/60 p-4' role='dialog' aria-modal='true' aria-label='Memory suggestions'>
+      {isMemorySuggestionsModalOpen ? createPortal(
+        <div data-modal-layer className='fixed inset-0 z-[120] isolate flex items-center justify-center overflow-y-auto bg-black/60 p-4' role='dialog' aria-modal='true' aria-label='Memory suggestions'>
           <div className='w-full max-w-lg space-y-3'>
             <MemorySuggestionsPanel suggestions={memorySuggestions} />
             <div className='flex justify-center'>
               <Button type='button' variant='secondary' onClick={() => setShowMemorySuggestions(false)}>Close suggestions</Button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       ) : null}
 
       <BottomSheet

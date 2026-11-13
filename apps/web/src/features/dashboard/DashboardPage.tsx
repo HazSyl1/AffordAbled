@@ -1,5 +1,6 @@
 import { Bell, ImagePlus, LoaderCircle, Mic, UserRound, Users } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 
 import { useAppSelector } from '../../app/hooks';
@@ -46,6 +47,7 @@ import {
   VOICE_CAPTURE_EVENT_NAME,
 } from '../../constants';
 import { formatPaiseAsInr } from '../../lib/money';
+import { apiErrorMessage } from '../../lib/apiErrorMessage';
 import { useBodyScrollLock } from '../../lib/useBodyScrollLock';
 import './DashboardPage.css';
 import { NotificationConfirmDialog } from '../../pages/SplitsPage/NotificationConfirmDialog';
@@ -501,9 +503,10 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
       // Transcription is complete; close the voice modal while the assistant
       // processes the resulting chat message.
       void sendMessageToAssistant(transcript);
-    } catch {
-      setChatError(DASHBOARD_CHAT_UI_TEXT.voiceError);
-      openManualTransactionFallback('Voice processing failed. Enter the transaction details manually.');
+    } catch (error) {
+      const message = apiErrorMessage(error, DASHBOARD_CHAT_UI_TEXT.voiceError);
+      setChatError(message);
+      openManualTransactionFallback(`${message} Enter the transaction details manually.`);
     }
   };
 
@@ -573,9 +576,10 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
       setShowChatSheet(true);
       receiptUploadRef.current = true;
       await sendMessageToAssistant(imagePrompt);
-    } catch {
-      setChatError(DASHBOARD_CHAT_UI_TEXT.imageError);
-      openManualTransactionFallback('Receipt processing failed. Enter the transaction details manually.');
+    } catch (error) {
+      const message = apiErrorMessage(error, DASHBOARD_CHAT_UI_TEXT.imageError);
+      setChatError(message);
+      openManualTransactionFallback(`${message} Enter the transaction details manually.`);
     } finally {
       setIsImageProcessing(false);
     }
@@ -1060,9 +1064,10 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
         stopLabel={DASHBOARD_CHAT_UI_TEXT.voiceRecordingStopButton}
       />
 
-      {isImageProcessing ? (
+      {isImageProcessing ? createPortal(
         <div
-          className='fixed inset-0 z-[70] flex items-center justify-center bg-black/35 px-6 backdrop-blur-[2px]'
+          data-modal-layer
+          className='fixed inset-0 z-[120] isolate flex items-center justify-center bg-black/35 px-6 backdrop-blur-[2px]'
           role='status'
           aria-live='polite'
           aria-label='Processing uploaded image'
@@ -1072,7 +1077,8 @@ function DashboardContent({ currentUser }: { currentUser: AuthUser | null }) {
             <p className='text-sm font-semibold text-[var(--text-primary)]'>Processing image…</p>
             <p className='text-xs text-[var(--text-muted)]'>Reading the receipt before opening chat.</p>
           </div>
-        </div>
+        </div>,
+        document.body,
       ) : null}
 
       <BottomSheet

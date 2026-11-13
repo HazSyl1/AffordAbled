@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 
 import { Button } from '../../components/atoms/Button';
 import { Card } from '../../components/atoms/Card';
@@ -141,7 +142,7 @@ export function NotificationConfirmDialog({
     }
   };
 
-  return <div className='fixed inset-0 z-[120] flex items-center justify-center overflow-y-auto bg-black/70 p-4'
+  return createPortal(<div data-modal-layer className='fixed inset-0 z-[140] isolate flex items-center justify-center overflow-y-auto bg-black/70 p-4'
     role='presentation'>
     <Card role='dialog' aria-modal='true' aria-labelledby='notification-confirm-title'
       className='my-auto w-full max-w-lg space-y-4 p-5'>
@@ -214,5 +215,5 @@ export function NotificationConfirmDialog({
         <Button type='button' variant='secondary' disabled={isLoading || isSavingEmails} onClick={onClose}>Not now</Button>
       </div>
     </Card>
-  </div>;
+  </div>, document.body);
 }

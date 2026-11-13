@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.infrastructure.database.base import Base
@@ -21,4 +21,5 @@ class SplitContactModel(Base):
     email: Mapped[str | None] = mapped_column(String(320), nullable=True)
     dietary_preference: Mapped[str | None] = mapped_column(String(24), nullable=True)
     preference_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    is_archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default='false')
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -155,6 +155,43 @@ class SplitToolset:
             )
 
     @staticmethod
+    def _resolve_saved_contact_name(name: str, context: HandoffContext) -> str:
+        """Return a saved spelling for one clear voice/typing variant without guessing."""
+        clean_name = ' '.join(name.split())
+        if not clean_name or is_owner_participant_label(clean_name):
+            return clean_name
+        saved_contacts = [
+            ' '.join(str(contact).split())
+            for contact in context.constraints.get('available_split_contacts', [])
+            if str(contact).strip()
+        ]
+        exact = [contact for contact in saved_contacts if contact.casefold() == clean_name.casefold()]
+        if exact:
+            return exact[0]
+
+        normalized = re.sub(r'[^a-z0-9]', '', clean_name.casefold())
+        if len(normalized) < 5:
+            return clean_name
+        ranked = sorted(
+            (
+                SequenceMatcher(
+                    None, normalized, re.sub(r'[^a-z0-9]', '', contact.casefold()),
+                ).ratio(),
+                contact,
+            )
+            for contact in saved_contacts
+            if re.sub(r'[^a-z0-9]', '', contact.casefold()).startswith(normalized[:1])
+        )
+        if not ranked or ranked[-1][0] < 0.84:
+            return clean_name
+        best_score, best_name = ranked[-1]
+        if len(ranked) > 1 and ranked[-2][0] >= 0.84 and best_score - ranked[-2][0] < 0.08:
+            raise ValueError(
+                f'“{clean_name}” closely matches more than one saved person. Use the exact saved name.',
+            )
+        return best_name
+
+    @staticmethod
     def _receipt_amount_evidence(context: HandoffContext) -> set[int] | None:
         """Return printed two-decimal amounts from user supplied receipt/OCR text, when present."""
         user_messages = [
@@ -488,7 +525,7 @@ class SplitToolset:
         raw_amount = args.get('amount_paise')
         if isinstance(raw_amount, bool) or not isinstance(raw_amount, int) or raw_amount <= 0:
             raise ValueError('amount_paise must be a positive integer amount in paise.')
-        name = str(args.get('name') or '').strip()
+        name = self._resolve_saved_contact_name(str(args.get('name') or '').strip(), context)
         if not name or is_owner_participant_label(name):
             raise ValueError('Name the other person who owes you.')
         self._validate_requested_people([ParticipantShare(name, raw_amount)], context)
@@ -521,7 +558,9 @@ class SplitToolset:
                     raise ValueError
             except (ArithmeticError, TypeError, ValueError):
                 raise ValueError('Each IOU amount must resolve to a positive exact number of paise.') from None
-            people.append(ParticipantShare(str(entry.get('name') or '').strip(), int(paise)))
+            people.append(ParticipantShare(
+                self._resolve_saved_contact_name(str(entry.get('name') or '').strip(), context), int(paise),
+            ))
         direction = str(args.get('direction') or 'by_you')
         title = str(args.get('title') or 'Money owed').strip()
         splits = await self._splits.create_owed_batch(
@@ -743,7 +782,7 @@ class SplitToolset:
                 raise ValueError("Each participant must include a name.")
             if isinstance(share, float):
                 share = round(share * 100)
-            participant_name = str(name).strip()
+            participant_name = self._resolve_saved_contact_name(str(name).strip(), context)
             # The model can copy the item's owner marker into the external
             # participant list. The owner share is tracked separately.
             if is_owner_participant_label(participant_name):
@@ -794,13 +833,19 @@ class SplitToolset:
                 ):
                     raise ValueError('Quantity and unit price must match numbers in the user request.')
                 allocations.append(QuantityAllocation(
-                    people=list(raw.get('people') or []),
+                    people=[
+                        self._resolve_saved_contact_name(str(name), context)
+                        for name in raw.get('people') or []
+                    ],
                     quantity_per_person=quantity,
                     unit_price_paise=int(price_paise),
                 ))
                 allocation_details.append({
                     'item_name': str(raw.get('item_name') or 'Priced item').strip(),
-                    'people': list(raw.get('people') or []),
+                    'people': [
+                        self._resolve_saved_contact_name(str(name), context)
+                        for name in raw.get('people') or []
+                    ],
                     'quantity_per_person': quantity,
                     'unit_price_paise': int(price_paise),
                     'total_paise': len(raw.get('people') or []) * quantity * int(price_paise),
@@ -812,8 +857,8 @@ class SplitToolset:
                 if amount_rupees not in source_numbers or amount_paise != amount_paise.to_integral_value():
                     raise ValueError('Every debt amount must match an amount stated in the user request.')
                 debts.append(SettlementDebt(
-                    debtor=str(raw.get('debtor') or '').strip(),
-                    creditor=str(raw.get('creditor') or '').strip(),
+                    debtor=self._resolve_saved_contact_name(str(raw.get('debtor') or '').strip(), context),
+                    creditor=self._resolve_saved_contact_name(str(raw.get('creditor') or '').strip(), context),
                     amount_paise=int(amount_paise),
                 ))
             contributions: list[SplitContribution] = []
@@ -823,7 +868,8 @@ class SplitToolset:
                 if amount_rupees not in source_numbers or amount_paise != amount_paise.to_integral_value():
                     raise ValueError('Every contribution amount must match an amount stated in the user request.')
                 contributions.append(SplitContribution(
-                    person=str(raw.get('person') or '').strip(), amount_paise=int(amount_paise),
+                    person=self._resolve_saved_contact_name(str(raw.get('person') or '').strip(), context),
+                    amount_paise=int(amount_paise),
                 ))
 
             calculation = calculate_settlement_split(
@@ -914,7 +960,10 @@ class SplitToolset:
             items = [
                 ItemAllocation(
                     name=str(item['name']), amount_paise=int(item['amount_paise']),
-                    shared_by=list(item.get('shared_by') or []),
+                    shared_by=[
+                        self._resolve_saved_contact_name(str(name), context)
+                        for name in item.get('shared_by') or []
+                    ],
                     food_type=str(item.get('food_type') or 'unknown'),
                     owner_excluded=bool(item.get('owner_excluded', False)),
                 )

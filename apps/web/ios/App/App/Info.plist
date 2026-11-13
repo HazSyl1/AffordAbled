@@ -24,6 +24,12 @@
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>AffordAbled uses the microphone to transcribe voice notes into your finance chat.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>AffordAbled uses the camera to scan receipts and bills.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>AffordAbled accesses your photo library so you can select a receipt or bill.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>AffordAbled can save a receipt photo when you choose to keep it.</string>
 	<key>WKAppBoundDomains</key>
 	<array>
 		<string>affordabled-api-c8ewaeajgjf0ehhf.centralindia-01.azurewebsites.net</string>

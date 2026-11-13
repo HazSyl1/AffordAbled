@@ -753,7 +753,7 @@ export function CreateTransactionForm({
           : repeatTransaction ? 'Save and schedule' : submitLabel}
       </Button>
       {isSplitPromptOpen ? createPortal(
-        <div className='fixed inset-0 z-[100] flex items-end justify-center bg-black/65 p-0 backdrop-blur-sm sm:items-center sm:p-4'>
+        <div data-modal-layer className='fixed inset-0 z-[130] isolate flex items-end justify-center bg-black/65 p-0 backdrop-blur-sm sm:items-center sm:p-4'>
           <button
             type='button'
             className='absolute inset-0 cursor-default'
@@ -787,7 +787,7 @@ export function CreateTransactionForm({
         document.body,
       ) : null}
       {linkedSplitPromptOpen ? createPortal(
-        <div className='fixed inset-0 z-[120] flex items-center justify-center bg-black/70 p-4' role='presentation'>
+        <div data-modal-layer className='fixed inset-0 z-[140] isolate flex items-center justify-center bg-black/70 p-4' role='presentation'>
           <section role='dialog' aria-modal='true' aria-labelledby='linked-split-update-title'
             className='w-full max-w-md rounded-2xl border border-[var(--bg-border)] bg-[var(--bg-card)] p-5 shadow-2xl'>
             <h2 id='linked-split-update-title' className='text-lg font-semibold text-[var(--text-primary)]'>Update split shares</h2>

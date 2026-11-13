@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.services.itemized_split import ItemAllocation, calculate_itemized_split
@@ -204,10 +204,22 @@ async def delete_split_contact_details(
     current_user: User = Depends(get_current_user), service: SplitService = Depends(get_split_service),
 ) -> None:
     try:
-        if not await service.delete_contact_preference(current_user.id, contact_id):
+        if not await service.forget_contact(current_user.id, contact_id=contact_id):
             raise HTTPException(status_code=404, detail='Split contact not found.')
     except ValueError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@router.delete('/contacts/details', status_code=status.HTTP_204_NO_CONTENT)
+async def delete_split_person_by_name(
+    name: str = Query(min_length=1, max_length=100),
+    current_user: User = Depends(get_current_user), service: SplitService = Depends(get_split_service),
+) -> None:
+    try:
+        if not await service.forget_contact(current_user.id, name=name):
+            raise HTTPException(status_code=404, detail='Split person not found.')
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
 
 
 @router.get('/contacts/preference-suggestions', response_model=list[dict])

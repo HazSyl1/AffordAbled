@@ -104,6 +104,10 @@ class SplitStore(Protocol):
 
     async def delete_contact_preference(self, user_id: uuid.UUID, contact_id: uuid.UUID) -> bool: ...
 
+    async def forget_contact(
+        self, user_id: uuid.UUID, contact_id: uuid.UUID | None, name: str | None,
+    ) -> bool: ...
+
     async def set_contact_details(
         self, user_id: uuid.UUID, name: str, phone_e164: str | None, email: str | None = None,
         contact_id: uuid.UUID | None = None,
@@ -432,6 +436,14 @@ class SplitService:
 
     async def delete_contact_preference(self, user_id: uuid.UUID, contact_id: uuid.UUID) -> bool:
         return await self.store.delete_contact_preference(user_id, contact_id)
+
+    async def forget_contact(
+        self, user_id: uuid.UUID, contact_id: uuid.UUID | None = None, name: str | None = None,
+    ) -> bool:
+        clean_name = capitalize_name(name) if name else None
+        if contact_id is None and (not clean_name or len(clean_name) > 100):
+            raise ValueError('Choose a valid person to remove.')
+        return await self.store.forget_contact(user_id, contact_id, clean_name)
 
     async def set_contact_details(
         self, user_id: uuid.UUID, name: str, phone_e164: str | None, email: str | None = None,

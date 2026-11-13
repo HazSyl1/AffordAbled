@@ -178,8 +178,13 @@ const splitsApi = apiClient.injectEndpoints({
       query: (body) => ({ url: '/splits/contacts/details', method: 'PUT', body }),
       invalidatesTags: ['Split', 'SplitNotification'],
     }),
-    deleteSplitContactDetails: builder.mutation<void, string>({
-      query: (contactId) => ({ url: `/splits/contacts/details/${contactId}`, method: 'DELETE' }),
+    deleteSplitContactDetails: builder.mutation<void, { contactId?: string; name: string }>({
+      query: ({ contactId, name }) => ({
+        url: contactId
+          ? `/splits/contacts/details/${contactId}`
+          : `/splits/contacts/details?name=${encodeURIComponent(name)}`,
+        method: 'DELETE',
+      }),
       invalidatesTags: ['Split', 'SplitNotification'],
     }),
     listSplitContactPreferences: builder.query<SplitContactPreference[], void>({

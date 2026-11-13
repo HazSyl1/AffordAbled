@@ -19,15 +19,21 @@ export function ModalDialog({ isOpen, onClose, label, children, className = '' }
   if (!isOpen) return null;
 
   return createPortal(
-    <div ref={overlayRef} className='fixed inset-0 z-[80] flex items-center justify-center overflow-y-auto bg-[var(--overlay)] p-4'>
-      <button type='button' aria-label='Close dialog' className='absolute inset-0' onClick={onClose} />
+    <div
+      ref={overlayRef}
+      data-modal-layer
+      className='fixed inset-0 z-[110] isolate flex items-center justify-center overflow-y-auto bg-[var(--overlay)] p-4'
+      onPointerDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
       <div
         ref={containerRef}
         role='dialog'
         aria-modal='true'
         aria-label={label}
         tabIndex={-1}
-        className={['relative w-full max-w-md rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-raised)]', className].join(' ')}
+        className={['relative z-10 w-full max-w-md rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-raised)]', className].join(' ')}
       >
         {children}
       </div>

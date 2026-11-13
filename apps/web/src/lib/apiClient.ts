@@ -6,10 +6,12 @@ import type { RootState } from '../app/store';
 import { clearStoredAccessToken, persistAccessToken } from '../features/auth/authStorage';
 import { clearCredentials, setAuthNotice, setCredentials } from '../features/auth/authSlice';
 import { AUTH_UI_TEXT } from '../constants';
+import { nativeCompatibleFetch } from './nativeCompatibleFetch';
 
 const rawBaseQuery = fetchBaseQuery({
   baseUrl: `${API_BASE_URL}/api/v1`,
   credentials: 'include', // sends the httpOnly refresh cookie automatically
+  fetchFn: nativeCompatibleFetch,
   prepareHeaders: (headers, { getState }) => {
     const accessToken = (getState() as RootState).auth.accessToken;
     if (accessToken) {

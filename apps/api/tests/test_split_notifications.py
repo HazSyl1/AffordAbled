@@ -30,17 +30,19 @@ from app.presentation.routers.splits_router import get_split_notification_servic
 from tests.helpers import auth_headers, register_and_get_token
 
 
-async def _expense(client: AsyncClient, token: str) -> str:
+async def _expense(
+    client: AsyncClient, token: str, amount_paise: int = 10000, name_suffix: str = '',
+) -> str:
     headers = auth_headers(token)
     account = await client.post('/api/v1/accounts', json={
-        'name': 'Reminder Wallet', 'type': 'wallet', 'balance_paise': 50000, 'currency': 'INR',
+        'name': f'Reminder Wallet{name_suffix}', 'type': 'wallet', 'balance_paise': 50000, 'currency': 'INR',
     }, headers=headers)
     category = await client.post('/api/v1/categories', json={
-        'name': 'Reminder Expense', 'type': 'expense',
+        'name': f'Reminder Expense{name_suffix}', 'type': 'expense',
     }, headers=headers)
     transaction = await client.post('/api/v1/transactions', json={
         'account_id': account.json()['id'], 'category_id': category.json()['id'],
-        'type': 'expense', 'amount_paise': 10000, 'occurred_at': '2026-11-07T12:00:00+00:00',
+        'type': 'expense', 'amount_paise': amount_paise, 'occurred_at': '2026-11-07T12:00:00+00:00',
     }, headers=headers)
     assert transaction.status_code == 201, transaction.text
     return transaction.json()['id']
@@ -115,15 +117,34 @@ async def test_split_contact_details_can_be_added_renamed_searched_client_side_a
         'mode': 'equal', 'participants': [{'name': 'Isha Sharma', 'contact_id': contact_id}],
     }, headers=headers)
     assert split.status_code == 201, split.text
-    blocked = await client.delete(f'/api/v1/splits/contacts/details/{contact_id}', headers=headers)
-    assert blocked.status_code == 409, blocked.text
-    assert 'associated with one or more splits' in blocked.json()['detail']
-    deleted_split = await client.delete(f"/api/v1/splits/{split.json()['id']}", headers=headers)
-    assert deleted_split.status_code == 204, deleted_split.text
     removed = await client.delete(f'/api/v1/splits/contacts/details/{contact_id}', headers=headers)
     assert removed.status_code == 204, removed.text
     contacts_after = await client.get('/api/v1/splits/contacts/details', headers=headers)
     assert contacts_after.json() == []
+    names_after = await client.get('/api/v1/splits/contacts', headers=headers)
+    assert names_after.json() == []
+    preserved_split = await client.get('/api/v1/splits', headers=headers)
+    assert preserved_split.json()[0]['participants'][0]['name'] == 'Isha Sharma'
+    assert preserved_split.json()[0]['participants'][0]['contact_id'] is None
+    restored = await client.put('/api/v1/splits/contacts/details', json={
+        'name': 'Isha Sharma', 'email': 'new-isha@example.com', 'phone_e164': None,
+    }, headers=headers)
+    assert restored.status_code == 200, restored.text
+    assert restored.json()['id'] == contact_id
+    assert 'Isha Sharma' in (await client.get('/api/v1/splits/contacts', headers=headers)).json()
+
+    second_transaction_id = await _expense(client, token, amount_paise=12000, name_suffix=' Historical')
+    historical = await client.post('/api/v1/splits', json={
+        'transaction_id': second_transaction_id, 'title': 'Historical person', 'amount_paise': 12000,
+        'mode': 'equal', 'participants': [{'name': 'Ravi'}],
+    }, headers=headers)
+    assert historical.status_code == 201, historical.text
+    assert 'Ravi' in (await client.get('/api/v1/splits/contacts', headers=headers)).json()
+    forgot_historical = await client.delete(
+        '/api/v1/splits/contacts/details', params={'name': 'Ravi'}, headers=headers,
+    )
+    assert forgot_historical.status_code == 204, forgot_historical.text
+    assert 'Ravi' not in (await client.get('/api/v1/splits/contacts', headers=headers)).json()
 
 
 async def test_balance_statement_queues_only_for_saved_person_with_an_outstanding_balance(

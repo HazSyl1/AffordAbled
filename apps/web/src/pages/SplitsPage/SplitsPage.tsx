@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { createPortal } from 'react-dom';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 
 import { Button } from '../../components/atoms/Button';
@@ -66,10 +67,12 @@ function unpaidCount(split: Split): number {
       person.settled_paise < person.share_paise && !person.repayment_transaction_id).length;
 }
 
-type EditPerson = { id?: string; name: string; amount: string; hasRepayment: boolean; contactId?: string };
+type EditPerson = {
+  id?: string; name: string; amount: string; hasRepayment: boolean; contactId?: string; isNew: boolean;
+};
 
-function EditSplitForm({ split, onCancel, proposedTotalPaise }: {
-  split: Split; onCancel: () => void; proposedTotalPaise?: number;
+function EditSplitForm({ split, contacts, onCancel, proposedTotalPaise }: {
+  split: Split; contacts: string[]; onCancel: () => void; proposedTotalPaise?: number;
 }) {
   const [updateSplit, { isLoading: saving }] = useUpdateSplitMutation();
   const [title, setTitle] = useState(split.title);
@@ -78,7 +81,7 @@ function EditSplitForm({ split, onCancel, proposedTotalPaise }: {
   const [people, setPeople] = useState<EditPerson[]>(() => split.participants.map((person) => ({
     id: person.id, name: person.name, amount: (person.share_paise / 100).toFixed(2),
     hasRepayment: person.repayment_transaction_id !== null || person.settled_paise > 0,
-    contactId: person.contact_id ?? undefined,
+    contactId: person.contact_id ?? undefined, isNew: false,
   })));
   const [showValidation, setShowValidation] = useState(false);
   const [error, setError] = useState('');
@@ -142,11 +145,27 @@ function EditSplitForm({ split, onCancel, proposedTotalPaise }: {
       <p className='text-sm text-[var(--text-secondary)]'>People who owe you</p>
       {people.map((person, index) => <div key={person.id ?? `new-${index}`}
         className='grid gap-2 rounded-lg border border-[var(--bg-border)] p-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] sm:items-end'>
-        <label className='block space-y-1 text-xs text-[var(--text-secondary)]'>Name
-          <input className={`${inputClass} ${showValidation && invalidNames[index] ? 'border-red-400/70' : ''}`}
-            maxLength={100} aria-invalid={showValidation && invalidNames[index]}
-            value={person.name} onChange={(event) => updatePerson(index, { name: event.target.value })} />
-        </label>
+        <div className='block space-y-1 text-xs text-[var(--text-secondary)]'>Name
+          <ThemedSelect id={`edit-split-person-${index}`} value={person.isNew ? NEW_PERSON : person.name}
+            placeholder='Choose a saved person' searchable searchPlaceholder='Search saved people'
+            invalid={showValidation && invalidNames[index]}
+            options={[
+              { value: NEW_PERSON, label: '+ Add a new person' },
+              ...(!person.isNew && person.name && !contacts.some((name) => name.toLowerCase() === person.name.toLowerCase())
+                ? [{ value: person.name, label: person.name }]
+                : []),
+              ...contacts.filter((name) => !people.some((other, row) =>
+                row !== index && other.name.toLowerCase() === name.toLowerCase()))
+                .map((name) => ({ value: name, label: name })),
+            ]}
+            onChange={(value) => updatePerson(index, value === NEW_PERSON
+              ? { name: '', contactId: undefined, isNew: true }
+              : { name: value, contactId: undefined, isNew: false })} />
+          {person.isNew && <input className={`${inputClass} ${showValidation && invalidNames[index] ? 'border-red-400/70' : ''}`}
+            aria-label={`New edited person ${index + 1} name`} maxLength={100}
+            aria-invalid={showValidation && invalidNames[index]} placeholder='Person name'
+            value={person.name} onChange={(event) => updatePerson(index, { name: event.target.value })} />}
+        </div>
         <label className='block space-y-1 text-xs text-[var(--text-secondary)]'>Share (₹)
           <input className={`${inputClass} ${showValidation && (shares[index] === null || shares[index] <= 0) ? 'border-red-400/70' : ''}`}
             inputMode='decimal' disabled={person.hasRepayment}
@@ -161,7 +180,8 @@ function EditSplitForm({ split, onCancel, proposedTotalPaise }: {
       {people.length < 20 && <button type='button' className='text-sm text-[var(--brand-primary)]'
         onClick={() => {
           setPeople((current) => [...current, {
-            name: '', amount: remainingPaise > 0 ? (remainingPaise / 100).toFixed(2) : '', hasRepayment: false,
+            name: '', amount: remainingPaise > 0 ? (remainingPaise / 100).toFixed(2) : '',
+            hasRepayment: false, isNew: false,
           }]);
           setError('');
         }}>+ Add person</button>}
@@ -267,16 +287,16 @@ export function SplitsPage() {
       id: contact.id, contactId: contact.id, name: contact.name,
       phone_e164: contact.phone_e164, email: contact.email,
     }));
-    splits.forEach((split) => split.participants.forEach((participant) => {
-      const key = participant.name.trim().toLowerCase();
+    contacts.forEach((name) => {
+      const key = name.trim().toLowerCase();
       if (!key || people.has(key)) return;
       people.set(key, {
-        id: `existing-${key}`, contactId: participant.contact_id, name: participant.name,
+        id: `existing-${key}`, contactId: null, name,
         phone_e164: null, email: null,
       });
-    }));
+    });
     return [...people.values()].sort((a, b) => a.name.localeCompare(b.name));
-  }, [contactDetails, splits]);
+  }, [contactDetails, contacts]);
   const filteredContactDetails = managedPeople.filter((contact) => {
     const query = contactSearch.trim().toLowerCase();
     return !query || [contact.name, contact.email ?? '', contact.phone_e164 ?? '']
@@ -303,18 +323,17 @@ export function SplitsPage() {
   };
 
   const removeContact = async (contact: ManagedPerson) => {
-    if (!contact.contactId) {
-      editContact(contact);
-      return;
-    }
     setContactPendingRemoval(contact);
     setRemoveContactError('');
   };
 
   const confirmRemoveContact = async () => {
-    if (!contactPendingRemoval?.contactId) return;
+    if (!contactPendingRemoval) return;
     try {
-      await deleteContactDetails(contactPendingRemoval.contactId).unwrap();
+      await deleteContactDetails({
+        name: contactPendingRemoval.name,
+        ...(contactPendingRemoval.contactId ? { contactId: contactPendingRemoval.contactId } : {}),
+      }).unwrap();
       if (editingContactId === contactPendingRemoval.contactId) resetContactForm();
       setContactPendingRemoval(null);
       setContactFeedback(`${contactPendingRemoval.name} removed from saved people.`);
@@ -701,8 +720,8 @@ export function SplitsPage() {
             <Button type='button' variant='secondary' onClick={() => editContact(contact)}>
               {contact.contactId ? 'Edit' : 'Add details'}
             </Button>
-            {contact.contactId && <Button type='button' variant='ghost' className='text-[var(--negative)]'
-              disabled={deletingContact} onClick={() => { void removeContact(contact); }}>Remove</Button>}
+            <Button type='button' variant='ghost' className='text-[var(--negative)]'
+              disabled={deletingContact} onClick={() => { void removeContact(contact); }}>Remove</Button>
           </div>
           {contactFormOpen && editingContactKey === contact.id && contactEditor(true)}
         </li>)}
@@ -722,7 +741,7 @@ export function SplitsPage() {
         </label>
         <label className='space-y-1 text-sm text-[var(--text-secondary)]'>Person
           {contacts.length > 0 && <ThemedSelect id='owed-person' value={addingOwedPerson ? NEW_OWED_PERSON : owedName}
-            placeholder='Choose a saved person' options={[
+            placeholder='Choose a saved person' searchable searchPlaceholder='Search saved people' options={[
               ...contacts.map((name) => ({ value: name, label: name })),
               { value: NEW_OWED_PERSON, label: '+ Add a new person' },
             ]}
@@ -794,7 +813,7 @@ export function SplitsPage() {
               <div className='flex items-center gap-2'>
                 <div className='min-w-0 flex-1'>
                   <ThemedSelect id={`split-person-${index}`} value={person.isNew ? NEW_PERSON : person.name}
-                    placeholder='Choose a person'
+                    placeholder='Choose a person' searchable searchPlaceholder='Search saved people'
                     invalid={showValidation && invalidNames[index]}
                     options={[
                       { value: NEW_PERSON, label: person.isNew && person.name ? person.name : '+ Add new person' },
@@ -1050,7 +1069,7 @@ export function SplitsPage() {
                     disabled={deleting}
                     onClick={() => removeSplit(split.id)}>Remove split</button>
                 </div></div></div>
-            {editingSplitId === split.id ? <EditSplitForm key={split.id} split={split}
+            {editingSplitId === split.id ? <EditSplitForm key={split.id} split={split} contacts={contacts}
               proposedTotalPaise={searchParams.get('edit') === '1' ? paise(searchParams.get('transactionAmount') ?? '') ?? undefined : undefined}
               onCancel={() => setEditingSplitId(null)} /> : <>
             {split.item_breakdown && <details className='border-t border-[var(--bg-border)] pt-2 text-xs text-[var(--text-secondary)]'>
@@ -1196,7 +1215,7 @@ export function SplitsPage() {
     {notificationFeedback && <p role='status' className='rounded-xl bg-[var(--brand-subtle)] p-3 text-sm text-[var(--brand-primary)]'>
       {notificationFeedback}
     </p>}
-    {contactPendingRemoval && <div className='fixed inset-0 z-[130] flex items-center justify-center bg-black/70 p-4'
+    {contactPendingRemoval && createPortal(<div data-modal-layer className='fixed inset-0 z-[150] isolate flex items-center justify-center bg-black/70 p-4'
       role='presentation'>
       <Card role='dialog' aria-modal='true' aria-labelledby='remove-contact-title'
         className='w-full max-w-md space-y-4 p-5'>
@@ -1205,21 +1224,21 @@ export function SplitsPage() {
             Remove {contactPendingRemoval.name}?
           </h2>
           <p className='mt-1 text-sm text-[var(--text-muted)]'>
-            This removes their saved contact details only. Existing split records are not deleted.
+            This removes them from Manage people and future suggestions. Existing split records and payments stay unchanged.
           </p>
         </div>
         {removeContactError && <p role='alert' className='rounded-lg bg-red-500/10 p-3 text-sm text-red-300'>
           {removeContactError}
         </p>}
         <div className='flex flex-wrap justify-end gap-2'>
-          <Button type='button' variant='secondary' disabled={deletingContact}
-            onClick={() => { setContactPendingRemoval(null); setRemoveContactError(''); }}>Cancel</Button>
+          {!deletingContact && <Button type='button' variant='secondary'
+            onClick={() => { setContactPendingRemoval(null); setRemoveContactError(''); }}>Cancel</Button>}
           <Button type='button' variant='ghost'
             className='border border-red-400/50 bg-red-500/10 text-red-300 hover:bg-red-500 hover:text-white'
             isLoading={deletingContact} onClick={() => { void confirmRemoveContact(); }}>Remove person</Button>
         </div>
       </Card>
-    </div>}
+    </div>, document.body)}
     {notificationQueue[0] && <NotificationConfirmDialog
       split={notificationQueue[0].split}
       contacts={contactDetails}
@@ -1227,7 +1246,7 @@ export function SplitsPage() {
       onQueued={(message) => setNotificationFeedback(message)}
       onClose={() => setNotificationQueue((current) => current.slice(1))}
     />}
-    {balanceReview && <div className='fixed inset-0 z-[100] flex items-center justify-center overflow-y-auto bg-black/70 p-4' role='presentation'
+    {balanceReview && createPortal(<div data-modal-layer className='fixed inset-0 z-[140] isolate flex items-center justify-center overflow-y-auto bg-black/70 p-4' role='presentation'
       onMouseDown={(event) => { if (event.target === event.currentTarget && !settlingPersonBalance) setBalanceReview(null); }}>
       <Card role='dialog' aria-modal='true' aria-labelledby='settle-balance-title' className='my-auto w-full max-w-lg space-y-4 p-5'>
         <div>
@@ -1268,6 +1287,6 @@ export function SplitsPage() {
           </Button>
         </div>
       </Card>
-    </div>}
+    </div>, document.body)}
   </div>;
 }

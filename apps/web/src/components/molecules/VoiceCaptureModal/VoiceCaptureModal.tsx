@@ -1,4 +1,5 @@
 import { Mic } from 'lucide-react';
+import { createPortal } from 'react-dom';
 
 interface VoiceCaptureModalProps {
   cancelLabel: string;
@@ -39,8 +40,8 @@ export function VoiceCaptureModal({
     return null;
   }
 
-  return (
-    <div className='pointer-events-none fixed inset-x-0 bottom-[calc(1rem+env(safe-area-inset-bottom))] z-[90] flex justify-center px-4'>
+  return createPortal(
+    <div data-modal-layer className='pointer-events-none fixed inset-x-0 bottom-[calc(1rem+env(safe-area-inset-bottom))] z-[130] flex justify-center px-4'>
       <div className='pointer-events-auto w-full max-w-md rounded-2xl border border-[var(--bg-border)] bg-[color:rgba(15,15,17,0.96)] px-4 py-3 shadow-[0_16px_45px_rgba(0,0,0,0.45)] backdrop-blur-xl'>
         <p className='sr-only'>{title}</p>
 
@@ -84,6 +85,7 @@ export function VoiceCaptureModal({
           ) : null}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

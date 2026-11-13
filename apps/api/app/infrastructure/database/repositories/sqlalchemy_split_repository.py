@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -40,6 +40,7 @@ class SqlAlchemySplitRepository:
             rows = await self.session.scalars(
                 select(SplitContactModel).where(
                     SplitContactModel.user_id == user_id, SplitContactModel.id.in_(requested),
+                    SplitContactModel.is_archived.is_(False),
                 )
             )
             contacts = {contact.id: contact for contact in rows.all()}
@@ -54,6 +55,7 @@ class SqlAlchemySplitRepository:
         matches = await self.session.scalars(select(SplitContactModel).where(
             SplitContactModel.user_id == user_id,
             SplitContactModel.normalized_name.in_(normalized_names),
+            SplitContactModel.is_archived.is_(False),
         ))
         return {contact.normalized_name: contact.id for contact in matches.all()}
 
@@ -738,17 +740,25 @@ class SqlAlchemySplitRepository:
     async def contact_names(self, user_id: uuid.UUID) -> list[str]:
         rows = await self.session.scalars(
             select(SplitParticipantModel.name).join(SplitModel)
-            .where(SplitModel.user_id == user_id).distinct().order_by(SplitParticipantModel.name)
+            .where(SplitModel.user_id == user_id, SplitModel.deleted_at.is_(None))
+            .distinct().order_by(SplitParticipantModel.name)
         )
-        names = {name.casefold(): name for name in rows.all()}
-        contacts = await self.list_contact_preferences(user_id)
+        contacts = list((await self.session.scalars(
+            select(SplitContactModel).where(SplitContactModel.user_id == user_id)
+        )).all())
+        archived = {contact.normalized_name for contact in contacts if contact.is_archived}
+        names = {name.casefold(): name for name in rows.all() if name.casefold() not in archived}
         for contact in contacts:
+            if contact.is_archived:
+                continue
             names[contact.normalized_name] = contact.name
         return sorted(names.values(), key=str.casefold)
 
     async def list_contact_preferences(self, user_id: uuid.UUID) -> list[SplitContactModel]:
         rows = await self.session.scalars(
-            select(SplitContactModel).where(SplitContactModel.user_id == user_id)
+            select(SplitContactModel).where(
+                SplitContactModel.user_id == user_id, SplitContactModel.is_archived.is_(False),
+            )
             .order_by(SplitContactModel.normalized_name)
         )
         return list(rows.all())
@@ -757,6 +767,9 @@ class SqlAlchemySplitRepository:
         """Suggest, but never save, a preference after repeated reviewed item allocations."""
         known = {contact.normalized_name for contact in await self.list_contact_preferences(user_id)
                  if contact.dietary_preference}
+        archived = set((await self.session.scalars(select(SplitContactModel.normalized_name).where(
+            SplitContactModel.user_id == user_id, SplitContactModel.is_archived.is_(True),
+        ))).all())
         rows = await self.session.scalars(
             select(SplitModel).where(SplitModel.user_id == user_id, SplitModel.item_breakdown.is_not(None))
             .order_by(SplitModel.created_at.desc()).limit(100)
@@ -770,7 +783,7 @@ class SqlAlchemySplitRepository:
                 for allocation in item.get('allocations') or []:
                     name = str(allocation.get('person') or '').strip()
                     key = name.casefold()
-                    if not key or key == 'me' or key in known:
+                    if not key or key == 'me' or key in known or key in archived:
                         continue
                     person = evidence.setdefault(key, {'name': name, 'vegetarian_splits': set(), 'meat_splits': set()})
                     bucket = 'meat_splits' if food_type == 'contains_meat' else 'vegetarian_splits'
@@ -804,6 +817,7 @@ class SqlAlchemySplitRepository:
             self.session.add(contact)
         else:
             contact.name = clean_name
+            contact.is_archived = False
         contact.dietary_preference = dietary_preference
         contact.preference_confirmed_at = datetime.now(UTC) if dietary_preference else None
         try:
@@ -839,6 +853,7 @@ class SqlAlchemySplitRepository:
         else:
             contact.name = clean_name
             contact.normalized_name = normalized_name
+            contact.is_archived = False
         contact.phone_e164 = phone_e164
         contact.email = email
         participants = await self.session.scalars(
@@ -871,5 +886,40 @@ class SqlAlchemySplitRepository:
                 'This person is still associated with one or more splits. Remove those splits before deleting them.',
             )
         await self.session.delete(contact)
+        await self.session.commit()
+        return True
+
+    async def forget_contact(
+        self, user_id: uuid.UUID, contact_id: uuid.UUID | None, name: str | None,
+    ) -> bool:
+        contact = None
+        if contact_id is not None:
+            contact = await self.session.scalar(select(SplitContactModel).where(
+                SplitContactModel.user_id == user_id, SplitContactModel.id == contact_id,
+            ))
+        elif name:
+            contact = await self.session.scalar(select(SplitContactModel).where(
+                SplitContactModel.user_id == user_id,
+                SplitContactModel.normalized_name == name.casefold(),
+            ))
+        if contact_id is not None and contact is None:
+            return False
+        if contact is None:
+            if not name:
+                return False
+            contact = SplitContactModel(
+                id=uuid.uuid4(), user_id=user_id, name=name,
+                normalized_name=name.casefold(), is_archived=True,
+            )
+            self.session.add(contact)
+        else:
+            await self.session.execute(update(SplitParticipantModel).where(
+                SplitParticipantModel.contact_id == contact.id,
+            ).values(contact_id=None))
+            contact.is_archived = True
+            contact.phone_e164 = None
+            contact.email = None
+            contact.dietary_preference = None
+            contact.preference_confirmed_at = None
         await self.session.commit()
         return True

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { CheckCircle2 } from 'lucide-react';
+import { createPortal } from 'react-dom';
 
 import { Button } from '../../atoms/Button';
 import { Card } from '../../atoms/Card';
@@ -24,8 +25,8 @@ export function TransactionSuccessOverlay({ message, expiresAt, onClose, onConti
     return () => window.clearInterval(timer);
   }, [expiresAt]);
 
-  return (
-    <div className='fixed inset-0 z-[80] flex items-center justify-center overflow-y-auto bg-black/55 p-4' role='dialog' aria-modal='true' aria-labelledby='task-success-title'>
+  return createPortal(
+    <div data-modal-layer className='fixed inset-0 z-[120] isolate flex items-center justify-center overflow-y-auto bg-black/55 p-4' role='dialog' aria-modal='true' aria-labelledby='task-success-title'>
       <div className='flex w-full max-w-3xl flex-col items-stretch justify-center gap-4 md:flex-row'>
       <Card className='w-full max-w-md border-[var(--brand-primary)] p-6 text-center shadow-2xl'>
         <CheckCircle2 className='mx-auto h-12 w-12 text-[var(--positive)]' aria-hidden='true' />
@@ -39,6 +40,7 @@ export function TransactionSuccessOverlay({ message, expiresAt, onClose, onConti
         {onEditTransaction ? <Button type='button' variant='ghost' className='mt-3' onClick={onEditTransaction}>Edit transaction</Button> : null}
       </Card>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

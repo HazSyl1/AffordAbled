@@ -1,6 +1,6 @@
 import { X } from 'lucide-react';
 import { createPortal } from 'react-dom';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useBodyScrollLock } from '../../../lib/useBodyScrollLock';
 import { useModalFocus } from '../../../lib/useModalFocus';
@@ -13,6 +13,7 @@ export interface BottomSheetProps {
 }
 
 export function BottomSheet({ isOpen, onClose, title, children }: BottomSheetProps) {
+  const contentId = useId();
   const [isExpanded, setIsExpanded] = useState(false);
   const [draggedHeight, setDraggedHeight] = useState<number | null>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -21,9 +22,51 @@ export function BottomSheet({ isOpen, onClose, title, children }: BottomSheetPro
   const dragStartY = useRef<number | null>(null);
   const dragStartHeight = useRef<number | null>(null);
   const dragFrame = useRef<number | null>(null);
+  const dismissTimer = useRef<number | null>(null);
+  const closeCommitted = useRef(false);
+  const activeDragTarget = useRef<HTMLButtonElement | null>(null);
+  const activePointerId = useRef<number | null>(null);
+  const onCloseRef = useRef(onClose);
   const pendingHeight = useRef<number | null>(null);
   const suppressHandleClick = useRef(false);
-  const { containerRef: focusContainerRef, overlayRef } = useModalFocus(isOpen, onClose);
+  // Release focus/inert and scroll locks as soon as dismissal starts. The visual exit can finish independently.
+  const { containerRef: focusContainerRef, overlayRef } = useModalFocus(isOpen && !isDismissing, onClose);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
+  const resetDrag = (target = activeDragTarget.current, pointerId = activePointerId.current) => {
+    if (target && pointerId !== null && target.hasPointerCapture?.(pointerId)) {
+      try { target.releasePointerCapture(pointerId); } catch { /* Pointer capture may already be released by iOS. */ }
+    }
+    activeDragTarget.current = null;
+    activePointerId.current = null;
+    dragStartY.current = null;
+    dragStartHeight.current = null;
+    if (dragFrame.current !== null) cancelAnimationFrame(dragFrame.current);
+    dragFrame.current = null;
+    pendingHeight.current = null;
+    setIsDragging(false);
+    setDraggedHeight(null);
+  };
+
+  const finishDismiss = () => {
+    if (closeCommitted.current) return;
+    closeCommitted.current = true;
+    if (dismissTimer.current !== null) window.clearTimeout(dismissTimer.current);
+    dismissTimer.current = null;
+    resetDrag();
+    onCloseRef.current();
+  };
+
+  const beginDismiss = () => {
+    closeCommitted.current = false;
+    setIsDismissing(true);
+    if (dismissTimer.current !== null) window.clearTimeout(dismissTimer.current);
+    // iOS WebViews can omit transitionend after a captured-pointer drag. Always complete the close.
+    dismissTimer.current = window.setTimeout(finishDismiss, 240);
+  };
 
   useEffect(() => {
     if (!isOpen) {
@@ -37,28 +80,44 @@ export function BottomSheet({ isOpen, onClose, title, children }: BottomSheetPro
         if (dragFrame.current !== null) cancelAnimationFrame(dragFrame.current);
         dragFrame.current = null;
         pendingHeight.current = null;
+        closeCommitted.current = false;
+        if (dismissTimer.current !== null) window.clearTimeout(dismissTimer.current);
+        dismissTimer.current = null;
+        resetDrag();
       }, 0);
       return () => window.clearTimeout(resetTimer);
     }
+    closeCommitted.current = false;
   }, [isOpen]);
 
-  useBodyScrollLock(isOpen);
+  useEffect(() => () => {
+    if (dismissTimer.current !== null) window.clearTimeout(dismissTimer.current);
+    if (dragFrame.current !== null) cancelAnimationFrame(dragFrame.current);
+    const target = activeDragTarget.current;
+    const pointerId = activePointerId.current;
+    if (target && pointerId !== null && target.hasPointerCapture?.(pointerId)) {
+      try { target.releasePointerCapture(pointerId); } catch { /* The browser already released it. */ }
+    }
+  }, []);
+
+  useBodyScrollLock(isOpen && !isDismissing);
 
   if (!isOpen) {
     return null;
   }
 
   return createPortal(
-    <div ref={overlayRef} className='fixed inset-0 z-[60] flex items-end justify-center lg:z-50 lg:items-center'>
-      <button
-        type='button'
-        aria-label='Close'
-        className={`absolute inset-0 bg-[var(--overlay)] transition-opacity duration-200 ${isDismissing ? 'opacity-0' : 'opacity-100'}`}
-        onClick={onClose}
-      />
+    <div
+      ref={overlayRef}
+      data-modal-layer
+      className={`fixed inset-0 z-[100] isolate flex items-end justify-center bg-[var(--overlay)] transition-opacity duration-200 lg:items-center ${isDismissing ? 'pointer-events-none opacity-0' : 'opacity-100'}`}
+      onPointerDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
 
       <div className={[
-        'relative flex w-full flex-col overflow-hidden rounded-t-3xl border-x border-t border-[var(--border)] bg-[var(--surface)] pb-[env(safe-area-inset-bottom)] transition-[border-radius,transform] duration-200 ease-[var(--ease-out)]',
+        'relative z-10 flex w-full flex-col overflow-hidden rounded-t-3xl border-x border-t border-[var(--border)] bg-[var(--surface)] pb-[env(safe-area-inset-bottom)] transition-[border-radius,transform] duration-200 ease-[var(--ease-out)]',
         isExpanded ? 'h-[calc(100dvh-env(safe-area-inset-top))] max-h-none' : 'max-h-[85dvh]',
         isDismissing ? 'translate-y-full' : 'translate-y-0',
         'lg:h-auto lg:max-h-[70vh] lg:max-w-2xl lg:rounded-2xl lg:border lg:pb-0 lg:shadow-[var(--shadow-raised)]',
@@ -77,7 +136,7 @@ export function BottomSheet({ isOpen, onClose, title, children }: BottomSheetPro
         }}
         onTransitionEnd={(event) => {
           if (isDismissing && event.target === event.currentTarget && event.propertyName === 'transform') {
-            onClose();
+            finishDismiss();
           }
         }}
       >
@@ -86,20 +145,24 @@ export function BottomSheet({ isOpen, onClose, title, children }: BottomSheetPro
             type='button'
             aria-label={isExpanded ? 'Collapse sheet' : 'Expand sheet'}
             aria-expanded={isExpanded}
-            aria-controls='bottom-sheet-content'
+            aria-controls={contentId}
             className='bottom-sheet-drag-handle group flex h-12 w-full touch-none select-none items-center justify-center rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)]'
             onPointerDown={(event) => {
+              if (!event.isPrimary || event.button !== 0) return;
+              event.preventDefault();
               dragStartY.current = event.clientY;
               dragStartHeight.current = sheetRef.current?.getBoundingClientRect().height ?? null;
+              activeDragTarget.current = event.currentTarget;
+              activePointerId.current = event.pointerId;
               setIsDragging(true);
               if (dragStartHeight.current !== null) setDraggedHeight(dragStartHeight.current);
-              event.currentTarget.setPointerCapture(event.pointerId);
+              try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* Continue without capture. */ }
             }}
             onPointerMove={(event) => {
               if (dragStartY.current === null || dragStartHeight.current === null) return;
               const deltaY = event.clientY - dragStartY.current;
               const minHeight = 160;
-              const maxHeight = window.innerHeight - 8;
+              const maxHeight = (window.visualViewport?.height ?? window.innerHeight) - 8;
               pendingHeight.current = Math.max(minHeight, Math.min(maxHeight, dragStartHeight.current - deltaY));
               if (dragFrame.current === null) {
                 dragFrame.current = requestAnimationFrame(() => {
@@ -111,30 +174,18 @@ export function BottomSheet({ isOpen, onClose, title, children }: BottomSheetPro
             onPointerUp={(event) => {
               if (dragStartY.current === null) return;
               const deltaY = event.clientY - dragStartY.current;
-              dragStartY.current = null;
-              dragStartHeight.current = null;
-              if (dragFrame.current !== null) cancelAnimationFrame(dragFrame.current);
-              dragFrame.current = null;
-              pendingHeight.current = null;
-              setIsDragging(false);
+              resetDrag(event.currentTarget, event.pointerId);
               if (Math.abs(deltaY) > 24) {
                 suppressHandleClick.current = true;
                 if (deltaY > 72) {
-                  setIsDismissing(true);
+                  beginDismiss();
                 } else if (deltaY < -36) {
                   setIsExpanded(true);
                 }
               }
-              setDraggedHeight(null);
             }}
-            onPointerCancel={() => {
-              dragStartY.current = null;
-              dragStartHeight.current = null;
-              if (dragFrame.current !== null) cancelAnimationFrame(dragFrame.current);
-              dragFrame.current = null;
-              pendingHeight.current = null;
-              setIsDragging(false);
-              setDraggedHeight(null);
+            onPointerCancel={(event) => {
+              resetDrag(event.currentTarget, event.pointerId);
             }}
             onClick={() => {
               if (suppressHandleClick.current) {
@@ -148,7 +199,7 @@ export function BottomSheet({ isOpen, onClose, title, children }: BottomSheetPro
           </button>
         </div>
 
-        <div id='bottom-sheet-content' className='min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pb-5 touch-scroll lg:px-5 lg:pb-5' onClick={(event) => event.stopPropagation()}>
+        <div id={contentId} className='min-h-0 flex-1 touch-pan-y overflow-y-auto overscroll-contain px-4 pb-5 touch-scroll lg:px-5 lg:pb-5'>
           {title ? (
             <div className='mb-4 mt-4 flex items-center justify-between'>
               <h2 className='text-lg font-bold text-[var(--text-primary)]'>{title}</h2>
