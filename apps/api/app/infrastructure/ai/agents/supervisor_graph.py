@@ -822,8 +822,6 @@ def _required_tools(task: str, specialist: str | None) -> set[str] | None:
         if says("delete", "remove"):
             return {"delete_category"}
     if specialist == "account":
-        if says("list", "show", "view", "which", "what"):
-            return {"list_accounts"}
         if says("create", "add", "open", "new"):
             return {"create_account"}
         if says("default"):
@@ -836,6 +834,8 @@ def _required_tools(task: str, specialist: str | None) -> set[str] | None:
             return {"rename_account", "update_account"}
         if says("delete", "remove"):
             return {"delete_account"}
+        if says("list", "show", "view", "which", "what", "status", "statuses"):
+            return {"list_accounts"}
     if specialist == "transaction":
         recurring = re.search(
             r"\b(?:recurr(?:ing|ence)?|repeat(?:ing|ed)?|every\s+(?:day|week|month|year)|"
@@ -1254,6 +1254,8 @@ def _obvious_specialist(task: str) -> str | None:
             "default",
             "list",
             "show",
+            "status",
+            "statuses",
         )
     ):
         return "account"
