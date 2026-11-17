@@ -6,15 +6,17 @@ from decimal import Decimal
 from functools import lru_cache
 from html import escape
 from io import BytesIO
+from pathlib import Path
 
 import qrcode
-from PIL import Image, ImageDraw
+from PIL import Image
 from qrcode.constants import ERROR_CORRECT_M
 
 BRAND_PURPLE = '#a855f7'
 BRAND_PURPLE_LIGHT = '#f4efff'
 LOGO_CONTENT_ID = 'affordabled-logo'
 QR_CONTENT_ID = 'affordabled-payment-qr'
+EMAIL_LOGO_PATH = Path(__file__).with_name('assets') / 'affordable-icon-dark.png'
 
 
 @dataclass(frozen=True)
@@ -41,18 +43,8 @@ def _png_bytes(image: Image.Image) -> bytes:
 
 @lru_cache(maxsize=1)
 def build_affordabled_logo_png() -> bytes:
-    """Render the existing wallet favicon as an email-safe PNG."""
-    scale = 2
-    image = Image.new('RGBA', (64 * scale, 64 * scale), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(image)
-    purple = '#863bff'
-    light_purple = '#d9c2ff'
-    draw.rounded_rectangle((0, 0, 128, 128), radius=32, fill=purple)
-    draw.rounded_rectangle((26, 46, 102, 106), radius=10, fill='white')
-    draw.line((34, 46, 34, 40, 44, 30, 88, 30, 98, 40, 98, 46), fill='white', width=8, joint='curve')
-    draw.rounded_rectangle((76, 70, 106, 90), radius=10, fill=light_purple)
-    draw.ellipse((82, 76, 90, 84), fill=purple)
-    return _png_bytes(image)
+    """Load the current brand icon as an email-safe inline PNG."""
+    return EMAIL_LOGO_PATH.read_bytes()
 
 
 def build_payment_qr_png(upi_link: str) -> bytes:
@@ -88,6 +80,7 @@ def render_payment_request_email(
         'padding:10px 24px;border-radius:10px;">Try AffordAbled free &rarr;</a>'
         if safe_app_url else ''
     )
+    plain_payment_text = plain_text.replace(upi_link, pay_url) if pay_url else plain_text
 
     html = f'''<!doctype html>
 <html lang="en">
@@ -102,7 +95,7 @@ def render_payment_request_email(
                 <table role="presentation" cellspacing="0" cellpadding="0" border="0">
                   <tr>
                     <td style="padding-right:12px;vertical-align:middle;">
-                      <img src="cid:{LOGO_CONTENT_ID}" width="44" height="44" alt="AffordAbled"
+                      <img src="cid:{LOGO_CONTENT_ID}" width="44" height="44" alt="AffordAbled logo"
                            style="display:block;border:0;border-radius:11px;" />
                     </td>
                     <td style="vertical-align:middle;color:#ffffff;font-size:23px;font-weight:700;letter-spacing:-0.3px;">
@@ -203,7 +196,7 @@ def render_payment_request_email(
 
     return RenderedEmail(
         subject=subject,
-        plain_text=plain_text,
+        plain_text=plain_payment_text,
         html=html,
         inline_attachments=(
             InlineEmailAttachment(
@@ -250,7 +243,7 @@ def render_balance_statement_email(*, subject: str, plain_text: str,
         html=f'''<!doctype html><html lang="en"><body style="margin:0;background:#f5f3f8;font-family:Arial,sans-serif;color:#1f2937;">
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td align="center" style="padding:30px 12px;">
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:600px;background:#fff;border:1px solid #e8e3ee;border-radius:18px;overflow:hidden;">
-          <tr><td style="background:{BRAND_PURPLE};padding:20px 28px;color:#fff;font-size:22px;font-weight:700;"><img src="cid:{LOGO_CONTENT_ID}" width="34" height="34" alt="" style="vertical-align:middle;margin-right:10px;border-radius:8px;" />AffordAbled</td></tr>
+          <tr><td style="background:{BRAND_PURPLE};padding:20px 28px;color:#fff;font-size:22px;font-weight:700;"><img src="cid:{LOGO_CONTENT_ID}" width="34" height="34" alt="AffordAbled logo" style="vertical-align:middle;margin-right:10px;border-radius:8px;" />AffordAbled</td></tr>
           <tr><td style="padding:32px;">{safe_body}{cta}</td></tr>{footer}
           </table></td></tr></table></body></html>''',
         inline_attachments=(InlineEmailAttachment(

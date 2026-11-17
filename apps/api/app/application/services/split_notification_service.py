@@ -132,15 +132,21 @@ class SplitNotificationService:
         else:
             settlement = 'Neither of you owes the other after offsetting these amounts.'
             upi_link = ''
-        all_detail_lines = [
-            'Outstanding split details:',
-            *[
-                f"- {entry['title']}: "
-                f"{'you owe' if entry['direction'] == 'by_you' else 'they owe you'} "
-                f"₹{Decimal(entry['remaining_paise']) / Decimal(100):,.2f}"
-                for entry in balance.get('entries', []) if int(entry.get('remaining_paise') or 0) > 0
-            ],
-        ]
+        detail_lines = []
+        for entry in balance.get('entries', []):
+            remaining_paise = int(entry.get('remaining_paise') or 0)
+            if remaining_paise <= 0:
+                continue
+            relationship = (
+                f'{context.user.name} owes you'
+                if entry['direction'] == 'by_you'
+                else f'You owe {context.user.name}'
+            )
+            detail_lines.append(
+                f"- {entry['title']}: {relationship} "
+                f"₹{Decimal(remaining_paise) / Decimal(100):,.2f}"
+            )
+        all_detail_lines = ['Outstanding split details:', *detail_lines]
         visible_detail_lines = all_detail_lines[:11]
         if len(all_detail_lines) > 11:
             visible_detail_lines.append(
