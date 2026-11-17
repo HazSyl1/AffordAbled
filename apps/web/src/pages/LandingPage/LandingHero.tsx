@@ -1,5 +1,7 @@
-import { ArrowDown, ArrowRight, ArrowUpRight, Check, ReceiptText, Users } from 'lucide-react';
+import { ArrowDown, ArrowRight, ArrowUpRight, Check, Download, ReceiptText, Users } from 'lucide-react';
 import { Link } from 'react-router-dom';
+
+const ANDROID_APK_URL = 'https://github.com/HazSyl1/AffordAbled/raw/refs/heads/main/apps/web/releases/AffordAbled-android-debug.apk';
 
 export function LandingHero({ signedIn }: { signedIn: boolean }) {
   return (
@@ -10,6 +12,16 @@ export function LandingHero({ signedIn }: { signedIn: boolean }) {
         <div className='premium-hero-actions'>
           <Link className='premium-primary' to={signedIn ? '/dashboard' : '/register'}>{signedIn ? 'Open app' : 'Create your account'} <ArrowRight size={18} aria-hidden='true' /></Link>
           <a className='premium-secondary' href='#features'>Explore features <ArrowDown size={17} aria-hidden='true' /></a>
+          <a
+            className='premium-secondary'
+            href={ANDROID_APK_URL}
+            download='AffordAbled-android-debug.apk'
+            target='_blank'
+            rel='noreferrer'
+            aria-label='Download the AffordAbled Android app'
+          >
+            Download Android app <Download size={17} aria-hidden='true' />
+          </a>
         </div>
         <p className='premium-hero-note'>Your accounts. Your decisions. A little more clarity.</p>
       </div>
