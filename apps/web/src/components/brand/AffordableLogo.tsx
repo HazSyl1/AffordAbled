@@ -1,5 +1,6 @@
 import type { SVGProps } from 'react';
 import { useTheme } from '../../features/theme/themeContext';
+import { APP_NAME } from '../../constants';
 import './AffordableLogo.css';
 
 export type AffordableLogoVariant = 'dark' | 'light' | 'glyph' | 'auto';
@@ -46,7 +47,7 @@ export function AffordableWordmark({
     <span className={`affordable-wordmark ${className}`}>
       <AffordableLogo variant={variant} size={size} />
       <span className='affordable-wordmark-copy'>
-        <span className='affordable-wordmark-name'>AFFORDABLE</span>
+        <span className='affordable-wordmark-name'>{APP_NAME}</span>
         {supportingText && <span className='affordable-wordmark-tagline'>YOUR FINANCIAL AI</span>}
       </span>
     </span>
